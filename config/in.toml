@@ -1,0 +1,31 @@
+# Where the one database file lives. One process holds it.
+database = "in.db"
+# The address the server listens on. Environment variables are ignored —
+# this is the only thing that decides where In binds.
+listen = "127.0.0.1:7655"
+# How long a live-update connection is held before the browser is asked to
+# reconnect, in seconds. The reconnect is what re-checks the session, so a
+# revoked sign-in stops receiving within this long.
+live_seconds = 300
+# How many days a trashed file or folder waits before the boot sweep purges
+# it for good. Trash counts toward quota until then.
+purge_after_days = 30
+# The quota a newly provisioned account starts on, in bytes. 10 GiB.
+default_quota_bytes = 10737418240
+# Where drive files, thumbnails and staged upload chunks live as files,
+# created on boot. Not written here: it defaults to beside the database file,
+# and the boot completes this file with the value it resolved.
+
+[oidc]
+# The provider that signs people in. Required: no default is guessed.
+issuer = ""
+# The client id In presents to the provider. Required.
+client_id = ""
+# The client secret In presents to the provider. Required. Filled in only on
+# the machine that runs the server — the committed copy stays empty.
+client_secret = ""
+# Where the provider sends the browser back after sign-in. Not written here:
+# it defaults from `listen` on every boot, so moving the address never leaves
+# a stale callback behind. Set it only when the public address differs from
+# the bind address (a proxy in front, for instance).
+# redirect_uri = "http://127.0.0.1:7655/auth/callback"

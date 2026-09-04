@@ -6,7 +6,6 @@
 /storage
 .env
 in.key
-/config/in.toml
 CLAUDE.md
 /crates/in-web/assets
 *.db.backup-*
