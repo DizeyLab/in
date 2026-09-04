@@ -149,7 +149,7 @@ fn human_size(bytes: u64) -> String {
     }
 }
 fn page_refusal(cx: &Cx) -> Option<Refusal> {
-    ["create", "rename", "move", "delete", "upload"]
+    ["rename", "move", "delete", "upload"]
         .iter()
         .find_map(|call| refusal_of(cx, call))
 }
@@ -204,6 +204,10 @@ async fn drive(cx: &Cx) -> Result {
     };
     let destinations = folder_tree(store.as_ref(), &user.id).await;
     let refusal = page_refusal(cx);
+    // The create-folder answer belongs to the modal, not the page line: a
+    // refused create reopens it with the sentence inside, iz's confirm idiom.
+    let create_refusal = refusal_of(cx, "create");
+    let create_open = create_refusal.is_some();
     // A link minted from this surface redirects back here with the plaintext
     // token on `?created=` — rendered once, like the settings page does.
     let created = created_token(uri(cx).query().unwrap_or(""));
@@ -247,14 +251,26 @@ async fn drive(cx: &Cx) -> Result {
                         aria-label=(t(language, Key::SearchPlaceholder))
                     >
                 </form>
-                <details class="tag-new">
-                    <summary class="tag-new-open">(t(language, Key::NewFolder))</summary>
-                    <form class="tag-form" method="post" action="/api/folder/create">
-                        <input type="hidden" name="parent_id" value=(current_id.clone())>
-                        <input class="field-input" type="text" name="name" maxlength="255"
-                            placeholder=(t(language, Key::FolderName)) required="" aria-label=(t(language, Key::FolderName))>
-                        <button class="primary" type="submit">(t(language, Key::CreateFolder))</button>
-                    </form>
+                <details class="confirm-details" open=(create_open)>
+                    <summary class="quiet new-folder-open">"+ "(t(language, Key::NewFolder))</summary>
+                    <div class="confirm">
+                        <div class="confirm-title">(t(language, Key::NewFolder))</div>
+                        <form class="new-folder-form" method="post" action="/api/folder/create">
+                            <input type="hidden" name="parent_id" value=(current_id.clone())>
+                            <label class="field">
+                                <span class="field-label">(t(language, Key::FolderName))</span>
+                                <input class="field-input" type="text" name="name" maxlength="255"
+                                    required="" aria-label=(t(language, Key::FolderName))>
+                            </label>
+                            <div class="confirm-row">
+                                <div class="spacer"></div>
+                                <button class="primary" type="submit">(t(language, Key::CreateFolder))</button>
+                            </div>
+                            if let Some(refusal) = create_refusal {
+                                <p class="field-error" role="alert">(refusal.message_in(language))</p>
+                            }
+                        </form>
+                    </div>
                 </details>
             </div>
             if let Some(refusal) = refusal {

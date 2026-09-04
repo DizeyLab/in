@@ -3,6 +3,7 @@
 // first overflow.
 #![recursion_limit = "256"]
 
+pub mod avatar;
 pub mod drive;
 pub mod dropdown;
 pub mod files;

@@ -743,6 +743,22 @@ a {
   padding: 0;
   border-top: none;
 }
+// The filterbar's new-folder trigger wears the quiet button skin; the
+// disclosure marker stays hidden, the '+' is literal text. The open panel
+// is the shared `.confirm` modal — no bar-local rules, so opening it never
+// reflows the bar the way the old disclosure box did.
+.new-folder-open {
+  list-style: none;
+
+  &::marker, &::-webkit-details-marker { display: none; }
+}
+
+.new-folder-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
 
 .segmented {
   display: flex;
@@ -1064,6 +1080,19 @@ a {
 img.avatar {
   object-fit: cover;
   display: block;
+}
+
+// The topbar face: the initials block stays beneath and the photo, when im
+// has one, covers it — a missing photo hides itself (see `avatar_script` in
+// `layout.rs`) and the initials show through. One grid cell shared by both,
+// so no absolute positioning and no second copy of the avatar's size; the
+// overlap rule for grouped faces is unwound here, where the pair is one face.
+.avatar-stack {
+  display: inline-grid;
+  flex: none;
+
+  > * { grid-area: 1 / 1; }
+  > .avatar + .avatar { margin-left: 0; }
 }
 
 // The avatar leads the profile panel. Without a photo it is itself the

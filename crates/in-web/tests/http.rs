@@ -41,6 +41,7 @@ fn asset_dir() -> PathBuf {
 struct FakeIm {
     addr: std::net::SocketAddr,
     tokens: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    photos: Arc<Mutex<HashMap<String, (Vec<u8>, String)>>>,
 }
 
 impl FakeIm {
@@ -49,13 +50,17 @@ impl FakeIm {
         let addr = listener.local_addr().unwrap();
         let tokens: Arc<Mutex<HashMap<String, serde_json::Value>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let photos: Arc<Mutex<HashMap<String, (Vec<u8>, String)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let map = tokens.clone();
+        let pmap = photos.clone();
         tokio::spawn(async move {
             loop {
                 let Ok((socket, _)) = listener.accept().await else {
                     return;
                 };
                 let map = map.clone();
+                let pmap = pmap.clone();
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut socket = socket;
@@ -92,10 +97,22 @@ impl FakeIm {
                         let len = content_length(&head);
                         let body: Vec<u8> = req[body_start..body_start + len].to_vec();
                         req.drain(..body_start + len);
-                        let answer = answer_for(&map, &first, &body);
-                        let payload = serde_json::to_vec(&answer).unwrap();
+                        let (status, content_type, payload) = match photo_answer(&pmap, &head, &first) {
+                            Some(photo) => photo,
+                            None => match answer_for(&map, &first, &body) {
+                                Some(answer) => (
+                                    "200 OK",
+                                    "application/json".to_string(),
+                                    serde_json::to_vec(&answer).unwrap(),
+                                ),
+                                // Anything but the introspection route is
+                                // nothing at all, the way the real im 404s
+                                // unknown paths rather than answering them.
+                                None => ("404 Not Found", "text/plain".to_string(), Vec::new()),
+                            },
+                        };
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                            "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\n\r\n",
                             payload.len()
                         );
                         if socket.write_all(response.as_bytes()).await.is_err() {
@@ -108,11 +125,56 @@ impl FakeIm {
                 });
             }
         });
-        Self { addr, tokens }
+        Self { addr, tokens, photos }
     }
 
     fn url(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    /// Stores the photo `GET /photo/{user_id}` answers with — the bytes and
+    /// the mime im would serve for this account.
+    fn set_photo(&self, user_id: &str, bytes: Vec<u8>, mime: &str) {
+        self.photos
+            .lock()
+            .unwrap()
+            .insert(user_id.to_string(), (bytes, mime.to_string()));
+    }
+}
+
+/// The Basic credential the app presents for `GET /photo/*`: `in-test:s3cr3t`.
+const PHOTO_BASIC: &str = "Basic aW4tdGVzdDpzM2NyM3Q=";
+
+/// Answers `GET /photo/{id}` from the photo map — the app's Basic credential
+/// or nothing, a missing photo exactly like a missing person. `None` for
+/// anything else, which stays the introspection JSON.
+fn photo_answer(
+    photos: &Arc<Mutex<HashMap<String, (Vec<u8>, String)>>>,
+    head: &str,
+    request_line: &str,
+) -> Option<(&'static str, String, Vec<u8>)> {
+    let mut parts = request_line.split_whitespace();
+    if parts.next() != Some("GET") {
+        return None;
+    }
+    let target = parts.next().unwrap_or("");
+    let path = target.split_once('?').map(|(path, _)| path).unwrap_or(target);
+    let id = path.strip_prefix("/photo/")?;
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    let authed = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("authorization") && value.trim() == PHOTO_BASIC
+        });
+    if !authed {
+        return Some(("404 Not Found", "text/plain".to_string(), Vec::new()));
+    }
+    match photos.lock().unwrap().get(id) {
+        Some((bytes, mime)) => Some(("200 OK", mime.clone(), bytes.clone())),
+        None => Some(("404 Not Found", "text/plain".to_string(), Vec::new())),
     }
 }
 
@@ -150,16 +212,15 @@ fn decode(raw: &str) -> String {
     }
     out
 }
-
 fn answer_for(
     map: &Arc<Mutex<HashMap<String, serde_json::Value>>>,
     request_line: &str,
     body: &[u8],
-) -> serde_json::Value {
+) -> Option<serde_json::Value> {
     let mut head = request_line.split_whitespace();
     let is_introspect = head.next() == Some("POST") && head.next() == Some(in_client::introspect_path());
     if !is_introspect {
-        return serde_json::json!({"active": false});
+        return None;
     }
     let text = String::from_utf8_lossy(body).to_string();
     let token = text
@@ -168,8 +229,8 @@ fn answer_for(
         .find(|(name, _)| *name == "token")
         .map(|(_, value)| decode(value));
     match token.and_then(|token| map.lock().unwrap().get(&token).cloned()) {
-        Some(claims) => claims,
-        None => serde_json::json!({"active": false}),
+        Some(claims) => Some(claims),
+        None => Some(serde_json::json!({"active": false})),
     }
 }
 
@@ -2420,4 +2481,136 @@ async fn settings_lives_in_the_user_menu_not_the_topbar() {
     assert!(menu.contains("href=\"/settings\""), "{menu}");
     let issuer = format!("href=\"{}/\"", app.config.oidc.issuer);
     assert!(menu.contains(&issuer), "no profile link to the issuer: {menu}");
+}
+
+#[tokio::test]
+async fn avatar_serves_own_photo_with_etag() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-face", "face@in.test", "Face").await;
+    let me = owner_of(&app, "sub-face").await;
+    app.fake.set_photo(&me, tiny_png(), "image/png");
+
+    let face = app.get(&format!("/avatar/{me}"), Some(&cookie)).await;
+    assert_eq!(face.status, StatusCode::OK);
+    assert_eq!(face.content_type.as_deref(), Some("image/png"));
+    assert_eq!(
+        face.cache_control.as_deref(),
+        Some("private, max-age=31536000, immutable")
+    );
+    assert_eq!(face.bytes, tiny_png());
+
+    let etag = face.etag.clone().expect("no etag on the avatar");
+    let cached = app
+        .get_with_if_none_match(&format!("/avatar/{me}"), Some(&cookie), &etag)
+        .await;
+    assert_eq!(cached.status, StatusCode::NOT_MODIFIED);
+    assert!(cached.bytes.is_empty());
+
+    // The user menu wears the photo over the initials, with the fallback script.
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let body = page.text();
+    assert!(
+        body.contains(&format!("src=\"/avatar/{me}\"")),
+        "menu wears no photo img"
+    );
+    assert!(body.contains("avatar-stack"), "no initials stack under the photo");
+    assert!(body.contains("__inAvatar"), "no avatar fallback script");
+}
+
+#[tokio::test]
+async fn avatar_without_photo_is_not_found() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-noface", "noface@in.test", "NoFace").await;
+    let me = owner_of(&app, "sub-noface").await;
+
+    let face = app.get(&format!("/avatar/{me}"), Some(&cookie)).await;
+    assert_eq!(face.status, StatusCode::NOT_FOUND);
+    assert!(face.bytes.is_empty());
+}
+
+#[tokio::test]
+async fn avatar_for_someone_else_is_not_found() {
+    let app = TestApp::build().await;
+    let alice = app.sign_in("sub-alice-face", "alice@in.test", "Alice").await;
+    let bob = app.sign_in("sub-bob-face", "bob@in.test", "Bob").await;
+    let bob_id = owner_of(&app, "sub-bob-face").await;
+    app.fake.set_photo(&bob_id, tiny_png(), "image/png");
+
+    // Bob's face through Alice's session: the same 404 as no photo at all,
+    // never a hint that Bob has one.
+    let face = app.get(&format!("/avatar/{bob_id}"), Some(&alice)).await;
+    assert_eq!(face.status, StatusCode::NOT_FOUND);
+    assert!(face.bytes.is_empty());
+
+    // And an id that names nobody at all.
+    let ghost = app
+        .get("/avatar/00000000000000000000000000", Some(&alice))
+        .await;
+    assert_eq!(ghost.status, StatusCode::NOT_FOUND);
+
+    // Bob himself still sees his own.
+    let own = app.get(&format!("/avatar/{bob_id}"), Some(&bob)).await;
+    assert_eq!(own.status, StatusCode::OK);
+    assert_eq!(own.bytes, tiny_png());
+}
+
+#[tokio::test]
+async fn avatar_without_session_is_unauthorized() {
+    let app = TestApp::build().await;
+    let face = app.get("/avatar/anyone", None).await;
+    assert_eq!(face.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn drive_new_folder_rides_a_confirm_modal() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-newfolder", "newfolder@in.test", "NewFolder").await;
+
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let body = page.text();
+
+    // The filterbar carries the confirm modal, not the old disclosure box.
+    assert!(body.contains("confirm-details"), "no confirm modal on the drive");
+    assert!(!body.contains("tag-new"), "old disclosure box still rendered");
+    let details_at = body.find("confirm-details").expect("no confirm modal");
+    let details_end = body[details_at..].find("</details>").expect("modal never closes");
+    let details = &body[details_at..details_at + details_end];
+    assert!(
+        details.contains("action=\"/api/folder/create\""),
+        "create form escapes the modal: {details}"
+    );
+    assert!(details.contains("name=\"parent_id\""), "no parent field: {details}");
+    assert!(details.contains("name=\"name\""), "no name field: {details}");
+    assert!(details.contains("Create folder"), "no submit: {details}");
+
+    // Creating through the POST still lands.
+    let answer = app
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "dup")])
+        .await;
+    assert!(answer.accepted(), "clean create refused: {:?}", answer.location);
+
+    // A refused create reopens the modal with the sentence inside — and only there.
+    let answer = app
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "dup")])
+        .await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER);
+    assert!(
+        answer.body.contains("NameTaken"),
+        "dupe was not refused: {}",
+        answer.body
+    );
+    let page = app.get("/drive?refusal=name-taken&on=create", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let body = page.text();
+    assert!(
+        body.contains("<details class=\"confirm-details\" open"),
+        "refused create left the modal shut"
+    );
+    assert_eq!(
+        body.matches("<p class=\"field-error\"").count(),
+        1,
+        "create refusal shows twice — or nowhere"
+    );
 }

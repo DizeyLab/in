@@ -75,8 +75,12 @@ pub(crate) async fn wordmark(cx: &Cx) -> Result {
 }
 
 /// A person as a circle (or, on the Instrument skin, a square): the initials,
-/// toned by the id so every account has its own colour. Shared by the
-/// topbar user menu on every signed-in page.
+/// toned by the id so every account has its own colour, with the im photo
+/// over it when im has one. Whether im has one is not known cheaply — the
+/// photo is the app's credentialed fetch, not the browser's — so the `<img>`
+/// always renders and hides itself on error (see `avatar_script`), leaving
+/// the initials beneath as the fallback. Shared by the topbar user menu on
+/// every signed-in page.
 pub(crate) async fn avatar(cx: &Cx, user: &User, extra: &str) -> Result {
     let tone = user
         .id
@@ -86,10 +90,42 @@ pub(crate) async fn avatar(cx: &Cx, user: &User, extra: &str) -> Result {
     let class = format!("avatar avatar-tone-{tone} {extra}");
     let name = user.display_name.clone();
     let initials = initials_of(&user.display_name);
+    let src = format!("/avatar/{}", user.id);
     view! {
         cx =>
-        <span class=(class) data-name=(name)>(initials)</span>
+        <span class="avatar-stack">
+            <span class=(class.clone()) data-name=(name.clone())>(initials)</span>
+            <img class=(format!("{class} avatar-photo")) src=(src) alt="" data-name=(name)>
+        </span>
     }
+}
+
+/// The photo half's client half: a missing photo must fall back to the
+/// initials beneath it, and a bare `<img>` to a 404 shows the broken-image
+/// box instead. One document-level capture `error` listener hides every
+/// `img.avatar-photo` that fails, plus a sweep for the ones already failed
+/// before it ran; hiding is registered through `__inOwn` so the live morph
+/// — which owns no names, only what the client declares — does not strip it
+/// back off on the next refresh.
+pub async fn avatar_script(cx: &Cx) -> Result {
+    use topcoat::view::Unescaped;
+    const JS: &str = "\
+        (function () { \
+            if (window.__inAvatar) { return; } \
+            window.__inAvatar = true; \
+            function hide(img) { \
+                if (window.__inOwn) { window.__inOwn(img, [], ['style']); } \
+                img.style.display = 'none'; \
+            } \
+            document.addEventListener('error', function (e) { \
+                var img = e.target && e.target.closest ? e.target.closest('img.avatar-photo') : null; \
+                if (img) { hide(img); } \
+            }, true); \
+            document.querySelectorAll('img.avatar-photo').forEach(function (img) { \
+                if (img.complete && img.naturalWidth === 0) { hide(img); } \
+            }); \
+        })();";
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
 
 /// The first letters of the first two words, uppercased — "Ada Lovelace"
@@ -195,6 +231,7 @@ pub async fn topbar(cx: &Cx, active: NavPage, user: &User, lang: Lang) -> Result
             (topbar_nav(cx, active, lang).await?)
             (user_menu(cx, user, lang).await?)
         </header>
+        (avatar_script(cx).await?)
     }
 }
 

@@ -117,6 +117,36 @@ pub async fn current_user(cx: &Cx) -> Option<User> {
     }
 }
 
+/// The person's profile photo from im, if im has one. `None` on 404 and on
+/// anything else that is not the bytes — a dropped connection, a body that
+/// will not read, a reply without a mime — because a missing face must never
+/// fail the page around it: the caller renders its initials instead.
+///
+/// Authenticated as the app, not the browser: `Authorization: Basic
+/// base64(client_id ":" client_secret)` against im's `/photo/{user_id}`,
+/// the same credentials the introspection round-trip posts with.
+pub async fn photo_for(cx: &Cx, user_id: &str) -> Option<(Vec<u8>, String)> {
+    let state = client(cx);
+    let reply = state
+        .http
+        .get(format!("{}/photo/{user_id}", state.config.issuer))
+        .basic_auth(&state.config.client_id, Some(&state.config.client_secret))
+        .send()
+        .await
+        .ok()?;
+    if !reply.status().is_success() {
+        return None;
+    }
+    let mime = reply
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)?
+        .to_str()
+        .ok()?
+        .to_string();
+    let bytes = reply.bytes().await.ok()?.to_vec();
+    Some((bytes, mime))
+}
+
 /// Path of im's RFC 7662 introspection endpoint, relative to the issuer.
 const INTROSPECT_PATH: &str = "/introspect";
 
