@@ -850,15 +850,19 @@ const STYLE: Asset = asset!("assets/main.css");
 
 #[layout("/")]
 async fn root_layout(cx: &Cx, slot: Result) -> Result {
-    // The one per-user chrome knob: the UI density, read off the request's
-    // own user. Signed-out (or unreadable) renders ledger, the default.
+    // The per-user chrome knobs, read off the request's own user: the theme
+    // into `data-theme`, the interface into `data-ui`, the language into
+    // `<html lang>`. Signed-out (or unreadable) renders light and ledger,
+    // and the language falls back to `Accept-Language` — both are only set
+    // when the request's own user has one to read.
     let me = match current_user(cx).await {
         Ok(user) => user.as_ref(),
         Err(_) => None,
     };
     let asking = me.is_some();
+    let dark = me.as_ref().is_some_and(|user| user.theme == "dark");
     let ui = me.as_ref().map_or("ledger", |user| user.ui.as_str());
-    let lang = crate::i18n::lang(cx);
+    let lang = crate::i18n::lang(cx).await;
 
     let content = match slot {
         Err(error) if error.downcast_ref::<NotFoundError>().is_some() => view! {
@@ -880,7 +884,7 @@ async fn root_layout(cx: &Cx, slot: Result) -> Result {
     let build = STYLE.id().as_u64().to_string();
     view! {
         <!DOCTYPE html>
-        <html lang=(lang.code()) data-ui=(ui) data-build=(build)>
+        <html lang=(lang.code()) data-theme=(dark.then_some("dark")) data-ui=(ui) data-build=(build)>
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">

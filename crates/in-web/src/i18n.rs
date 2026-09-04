@@ -1,15 +1,15 @@
 //! UI strings in two languages.
 //!
-//! v1 has no language column on the user row, so the reader's language comes
-//! off the request: an `Accept-Language` tag starting with `tr` reads
-//! Turkish, everything else reads English. An unrecognized tag is not a
-//! refusal, just the default.
+//! A signed-in reader's language comes off their own user row, the way their
+//! theme and interface do; everybody else reads `Accept-Language`. An
+//! unrecognized tag or code is not a refusal, just the default.
 
 use topcoat::context::Cx;
 use topcoat::router::header;
 use topcoat::router::request::headers;
 
-/// English or Turkish, read off the request's `Accept-Language`.
+/// English or Turkish: the reader's own language when signed in, the
+/// request's `Accept-Language` otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
     En,
@@ -44,9 +44,19 @@ impl Lang {
     }
 }
 
-/// The request's language: `Accept-Language` first, English when it says
-/// nothing usable.
-pub fn lang(cx: &Cx) -> Lang {
+/// The request's language: the signed-in reader's own row first,
+/// `Accept-Language` when signed out or unreadable.
+///
+/// Cheap per call: [`crate::server::current_user`] is memoized per request,
+/// and every signed-in page already resolved the user before asking.
+pub async fn lang(cx: &Cx) -> Lang {
+    let signed_in = match crate::server::current_user(cx).await {
+        Ok(user) => user.as_ref().map(|user| Lang::from_code(&user.language)),
+        Err(_) => None,
+    };
+    if let Some(language) = signed_in {
+        return language;
+    }
     headers(cx)
         .get(header::ACCEPT_LANGUAGE)
         .and_then(|value| value.to_str().ok())
@@ -162,6 +172,11 @@ pub enum Key {
     NoLinks,
     ManageLinks,
     UiLabel,
+    ThemeLabel,
+    LightOption,
+    DarkOption,
+    LanguageLabel,
+    Saved,
 }
 
 pub fn t(lang: Lang, key: Key) -> &'static str {
@@ -261,6 +276,11 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             NoLinks => "No share links yet.",
             ManageLinks => "Share links",
             UiLabel => "Interface",
+            ThemeLabel => "THEME",
+            LightOption => "Light",
+            DarkOption => "Dark",
+            LanguageLabel => "LANGUAGE",
+            Saved => "Saved.",
         },
         Lang::Tr => match key {
             Cancel => "Vazgeç",
@@ -356,6 +376,11 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             NoLinks => "Henüz paylaşım bağlantısı yok.",
             ManageLinks => "Paylaşım bağlantıları",
             UiLabel => "Arayüz",
+            ThemeLabel => "TEMA",
+            LightOption => "Açık",
+            DarkOption => "Koyu",
+            LanguageLabel => "DİL",
+            Saved => "Kaydedildi.",
         },
     }
 }

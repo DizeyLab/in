@@ -44,7 +44,7 @@ async fn landing(cx: &Cx) -> Result {
 /// The sign-in card for a browser with nobody in it: the wordmark and one
 /// link, which starts the OIDC round-trip at `/auth/login`.
 async fn sign_in_card(cx: &Cx) -> Result {
-    let language = lang(cx);
+    let language = lang(cx).await;
     view! {
         cx =>
         <main class="auth-stage">

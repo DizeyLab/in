@@ -1897,29 +1897,51 @@ async fn a_refused_upload_carries_a_well_formed_query() {
     assert!(page.text().contains("already taken"), "{}", page.text());
 }
 
-// -- settings ui picker --------------------------------------------------------
+// -- settings preferences ------------------------------------------------------
 
 #[tokio::test]
-async fn settings_ui_picker_round_trips() {
+async fn settings_preferences_round_trip() {
     let app = TestApp::build().await;
-    let cookie = app.sign_in("sub-ui", "ui@in.test", "Ui").await;
-    let me = owner_of(&app, "sub-ui").await;
+    let cookie = app.sign_in("sub-prefs", "prefs@in.test", "Prefs").await;
+    let me = owner_of(&app, "sub-prefs").await;
 
-    // The ledger is the default, worn on `<html>` from the first render.
-    assert_eq!(app.store.user(&me).await.unwrap().unwrap().ui, "ledger");
+    // Light, English and ledger are the defaults, worn on `<html>` from the
+    // first render — and light means no `data-theme` at all.
+    let user = app.store.user(&me).await.unwrap().unwrap();
+    assert_eq!(user.ui, "ledger");
+    assert_eq!(user.theme, "light");
+    assert_eq!(user.language, "en");
     let page = app.get("/settings", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(page.text().contains("data-ui=\"ledger\""), "{}", page.text());
+    assert!(!page.text().contains("data-theme="), "{}", page.text());
+    assert!(page.text().contains("lang=\"en\""), "{}", page.text());
 
-    // Picking the instrument writes the row and re-renders the chrome.
+    // Saving all three writes the row and re-renders the chrome.
     let answer = app
-        .post("/api/settings/ui", Some(&cookie), &[("ui", "instrument")])
+        .post(
+            "/api/settings/preferences",
+            Some(&cookie),
+            &[("ui", "instrument"), ("theme", "dark"), ("language", "tr")],
+        )
         .await;
-    assert!(answer.accepted(), "ui refused: {:?}", answer.location);
-    assert_eq!(
-        app.store.user(&me).await.unwrap().unwrap().ui,
-        "instrument"
+    assert!(
+        answer.accepted(),
+        "preferences refused: {:?}",
+        answer.location
     );
+    let user = app.store.user(&me).await.unwrap().unwrap();
+    assert_eq!(user.ui, "instrument");
+    assert_eq!(user.theme, "dark");
+    assert_eq!(user.language, "tr");
+
+    // The redirect carries the saved chip, rendered in the new language.
+    let page = app
+        .get(answer.location.as_deref().unwrap(), Some(&cookie))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("Kaydedildi."), "{}", page.text());
+
     let page = app.get("/settings", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(
@@ -1927,44 +1949,160 @@ async fn settings_ui_picker_round_trips() {
         "{}",
         page.text()
     );
-    assert!(page.text().contains("name=\"ui\""), "{}", page.text());
+    assert!(
+        page.text().contains("data-theme=\"dark\""),
+        "{}",
+        page.text()
+    );
+    assert!(page.text().contains("lang=\"tr\""), "{}", page.text());
+    for name in ["name=\"ui\"", "name=\"theme\"", "name=\"language\""] {
+        assert!(page.text().contains(name), "{}", page.text());
+    }
 
     // And back again.
     let answer = app
-        .post("/api/settings/ui", Some(&cookie), &[("ui", "ledger")])
+        .post(
+            "/api/settings/preferences",
+            Some(&cookie),
+            &[("ui", "ledger"), ("theme", "light"), ("language", "en")],
+        )
         .await;
-    assert!(answer.accepted(), "ui refused: {:?}", answer.location);
-    assert_eq!(app.store.user(&me).await.unwrap().unwrap().ui, "ledger");
+    assert!(
+        answer.accepted(),
+        "preferences refused: {:?}",
+        answer.location
+    );
+    let user = app.store.user(&me).await.unwrap().unwrap();
+    assert_eq!(user.ui, "ledger");
+    assert_eq!(user.theme, "light");
+    assert_eq!(user.language, "en");
 }
 
 #[tokio::test]
-async fn settings_ui_rejects_unknown_values() {
+async fn settings_preferences_rejects_unknown_values() {
     let app = TestApp::build().await;
-    let cookie = app.sign_in("sub-ui-bad", "uibad@in.test", "UiBad").await;
-    let me = owner_of(&app, "sub-ui-bad").await;
+    let cookie = app.sign_in("sub-prefs-bad", "prefsbad@in.test", "PrefsBad").await;
+    let me = owner_of(&app, "sub-prefs-bad").await;
 
+    // Each field is refused with its own code, and the row keeps the last
+    // good write.
     let answer = app
-        .post("/api/settings/ui", Some(&cookie), &[("ui", "mosaic")])
+        .post(
+            "/api/settings/preferences",
+            Some(&cookie),
+            &[("ui", "mosaic"), ("theme", "light"), ("language", "en")],
+        )
         .await;
-    assert!(answer.refused("bad-ui", "ui"), "{:?}", answer.location);
-    assert_eq!(app.store.user(&me).await.unwrap().unwrap().ui, "ledger");
+    assert!(answer.refused("bad-ui", "preferences"), "{:?}", answer.location);
+    let answer = app
+        .post(
+            "/api/settings/preferences",
+            Some(&cookie),
+            &[("ui", "ledger"), ("theme", "dim"), ("language", "en")],
+        )
+        .await;
+    assert!(
+        answer.refused("bad-theme", "preferences"),
+        "{:?}",
+        answer.location
+    );
+    let answer = app
+        .post(
+            "/api/settings/preferences",
+            Some(&cookie),
+            &[("ui", "ledger"), ("theme", "light"), ("language", "xx")],
+        )
+        .await;
+    assert!(
+        answer.refused("bad-language", "preferences"),
+        "{:?}",
+        answer.location
+    );
+    let user = app.store.user(&me).await.unwrap().unwrap();
+    assert_eq!(user.ui, "ledger");
+    assert_eq!(user.theme, "light");
+    assert_eq!(user.language, "en");
 
-    // The carried refusal renders under the picker form.
+    // The carried refusal renders on the page, in the reader's language.
     let page = app
         .get(answer.location.as_deref().unwrap(), Some(&cookie))
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(
-        page.text().contains("That interface choice is not offered."),
+        page.text().contains("That is not a language."),
         "{}",
         page.text()
     );
 
     // Signed out, the same post asks to sign in first.
     let answer = app
-        .post("/api/settings/ui", None, &[("ui", "instrument")])
+        .post(
+            "/api/settings/preferences",
+            None,
+            &[("ui", "instrument"), ("theme", "dark"), ("language", "tr")],
+        )
         .await;
-    assert!(answer.refused("sign-in-first", "ui"), "{:?}", answer.location);
+    assert!(
+        answer.refused("sign-in-first", "preferences"),
+        "{:?}",
+        answer.location
+    );
+}
+
+impl TestApp {
+    /// Like `get`, but carrying an `Accept-Language` header, for the
+    /// signed-out language fallback.
+    async fn get_with_lang(&self, path: &str, cookie: Option<&str>, lang: &str) -> Raw {
+        let mut request = Request::builder()
+            .method("GET")
+            .uri(path)
+            .header(header::ACCEPT_LANGUAGE, lang);
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
+        }
+        let response = self
+            .router
+            .handle(request.body(Body::empty()).unwrap())
+            .await;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        Raw {
+            status,
+            content_type: None,
+            disposition: None,
+            content_range: None,
+            accept_ranges: None,
+            cache_control: None,
+            etag: None,
+            location: None,
+            bytes,
+        }
+    }
+}
+
+#[tokio::test]
+async fn signed_out_settings_falls_back_to_accept_language() {
+    let app = TestApp::build().await;
+
+    // No header: English chrome on a light ledger shell.
+    let page = app.get("/settings", None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("lang=\"en\""), "{}", page.text());
+    assert!(!page.text().contains("data-theme="), "{}", page.text());
+    assert!(page.text().contains("data-ui=\"ledger\""), "{}", page.text());
+    assert!(page.text().contains("Sign in first."), "{}", page.text());
+
+    // A Turkish browser is answered in Turkish.
+    let page = app
+        .get_with_lang("/settings", None, "tr-TR,tr;q=0.9,en;q=0.8")
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("lang=\"tr\""), "{}", page.text());
+    assert!(page.text().contains("Önce oturum aç."), "{}", page.text());
+    assert!(page.text().contains("Sürücüye dön"), "{}", page.text());
 }
 
 #[tokio::test]
@@ -1984,4 +2122,99 @@ async fn settings_panels_nest_inside_the_stage() {
     }
     // The admin register is a table now: one named column per fact.
     assert!(body.contains("<th class=\"member-col-name\""), "{body}");
+}
+
+// The /shared, /trash and /search strip fix: content belongs in the stage,
+// never directly in the flex-row shell. Mirrors
+// settings_panels_nest_inside_the_stage.
+fn assert_stage_nests(body: &str, markers: &[&str]) {
+    assert!(
+        !body.contains("<main class=\"settings-shell\">"),
+        "content still sits in the shell: {body}"
+    );
+    let stage = body
+        .find("<main class=\"settings-stage\">")
+        .expect("no settings-stage");
+    let close = body.find("</main>").expect("no main close");
+    assert!(stage < close, "unclosed stage");
+    for marker in markers {
+        let at = body.find(marker).unwrap_or_else(|| panic!("no {marker}"));
+        assert!(stage < at && at < close, "{marker} escapes the stage");
+    }
+}
+
+#[tokio::test]
+async fn shared_lists_nest_inside_the_stage() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-stage-sharer", "sharer@in.test", "Sharer").await;
+    let bob = app.sign_in("sub-stage-bob", "stagebob@in.test", "StageBob").await;
+    let owner = owner_of(&app, "sub-stage-sharer").await;
+    let file = file_id(&app, &owner, "staged.txt", b"staged").await;
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("email", "stagebob@in.test"),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "add refused: {:?}", answer.location);
+    let page = app.get("/shared", Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert_stage_nests(
+        &page.text(),
+        &["panel-head", "panel-title", "staged.txt", "class=\"chip\""],
+    );
+}
+
+#[tokio::test]
+async fn trash_panels_nest_inside_the_stage() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-stage-trash", "stagetrash@in.test", "StageTrash").await;
+    let owner = owner_of(&app, "sub-stage-trash").await;
+    let one = file_id(&app, &owner, "staged-trash.txt", b"staged").await;
+    app.store.delete_file(&one).await.unwrap();
+    let page = app.get("/trash", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert_stage_nests(
+        &page.text(),
+        &[
+            "panel-head",
+            "staged-trash.txt",
+            "action=\"/api/trash/restore\"",
+            "action=\"/api/trash/empty\"",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn search_panels_nest_inside_the_stage() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-stage-search", "stagesearch@in.test", "StageSearch").await;
+    let owner = owner_of(&app, "sub-stage-search").await;
+    file_id(&app, &owner, "staged-report.txt", b"staged").await;
+    let page = app.get("/search?q=staged-report", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert_stage_nests(
+        &page.text(),
+        &["panel-head", "name=\"q\"", "staged-report.txt"],
+    );
+}
+
+#[tokio::test]
+async fn public_link_dead_card_survives_the_reskin() {
+    let app = TestApp::build().await;
+    // A never-real token is the dead card, not a stack.
+    let page = app.get("/s/never-real-token", None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("no longer works"), "{}", page.text());
+    assert!(
+        page.text().contains("class=\"scaffold-note\""),
+        "{}",
+        page.text()
+    );
 }

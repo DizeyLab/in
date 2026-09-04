@@ -143,7 +143,7 @@ async fn trash(cx: &Cx) -> Result {
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(refusal) => {
-            let language = lang(cx);
+            let language = lang(cx).await;
             return view! {
                 cx =>
                 <main class="scaffold-note">
@@ -153,15 +153,15 @@ async fn trash(cx: &Cx) -> Result {
             };
         }
     };
-    let language = lang(cx);
+    let language = lang(cx).await;
     let listing = app(cx)
         .store
         .list_trash(&user.id)
         .await?;
     view! {
         cx =>
-        <main class="settings-shell">
-            (topbar(cx, NavPage::Trash, &user, language).await?)
+        (topbar(cx, NavPage::Trash, &user, language).await?)
+        <main class="settings-stage">
             <h1 class="settings-title">(t(language, Key::Trash))</h1>
             (refusal_banner(cx, language, &["restore", "purge", "empty"]).await?)
             if listing.folders.is_empty() && listing.files.is_empty() {
@@ -174,7 +174,10 @@ async fn trash(cx: &Cx) -> Result {
             }
             if !listing.folders.is_empty() {
                 <section class="panel">
-                    <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
+                    <div class="panel-head">
+                        <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
+                        <span class="chip">(format!("{}", listing.folders.len()))</span>
+                    </div>
                     <div class="panel-body">
                         for folder in &listing.folders {
                             <div class="member-row">
@@ -196,7 +199,10 @@ async fn trash(cx: &Cx) -> Result {
             }
             if !listing.files.is_empty() {
                 <section class="panel">
-                    <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
+                    <div class="panel-head">
+                        <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
+                        <span class="chip">(format!("{}", listing.files.len()))</span>
+                    </div>
                     <div class="panel-body">
                         for file in &listing.files {
                             <div class="member-row">

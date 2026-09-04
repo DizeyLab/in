@@ -36,7 +36,7 @@ const UPLOADS_DIR: &str = "uploads";
 const THUMB_SOURCE_CAP: u64 = 64 * 1024 * 1024;
 
 const USER_COLUMNS: &str =
-    "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, ui, created_at, last_seen_at";
+    "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, ui, created_at, last_seen_at, theme, language";
 const FOLDER_COLUMNS: &str = "id, owner_id, parent_id, name, created_at, deleted_at";
 const FILE_COLUMNS: &str =
     "id, owner_id, folder_id, name, mime, size_bytes, thumb_state, created_at, updated_at, deleted_at";
@@ -714,6 +714,8 @@ fn user_from(row: &Row) -> Result<User> {
         quota_bytes: row.get::<i64>(6).map_err(backend)?.max(0) as u64,
         used_bytes: row.get::<i64>(7).map_err(backend)?.max(0) as u64,
         ui: text(row, 8)?,
+        theme: text(row, 11)?,
+        language: text(row, 12)?,
         created_at: parse_stamp(&text(row, 9)?)?,
         last_seen_at: opt_stamp(row, 10)?,
     })
@@ -947,13 +949,22 @@ impl Store for TursoStore {
         Ok(())
     }
 
-    async fn set_user_ui(&self, id: &str, ui: &str) -> Result<()> {
+    async fn set_preferences(&self, id: &str, theme: &str, language: &str, ui: &str) -> Result<()> {
+        if theme != "light" && theme != "dark" {
+            return Err(StoreError::Corrupt(format!("theme {theme:?}")));
+        }
+        if language != "en" && language != "tr" {
+            return Err(StoreError::Corrupt(format!("language {language:?}")));
+        }
         if ui != "ledger" && ui != "instrument" {
             return Err(StoreError::Corrupt(format!("ui {ui:?}")));
         }
         let conn = self.conn.lock().await;
         let n = conn
-            .execute("UPDATE user SET ui = ?1 WHERE id = ?2", params![ui, id])
+            .execute(
+                "UPDATE user SET theme = ?1, language = ?2, ui = ?3 WHERE id = ?4",
+                params![theme, language, ui, id],
+            )
             .await
             .map_err(backend)?;
         if n == 0 {

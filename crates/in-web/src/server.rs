@@ -214,6 +214,10 @@ pub enum Refusal {
     Unavailable,
     /// The ui field was not one of the values the form offers.
     BadUi,
+    /// The theme field was not one of the values the form offers.
+    BadTheme,
+    /// The language field was not one of the values the form offers.
+    BadLanguage,
 }
 
 impl Refusal {
@@ -235,6 +239,8 @@ impl Refusal {
             Refusal::AncestorTrashed => "Restore the folder it is in first.".to_string(),
             Refusal::Unavailable => "Something went wrong.".to_string(),
             Refusal::BadUi => "That interface choice is not offered.".to_string(),
+            Refusal::BadTheme => "That is not a theme.".to_string(),
+            Refusal::BadLanguage => "That is not a language.".to_string(),
         }
     }
 
@@ -258,6 +264,8 @@ impl Refusal {
             Refusal::Unavailable => "Bir şeyler ters gitti.".to_string(),
             Refusal::AncestorTrashed => "Önce içinde olduğu klasörü geri yükle.".to_string(),
             Refusal::BadUi => "Bu arayüz seçeneği sunulmuyor.".to_string(),
+            Refusal::BadTheme => "Bu bir tema değil.".to_string(),
+            Refusal::BadLanguage => "Bu bir dil değil.".to_string(),
         }
     }
 
@@ -279,6 +287,8 @@ impl Refusal {
             "ancestor-trashed" => Refusal::AncestorTrashed,
             "unavailable" => Refusal::Unavailable,
             "bad-ui" => Refusal::BadUi,
+            "bad-theme" => Refusal::BadTheme,
+            "bad-language" => Refusal::BadLanguage,
             _ => return None,
         })
     }
@@ -304,6 +314,8 @@ impl Refusal {
             Refusal::AncestorTrashed => "ancestor-trashed",
             Refusal::Unavailable => "unavailable",
             Refusal::BadUi => "bad-ui",
+            Refusal::BadTheme => "bad-theme",
+            Refusal::BadLanguage => "bad-language",
         }
     }
 }

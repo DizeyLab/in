@@ -32,7 +32,7 @@ async fn search(cx: &Cx) -> Result {
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(refusal) => {
-            let language = lang(cx);
+            let language = lang(cx).await;
             return view! {
                 cx =>
                 <main class="scaffold-note">
@@ -42,7 +42,7 @@ async fn search(cx: &Cx) -> Result {
             };
         }
     };
-    let language = lang(cx);
+    let language = lang(cx).await;
     let asked = searched(query_value(uri(cx).query().unwrap_or(""), "q").as_deref());
     let hits = match asked.as_deref() {
         Some(query) => Some(app(cx).store.search(&user.id, query, LIMIT).await?),
@@ -51,8 +51,8 @@ async fn search(cx: &Cx) -> Result {
     let box_text = asked.clone().unwrap_or_default();
     view! {
         cx =>
-        <main class="settings-shell">
-            (topbar(cx, NavPage::Search, &user, language).await?)
+        (topbar(cx, NavPage::Search, &user, language).await?)
+        <main class="settings-stage">
             <h1 class="settings-title">(t(language, Key::SearchResults))</h1>
             <form class="field-box-search" method="get" action="/search">
                 <input
@@ -70,7 +70,10 @@ async fn search(cx: &Cx) -> Result {
                 }
                 if !hits.folders.is_empty() {
                     <section class="panel">
-                        <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
+                            <span class="chip">(format!("{}", hits.folders.len()))</span>
+                        </div>
                         <div class="panel-body">
                             for folder in &hits.folders {
                                 <p><a href=(format!("/drive?folder={}", folder.id))>(folder.name.clone())</a></p>
@@ -80,7 +83,10 @@ async fn search(cx: &Cx) -> Result {
                 }
                 if !hits.files.is_empty() {
                     <section class="panel">
-                        <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
+                            <span class="chip">(format!("{}", hits.files.len()))</span>
+                        </div>
                         <div class="panel-body">
                             for file in &hits.files {
                                 <p><a href=(format!("/file/{}", file.id))>(file.name.clone())</a></p>

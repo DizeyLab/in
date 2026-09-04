@@ -166,7 +166,7 @@ async fn drive(cx: &Cx) -> Result {
             };
         }
     };
-    let language = lang(cx);
+    let language = lang(cx).await;
     let store = app(cx).store.clone();
 
     let wanted = query_params::<DriveQuery>(cx)

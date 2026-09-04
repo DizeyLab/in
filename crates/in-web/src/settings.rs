@@ -51,13 +51,15 @@ fn quota_percent(user: &User) -> u8 {
 
 type Redirect = Result<(StatusCode, [(HeaderName, String); 1])>;
 
-/// Back to settings, the refusal (if any) on the query.
+/// Back to settings, the refusal (if any) on the query — or `saved=<call>`
+/// when there was nothing to refuse, the way iz's `saved_or_refused` marks
+/// a save the page should chip.
 fn redirect_back(cx: &Cx, call: &str, refusal: Option<Refusal>) -> Redirect {
     let back = back_to(cx, "/settings");
     let separator = if back.contains('?') { '&' } else { '?' };
     let location = match refusal {
         Some(refusal) => format!("{back}{separator}refusal={}&on={call}", refusal.code()),
-        None => back,
+        None => format!("{back}{separator}saved={call}"),
     };
     Ok((StatusCode::SEE_OTHER, [(header::LOCATION, location)]))
 }
@@ -118,25 +120,47 @@ async fn set_disabled(cx: &Cx, Form(input): Form<DisableForm>) -> Redirect {
 }
 
 #[derive(Deserialize)]
-struct UiForm {
+struct PreferencesForm {
     ui: String,
+    theme: String,
+    language: String,
 }
 
-/// Switches the reader's own interface between the ledger and the
-/// instrument. Anything else is refused — the form only ever offers the
-/// two, so another value is a hand-built post, not a typo.
-#[route(POST "/api/settings/ui")]
-async fn set_ui(cx: &Cx, Form(input): Form<UiForm>) -> Redirect {
+/// The values the interface field offers.
+const UI_OPTIONS: [&str; 2] = ["instrument", "ledger"];
+
+/// The values the theme field offers.
+const THEME_OPTIONS: [&str; 2] = ["light", "dark"];
+
+/// The values the language field offers.
+const LANGUAGE_OPTIONS: [&str; 2] = ["en", "tr"];
+
+/// Writes the reader's own display preferences: interface, theme, language.
+/// Each field is checked against what its dropdown offers — another value is
+/// a hand-built post, not a typo, and is refused with the field's own
+/// refusal, the way iz's `save_profile` answers its preferences block.
+#[route(POST "/api/settings/preferences")]
+async fn set_preferences(cx: &Cx, Form(input): Form<PreferencesForm>) -> Redirect {
     let user = match require_user(cx).await {
         Ok(user) => user,
-        Err(refusal) => return redirect_back(cx, "ui", Some(refusal)),
+        Err(refusal) => return redirect_back(cx, "preferences", Some(refusal)),
     };
-    if input.ui != "ledger" && input.ui != "instrument" {
-        return redirect_back(cx, "ui", Some(Refusal::BadUi));
+    if !UI_OPTIONS.contains(&input.ui.as_str()) {
+        return redirect_back(cx, "preferences", Some(Refusal::BadUi));
     }
-    match app(cx).store.set_user_ui(&user.id, &input.ui).await {
-        Ok(()) => redirect_back(cx, "ui", None),
-        Err(error) => redirect_back(cx, "ui", Some(refusal_of(error))),
+    if !THEME_OPTIONS.contains(&input.theme.as_str()) {
+        return redirect_back(cx, "preferences", Some(Refusal::BadTheme));
+    }
+    if !LANGUAGE_OPTIONS.contains(&input.language.as_str()) {
+        return redirect_back(cx, "preferences", Some(Refusal::BadLanguage));
+    }
+    match app(cx)
+        .store
+        .set_preferences(&user.id, &input.theme, &input.language, &input.ui)
+        .await
+    {
+        Ok(()) => redirect_back(cx, "preferences", None),
+        Err(error) => redirect_back(cx, "preferences", Some(refusal_of(error))),
     }
 }
 
@@ -147,7 +171,7 @@ async fn settings(cx: &Cx) -> Result {
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(refusal) => {
-            let language = lang(cx);
+            let language = lang(cx).await;
             return view! {
                 cx =>
                 <main class="scaffold-note">
@@ -157,7 +181,7 @@ async fn settings(cx: &Cx) -> Result {
             };
         }
     };
-    let language = lang(cx);
+    let language = lang(cx).await;
     let store = app(cx).store;
     // Re-read the row so the quota bar never shows a stale number.
     let fresh = store
@@ -184,7 +208,7 @@ async fn settings(cx: &Cx) -> Result {
         <div class="settings-shell">
             <main class="settings-stage">
                 <h1 class="settings-title">(t(language, Key::Settings))</h1>
-                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "ui"]).await?)
+                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences"]).await?)
                 if let Some(token) = created {
                     <section class="panel">
                         <div class="panel-head">
@@ -216,12 +240,26 @@ async fn settings(cx: &Cx) -> Result {
                                 <div class="quota-fill" style=(format!("width: {}%", quota_percent(&fresh)))></div>
                             </div>
                         </div>
-                        <form class="field" method="post" action="/api/settings/ui">
+                        <form class="field" method="post" action="/api/settings/preferences">
                             <label class="field">
                                 <span class="field-label">(t(language, Key::UiLabel))</span>
                                 <select class="field-input" name="ui">
                                     <option value="instrument" selected=(fresh.ui == "instrument")>"Instrument"</option>
                                     <option value="ledger" selected=(fresh.ui == "ledger")>"Ledger"</option>
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span class="field-label">(t(language, Key::ThemeLabel))</span>
+                                <select class="field-input" name="theme">
+                                    <option value="light" selected=(fresh.theme == "light")>(t(language, Key::LightOption))</option>
+                                    <option value="dark" selected=(fresh.theme == "dark")>(t(language, Key::DarkOption))</option>
+                                </select>
+                            </label>
+                            <label class="field">
+                                <span class="field-label">(t(language, Key::LanguageLabel))</span>
+                                <select class="field-input" name="language">
+                                    <option value="en" selected=(fresh.language == "en")>"English"</option>
+                                    <option value="tr" selected=(fresh.language == "tr")>"Türkçe"</option>
                                 </select>
                             </label>
                             <div class="panel-foot">

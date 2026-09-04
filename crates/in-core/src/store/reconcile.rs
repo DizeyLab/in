@@ -203,11 +203,11 @@ struct TableMap {
 }
 
 /// Builds the explicit column map. Unchanged tables map every column to its
-/// old self; the user table carries the migration-specific expression for
-/// `ui`: a database old enough to predate the column starts on the schema's
-/// own default rather than on an empty string, which no writer would ever
-/// store and no reader would ever honour.
-fn build_maps(old_has_ui: bool) -> Vec<TableMap> {
+/// old self; the user table carries the migration-specific expressions for
+/// `ui`, `theme` and `language`: a database old enough to predate a column
+/// starts on the schema's own default rather than on an empty string, which
+/// no writer would ever store and no reader would ever honour.
+fn build_maps(old_has_ui: bool, old_has_theme: bool, old_has_language: bool) -> Vec<TableMap> {
     vec![
         TableMap {
             name: "user",
@@ -228,6 +228,16 @@ fn build_maps(old_has_ui: bool) -> Vec<TableMap> {
                     ("ui", "'ledger'".into())
                 });
                 columns.extend(old_cols(&["created_at", "last_seen_at"]));
+                columns.push(if old_has_theme {
+                    ("theme", "old.theme".into())
+                } else {
+                    ("theme", "'light'".into())
+                });
+                columns.push(if old_has_language {
+                    ("language", "old.language".into())
+                } else {
+                    ("language", "'en'".into())
+                });
                 columns
             },
         },
@@ -379,7 +389,9 @@ async fn copy_data(old_conn: &Connection, new_conn: &Connection, path: &str) -> 
         .map_err(|e| StoreError::Backend(e.to_string()))?;
 
     let old_has_ui = old_has_column(old_conn, "user", "ui").await?;
-    let maps = build_maps(old_has_ui);
+    let old_has_theme = old_has_column(old_conn, "user", "theme").await?;
+    let old_has_language = old_has_column(old_conn, "user", "language").await?;
+    let maps = build_maps(old_has_ui, old_has_theme, old_has_language);
     validate_maps(new_conn, &maps).await?;
 
     // Foreign keys stay off during the copy and are checked by `verify`
@@ -565,7 +577,7 @@ fn backup_name(path: &str) -> Result<String> {
 }
 
 /// A probe the copy plan asks: whether the old database already carries
-/// `column` on `table`. A column the second migration added is absent on a
+/// `column` on `table`. A column a later migration added is absent on a
 /// database old enough to predate it, and the map backfills the default
 /// instead of reading a column that is not there.
 async fn old_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {

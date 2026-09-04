@@ -1122,39 +1122,59 @@ async fn add_share_user_needs_the_owner() {
 }
 
 #[tokio::test]
-async fn a_provisioned_user_wears_the_ledger_ui() {
+async fn a_provisioned_user_wears_the_default_preferences() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
     assert_eq!(user.ui, "ledger");
+    assert_eq!(user.theme, "light");
+    assert_eq!(user.language, "en");
 }
 
 #[tokio::test]
-async fn the_ui_round_trips_and_refuses_what_is_not_offered() {
+async fn preferences_round_trip_and_refuse_what_is_not_offered() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
-    scratch.store.set_user_ui(&user.id, "instrument").await.unwrap();
+    scratch
+        .store
+        .set_preferences(&user.id, "dark", "tr", "instrument")
+        .await
+        .unwrap();
     let back = scratch.store.user(&user.id).await.unwrap().unwrap();
+    assert_eq!(back.theme, "dark");
+    assert_eq!(back.language, "tr");
     assert_eq!(back.ui, "instrument");
-    // A value no settings screen offers is refused, and the row keeps what
+    // A value no preferences form offers is refused, and the row keeps what
     // the last good write left — the same Corrupt the store answers a bad
     // enum it reads.
     assert!(matches!(
-        scratch.store.set_user_ui(&user.id, "dense").await,
+        scratch.store.set_preferences(&user.id, "dim", "tr", "instrument").await,
+        Err(StoreError::Corrupt(_))
+    ));
+    assert!(matches!(
+        scratch.store.set_preferences(&user.id, "dark", "xx", "instrument").await,
+        Err(StoreError::Corrupt(_))
+    ));
+    assert!(matches!(
+        scratch.store.set_preferences(&user.id, "dark", "tr", "dense").await,
         Err(StoreError::Corrupt(_))
     ));
     let kept = scratch.store.user(&user.id).await.unwrap().unwrap();
+    assert_eq!(kept.theme, "dark");
+    assert_eq!(kept.language, "tr");
     assert_eq!(kept.ui, "instrument");
     assert!(matches!(
-        scratch.store.set_user_ui("no-such-user", "ledger").await,
+        scratch.store.set_preferences("no-such-user", "light", "en", "ledger").await,
         Err(StoreError::NotFound)
     ));
 }
 
 #[tokio::test]
-async fn a_first_migration_database_gains_the_ui_column_on_open() {
-    // A database built from 0001 alone — the shape In was deployed with —
-    // carries no `ui` column. Opening it with the current code reconciles it
-    // onto the declared schema, and its people arrive wearing the default.
+async fn a_second_migration_database_gains_the_preference_columns_on_open() {
+    // A database built from 0001+0002 — the shape In ran with an interface
+    // picker and no theme or language — carries no `theme` or `language`
+    // column. Opening it with the current code reconciles it onto the
+    // declared schema: its interface choice is carried across, and the two
+    // new preferences arrive wearing their defaults.
     let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::new()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("in.db").to_string_lossy().into_owned();
@@ -1164,11 +1184,14 @@ async fn a_first_migration_database_gains_the_ui_column_on_open() {
         conn.execute_batch(include_str!("../migrations/0001_init.sql"))
             .await
             .unwrap();
+        conn.execute_batch(include_str!("../migrations/0002_ui.sql"))
+            .await
+            .unwrap();
         conn.execute(
             "INSERT INTO user (id, oidc_sub, email, display_name, admin, disabled, \
-             quota_bytes, used_bytes, created_at, last_seen_at) \
+             quota_bytes, used_bytes, ui, created_at, last_seen_at) \
              VALUES ('u-old', 'sub-old', 'old@example.com', 'Old', 1, 0, 100, 0, \
-             '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+             'instrument', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
             (),
         )
         .await
@@ -1177,11 +1200,18 @@ async fn a_first_migration_database_gains_the_ui_column_on_open() {
     let storage = dir.join("storage");
     let store = TursoStore::open(&path, Some(&storage)).await.unwrap();
     let user = store.user_by_oidc_sub("sub-old").await.unwrap().unwrap();
-    assert_eq!(user.ui, "ledger");
-    // And the carried row takes a new preference like any other.
-    store.set_user_ui(&user.id, "instrument").await.unwrap();
+    assert_eq!(user.ui, "instrument");
+    assert_eq!(user.theme, "light");
+    assert_eq!(user.language, "en");
+    // And the carried row takes new preferences like any other.
+    store
+        .set_preferences(&user.id, "dark", "tr", "ledger")
+        .await
+        .unwrap();
     let back = store.user(&user.id).await.unwrap().unwrap();
-    assert_eq!(back.ui, "instrument");
+    assert_eq!(back.theme, "dark");
+    assert_eq!(back.language, "tr");
+    assert_eq!(back.ui, "ledger");
     drop(store);
     let _ = std::fs::remove_dir_all(&dir);
 }

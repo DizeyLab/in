@@ -35,19 +35,26 @@ use crate::server::{Refusal, app, back_to, require_user};
 path_param!(token);
 
 /// A refusal surfaced as a banner: the `?refusal=<code>&on=<call>` pair the
-/// mutation redirects carry, rendered only when `on` names one of `calls`.
-/// Shared by the trash and settings pages, which own no banner of their own.
+/// mutation redirects carry, rendered only when `on` names one of `calls` —
+/// and the `?saved=<call>` chip a clean save carries, the way iz's
+/// `saved_or_refused` marks one. Shared by the trash and settings pages,
+/// which own no banner of their own.
 pub(crate) async fn refusal_banner(cx: &Cx, language: Lang, calls: &[&str]) -> Result {
     let query = uri(cx).query().unwrap_or("");
     let refusal = query_value(query, "refusal").and_then(|code| Refusal::from_code(&code));
     let on = query_value(query, "on").unwrap_or_default();
-    let mine = calls.iter().any(|call| *call == on);
+    let saved = query_value(query, "saved").unwrap_or_default();
+    let refused = calls.iter().any(|call| *call == on);
+    let kept = calls.iter().any(|call| *call == saved);
     view! {
         cx =>
-        if mine {
+        if refused {
             if let Some(refusal) = refusal {
                 <p class="field-error" role="alert">(refusal.message_in(language))</p>
             }
+        }
+        if kept {
+            <p class="field-note" role="status">(t(language, Key::Saved))</p>
         }
     }
 }
@@ -389,7 +396,7 @@ fn has_flag(query: &str, key: &str) -> bool {
 /// target, or a download the link may not open. One answer for all of them —
 /// a stranger learns nothing about which tokens exist.
 async fn dead_link(cx: &Cx) -> Result {
-    let language = lang(cx);
+    let language = lang(cx).await;
     view! {
         cx =>
         <main class="scaffold-note">
@@ -592,7 +599,7 @@ async fn file_card(
     link: &in_core::store::ShareLink,
     file: &in_core::store::File,
 ) -> topcoat::Result<topcoat::router::response::Response> {
-    let language = lang(cx);
+    let language = lang(cx).await;
     let preview = file.mime.starts_with("image/");
     let token_path = current_path(cx);
     view! {
@@ -626,7 +633,7 @@ async fn folder_card(
     at: &str,
     token: &str,
 ) -> topcoat::Result<topcoat::router::response::Response> {
-    let language = lang(cx);
+    let language = lang(cx).await;
     let here = store
         .folder(at)
         .await?;
@@ -639,11 +646,14 @@ async fn folder_card(
     let base = format!("/s/{token}");
     view! {
         cx =>
-        <main class="settings-shell">
-            (wordmark(cx).await?)
+        (wordmark(cx).await?)
+        <main class="settings-stage">
             <h1 class="settings-title">(here.name.clone())</h1>
             <section class="panel">
-                <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
+                <div class="panel-head">
+                    <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
+                    <span class="chip">(format!("{}", listing.folders.len()))</span>
+                </div>
                 <div class="panel-body">
                     if listing.folders.is_empty() {
                         <p class="field-note">(t(language, Key::EmptyFolder))</p>
@@ -654,7 +664,10 @@ async fn folder_card(
                 </div>
             </section>
             <section class="panel">
-                <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
+                <div class="panel-head">
+                    <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
+                    <span class="chip">(format!("{}", listing.files.len()))</span>
+                </div>
                 <div class="panel-body">
                     if listing.files.is_empty() {
                         <p class="field-note">(t(language, Key::EmptyFolder))</p>
@@ -691,7 +704,7 @@ async fn shared(cx: &Cx) -> Result {
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(refusal) => {
-            let language = lang(cx);
+            let language = lang(cx).await;
             return view! {
                 cx =>
                 <main class="scaffold-note">
@@ -701,7 +714,7 @@ async fn shared(cx: &Cx) -> Result {
             };
         }
     };
-    let language = lang(cx);
+    let language = lang(cx).await;
     let store = app(cx).store;
     let items = store
         .shares_for_user(&user.id)
@@ -719,16 +732,21 @@ async fn shared(cx: &Cx) -> Result {
             owners.insert(item.owner_id.clone(), name);
         }
     }
+    let folder_count = items.iter().filter(|item| item.kind == ShareKind::Folder).count();
+    let file_count = items.iter().filter(|item| item.kind == ShareKind::File).count();
     view! {
         cx =>
-        <main class="settings-shell">
-            (topbar(cx, NavPage::Shared, &user, language).await?)
+        (topbar(cx, NavPage::Shared, &user, language).await?)
+        <main class="settings-stage">
             <h1 class="settings-title">(t(language, Key::SharedWithMe))</h1>
             if items.is_empty() {
                 <p class="field-note">(t(language, Key::NoSharedItems))</p>
             }
             <section class="panel">
-                <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
+                <div class="panel-head">
+                    <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
+                    <span class="chip">(format!("{folder_count}"))</span>
+                </div>
                 <div class="panel-body">
                     for item in items.iter().filter(|item| item.kind == ShareKind::Folder) {
                         <p>
@@ -740,7 +758,10 @@ async fn shared(cx: &Cx) -> Result {
                 </div>
             </section>
             <section class="panel">
-                <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
+                <div class="panel-head">
+                    <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
+                    <span class="chip">(format!("{file_count}"))</span>
+                </div>
                 <div class="panel-body">
                     for item in items.iter().filter(|item| item.kind == ShareKind::File) {
                         <p>
