@@ -2266,3 +2266,25 @@ async fn settings_quota_button_wears_the_quiet_class() {
     let form_end = body[quota_at..].find("</form>").expect("quota form never closes");
     assert!(button_at < form_end, "quiet button escapes the quota form: {body}");
 }
+
+#[tokio::test]
+async fn settings_lives_in_the_user_menu_not_the_topbar() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-menu", "menu@in.test", "Menu").await;
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+
+    // The page nav carries no settings link…
+    let nav_start = body.find("topbar-nav-links").expect("no nav");
+    let nav_end = body[nav_start..].find("</nav>").expect("nav never closes");
+    let nav = &body[nav_start..nav_start + nav_end];
+    assert!(!nav.contains("/settings"), "settings leaked into the nav: {nav}");
+
+    // …the user menu carries it, plus the profile link out to im.
+    let menu_start = body.find("user-menu-panel").expect("no user menu");
+    let menu = &body[menu_start..];
+    assert!(menu.contains("href=\"/settings\""), "{menu}");
+    let issuer = format!("href=\"{}/\"", app.config.oidc.issuer);
+    assert!(menu.contains(&issuer), "no profile link to the issuer: {menu}");
+}

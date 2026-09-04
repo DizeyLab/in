@@ -21,7 +21,7 @@ use topcoat::{
 use in_core::store::User;
 
 use crate::i18n::{Key, Lang, t};
-use crate::server::current_user;
+use crate::server::{app, current_user};
 
 /// The In monogram again, as the tab icon: the same drawing as `mark`,
 /// inlined because it must carry its own colours — a data URI has no page to
@@ -124,6 +124,7 @@ pub async fn user_menu(cx: &Cx, user: &User, lang: Lang) -> Result {
                 if user.admin {
                 <div class="user-menu-role">(t(lang, Key::AdminBadge))</div>
                 }
+                <a class="user-menu-item" href=(format!("{}/", app(cx).config.oidc.issuer)) data-hard="">(t(lang, Key::Profile))</a>
                 <a class="user-menu-item" href="/settings">(t(lang, Key::NavSettings))</a>
                 <a class="user-menu-item" href="/auth/logout" data-hard="">(t(lang, Key::SignOut))</a>
             </div>
@@ -142,13 +143,10 @@ pub enum NavPage {
 }
 
 impl NavPage {
-    const ALL: [Self; 5] = [
-        Self::Drive,
-        Self::Shared,
-        Self::Trash,
-        Self::Search,
-        Self::Settings,
-    ];
+    /// Settings is deliberately absent: it lives in the user menu, not the
+    /// page nav — the variant stays so the settings page can still name
+    /// itself active without a link to mark.
+    const ALL: [Self; 4] = [Self::Drive, Self::Shared, Self::Trash, Self::Search];
 
     fn href(self) -> &'static str {
         match self {
