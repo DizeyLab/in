@@ -743,21 +743,13 @@ a {
   padding: 0;
   border-top: none;
 }
-// The filterbar's new-folder trigger wears the quiet button skin; the
-// disclosure marker stays hidden, the '+' is literal text. The open panel
-// is the shared `.confirm` modal — no bar-local rules, so opening it never
-// reflows the bar the way the old disclosure box did.
-.new-folder-open {
+// The drive's + menu trigger is a details summary wearing the quiet button
+// skin; the disclosure marker stays hidden, the '+' is literal text. The
+// open panel is the house `.user-menu-panel` — no bar-local rules, no script.
+.drive-add-trigger {
   list-style: none;
 
   &::marker, &::-webkit-details-marker { display: none; }
-}
-
-.new-folder-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 8px;
 }
 
 .segmented {

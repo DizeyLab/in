@@ -35,7 +35,7 @@ async fn avatar(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     if target != user.id {
         return Ok(not_found());
     }
-    let Some((bytes, mime)) = in_client::photo_for(cx, target).await else {
+    let Some((bytes, mime)) = in_client::photo_for(cx, &user.oidc_sub).await else {
         return Ok(not_found());
     };
 

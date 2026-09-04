@@ -60,6 +60,7 @@ const LIMIT: u32 = 50;
 struct DriveQuery {
     folder: Option<String>,
     q: Option<String>,
+    edit: Option<String>,
 }
 
 /// The folder the query names, if it names one this account may open: owned,
@@ -149,7 +150,7 @@ fn human_size(bytes: u64) -> String {
     }
 }
 fn page_refusal(cx: &Cx) -> Option<Refusal> {
-    ["rename", "move", "delete", "upload"]
+    ["create", "rename", "move", "delete", "upload"]
         .iter()
         .find_map(|call| refusal_of(cx, call))
 }
@@ -204,10 +205,9 @@ async fn drive(cx: &Cx) -> Result {
     };
     let destinations = folder_tree(store.as_ref(), &user.id).await;
     let refusal = page_refusal(cx);
-    // The create-folder answer belongs to the modal, not the page line: a
-    // refused create reopens it with the sentence inside, iz's confirm idiom.
-    let create_refusal = refusal_of(cx, "create");
-    let create_open = create_refusal.is_some();
+    // Which folder row (if any) renders as its rename form: iz's `?edit=`
+    // idiom — a server-side row swap, no client state to hold.
+    let edit_id = params.as_ref().and_then(|query| query.edit.clone());
     // A link minted from this surface redirects back here with the plaintext
     // token on `?created=` — rendered once, like the settings page does.
     let created = created_token(uri(cx).query().unwrap_or(""));
@@ -221,6 +221,16 @@ async fn drive(cx: &Cx) -> Result {
         .as_ref()
         .map(|folder| folder.name.clone())
         .unwrap_or_else(|| t(language, Key::Drive).to_string());
+    // The folder view without `?edit=`: the rename form's cancel target and
+    // the base the edit links extend.
+    let here = if current_id.is_empty() {
+        "/drive".to_string()
+    } else {
+        format!("/drive?folder={current_id}")
+    };
+    // `here` carries no query at the root, one under a folder — the edit
+    // links extend it with the matching separator.
+    let edit_sep = if current_id.is_empty() { "?" } else { "&" };
 
     view! {
         cx =>
@@ -251,25 +261,14 @@ async fn drive(cx: &Cx) -> Result {
                         aria-label=(t(language, Key::SearchPlaceholder))
                     >
                 </form>
-                <details class="confirm-details" open=(create_open)>
-                    <summary class="quiet new-folder-open">"+ "(t(language, Key::NewFolder))</summary>
-                    <div class="confirm">
-                        <div class="confirm-title">(t(language, Key::NewFolder))</div>
-                        <form class="new-folder-form" method="post" action="/api/folder/create">
+                <details class="user-menu drive-add">
+                    <summary class="quiet drive-add-trigger" aria-label=(t(language, Key::NewFolder))>"+ "</summary>
+                    <div class="user-menu-panel">
+                        <form class="user-menu-item-form" method="post" action="/api/folder/create">
                             <input type="hidden" name="parent_id" value=(current_id.clone())>
-                            <label class="field">
-                                <span class="field-label">(t(language, Key::FolderName))</span>
-                                <input class="field-input" type="text" name="name" maxlength="255"
-                                    required="" aria-label=(t(language, Key::FolderName))>
-                            </label>
-                            <div class="confirm-row">
-                                <div class="spacer"></div>
-                                <button class="primary" type="submit">(t(language, Key::CreateFolder))</button>
-                            </div>
-                            if let Some(refusal) = create_refusal {
-                                <p class="field-error" role="alert">(refusal.message_in(language))</p>
-                            }
+                            <button class="user-menu-item" type="submit">(t(language, Key::NewFolder))</button>
                         </form>
+                        <label class="user-menu-item" for="drive-upload-input">(t(language, Key::UploadFiles))</label>
                     </div>
                 </details>
             </div>
@@ -327,14 +326,20 @@ async fn drive(cx: &Cx) -> Result {
                     }
                     for folder in listing.folders.iter() {
                         <div class="dep-row">
+                            if edit_id.as_deref() == Some(folder.id.as_str()) {
+                                <form class="pop-row-form" method="post" action="/api/folder/rename">
+                                    <input type="hidden" name="id" value=(folder.id.clone())>
+                                    <input class="field-input" type="text" name="name" maxlength="255"
+                                        value=(folder.name.clone()) required="" data-edit-focus=""
+                                        aria-label=(t(language, Key::RenameFolder))>
+                                    <button class="quiet" type="submit">(t(language, Key::Rename))</button>
+                                    <a class="quiet" href=(here.clone())>(t(language, Key::Cancel))</a>
+                                </form>
+                            } else {
                             <a class="dep-link" href=(format!("/drive?folder={}", folder.id))>(folder.name.clone())</a>
                             <div class="spacer"></div>
-                            <form class="pop-row-form" method="post" action="/api/folder/rename">
-                                <input type="hidden" name="id" value=(folder.id.clone())>
-                                <input class="field-input" type="text" name="name" maxlength="255"
-                                    value=(folder.name.clone()) required="" aria-label=(t(language, Key::RenameFolder))>
-                                <button class="quiet" type="submit">(t(language, Key::Rename))</button>
-                            </form>
+                            <a class="quiet" href=(format!("{here}{edit_sep}edit={}", folder.id))
+                                aria-label=(t(language, Key::RenameFolder))>(t(language, Key::Rename))</a>
                             <form class="pop-row-form" method="post" action="/api/folder/move">
                                 <input type="hidden" name="id" value=(folder.id.clone())>
                                 <select class="field-input" name="parent_id" aria-label=(t(language, Key::MoveFolder))>
@@ -351,6 +356,7 @@ async fn drive(cx: &Cx) -> Result {
                                 <input type="hidden" name="id" value=(folder.id.clone())>
                                 <button class="quiet" type="submit">(t(language, Key::Delete))</button>
                             </form>
+                            }
                         </div>
                     }
                 </div>
@@ -366,7 +372,7 @@ async fn drive(cx: &Cx) -> Result {
                         <input type="hidden" name="folder_id" value=(current_id.clone())>
                         <label class="file-upload-box">
                             <span class="file-upload-name">(t(language, Key::ChooseFiles))</span>
-                            <input class="file-upload-input" type="file" name="file" multiple="">
+                            <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
                         </label>
                         <span class="field-note">(t(language, Key::DropFilesHere))</span>
                     </form>
@@ -449,6 +455,11 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 /// alone — two uploaders racing the same bytes would double-insert, and the
 /// progress the soft-nav draws knows nothing of chunks. Without script the
 /// form posts plainly and the 303 lands back on the folder.
+///
+/// The same block carries the `?edit=` row's focus: the rename input the
+/// server renders open gets focused with its name selected on arrival, so a
+/// quick-created folder is ready to name. Guarded lookups — most visits
+/// render no such input.
 async fn upload_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
@@ -541,6 +552,16 @@ async fn upload_script(cx: &Cx) -> Result {
                     else { window.location.href = landing; } \
                 })(); \
             }); \
+            (function () { \
+                if (window.__inEditFocus) { return; } \
+                window.__inEditFocus = true; \
+                function focusIt() { \
+                    var input = document.querySelector('input[data-edit-focus]'); \
+                    if (input && input.focus && input.select) { input.focus(); input.select(); } \
+                } \
+                focusIt(); \
+                document.addEventListener('in:wire', focusIt); \
+            })(); \
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
@@ -549,10 +570,18 @@ async fn upload_script(cx: &Cx) -> Result {
 struct CreateFolderForm {
     #[serde(default)]
     parent_id: String,
+    // Absent on the + menu's quick form, which posts no name at all: the
+    // empty read below takes the generic-name path instead of failing the
+    // post.
+    #[serde(default)]
     name: String,
 }
 
 /// `POST /api/folder/create`: one folder under the open one, or the root.
+///
+/// A form with no name is the + menu's quick create: a generic unique name
+/// (`New folder`, `New folder 2`, …) and a 303 straight into that row's
+/// rename form. A typed name keeps the old answer — back to the page.
 #[route(POST "/api/folder/create")]
 async fn create_folder(cx: &Cx, Form(input): Form<CreateFolderForm>) -> Redirect {
     let user = match require_user(cx).await {
@@ -571,10 +600,49 @@ async fn create_folder(cx: &Cx, Form(input): Form<CreateFolderForm>) -> Redirect
             _ => return redirect(cx, Some(Refusal::NotFound)),
         }
     }
+    if input.name.trim().is_empty() {
+        return quick_folder(cx, &store, &user.id, parent).await;
+    }
     match store.create_folder(&user.id, parent, &input.name).await {
         Ok(_) => redirect(cx, None),
         Err(error) => redirect(cx, Some(store_refusal(error))),
     }
+}
+
+/// The + menu's quick create: the first free generic name, then a 303 to the
+/// folder view with that row in its rename form. The loop is the
+/// collision-suffixing (`New folder 2`, …), bounded so a pathological tree
+/// answers unavailable instead of spinning.
+async fn quick_folder(
+    cx: &Cx,
+    store: &std::sync::Arc<dyn Store>,
+    owner_id: &str,
+    parent: Option<&str>,
+) -> Redirect {
+    let base = t(lang(cx).await, Key::NewFolder).to_string();
+    for attempt in 0..64u32 {
+        let name = if attempt == 0 {
+            base.clone()
+        } else {
+            format!("{} {}", base, attempt + 1)
+        };
+        match store.create_folder(owner_id, parent, &name).await {
+            Ok(folder) => {
+                let location = match parent {
+                    Some(parent) => format!("/drive?folder={parent}&edit={}", folder.id),
+                    None => format!("/drive?edit={}", folder.id),
+                };
+                return Ok((
+                    StatusCode::SEE_OTHER,
+                    [(header::LOCATION, location)],
+                    Json(None),
+                ));
+            }
+            Err(StoreError::NameTaken) => {}
+            Err(error) => return redirect(cx, Some(store_refusal(error))),
+        }
+    }
+    redirect(cx, Some(Refusal::Unavailable))
 }
 
 #[derive(serde::Deserialize)]

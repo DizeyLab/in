@@ -2488,7 +2488,7 @@ async fn avatar_serves_own_photo_with_etag() {
     let app = TestApp::build().await;
     let cookie = app.sign_in("sub-face", "face@in.test", "Face").await;
     let me = owner_of(&app, "sub-face").await;
-    app.fake.set_photo(&me, tiny_png(), "image/png");
+    app.fake.set_photo("sub-face", tiny_png(), "image/png");
 
     let face = app.get(&format!("/avatar/{me}"), Some(&cookie)).await;
     assert_eq!(face.status, StatusCode::OK);
@@ -2535,7 +2535,7 @@ async fn avatar_for_someone_else_is_not_found() {
     let alice = app.sign_in("sub-alice-face", "alice@in.test", "Alice").await;
     let bob = app.sign_in("sub-bob-face", "bob@in.test", "Bob").await;
     let bob_id = owner_of(&app, "sub-bob-face").await;
-    app.fake.set_photo(&bob_id, tiny_png(), "image/png");
+    app.fake.set_photo("sub-bob-face", tiny_png(), "image/png");
 
     // Bob's face through Alice's session: the same 404 as no photo at all,
     // never a hint that Bob has one.
@@ -2563,54 +2563,143 @@ async fn avatar_without_session_is_unauthorized() {
 }
 
 #[tokio::test]
-async fn drive_new_folder_rides_a_confirm_modal() {
+async fn avatar_resolves_local_id_to_oidc_sub() {
+    // im keys photos by the OIDC sub, while `/avatar/{id}` carries the
+    // local row id — the two are never equal (ULID vs `sub-*`), so a photo
+    // map keyed by the sub 404'd before the handler translated the id.
     let app = TestApp::build().await;
-    let cookie = app.sign_in("sub-newfolder", "newfolder@in.test", "NewFolder").await;
+    let cookie = app.sign_in("sub-looks", "looks@in.test", "Looks").await;
+    let me = owner_of(&app, "sub-looks").await;
+    assert_ne!(me, "sub-looks", "local id collides with the sub");
+    app.fake.set_photo("sub-looks", tiny_png(), "image/png");
+
+    let face = app.get(&format!("/avatar/{me}"), Some(&cookie)).await;
+    assert_eq!(face.status, StatusCode::OK);
+    assert_eq!(face.bytes, tiny_png());
+}
+
+#[tokio::test]
+async fn drive_add_menu_has_two_items() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-addmenu", "addmenu@in.test", "AddMenu").await;
 
     let page = app.get("/drive", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK);
     let body = page.text();
 
-    // The filterbar carries the confirm modal, not the old disclosure box.
-    assert!(body.contains("confirm-details"), "no confirm modal on the drive");
-    assert!(!body.contains("tag-new"), "old disclosure box still rendered");
-    let details_at = body.find("confirm-details").expect("no confirm modal");
-    let details_end = body[details_at..].find("</details>").expect("modal never closes");
+    // The filterbar carries one + menu, not the old confirm modal.
+    assert!(!body.contains("confirm-details"), "confirm modal still rendered");
+    assert!(!body.contains("new-folder-form"), "modal form still rendered");
+    let details_at = body.find("drive-add").expect("no + menu on the drive");
+    let details_end = body[details_at..].find("</details>").expect("menu never closes");
     let details = &body[details_at..details_at + details_end];
+    // New folder: a button-only quick form posting just the parent.
     assert!(
         details.contains("action=\"/api/folder/create\""),
-        "create form escapes the modal: {details}"
+        "quick form escapes the menu: {details}"
     );
     assert!(details.contains("name=\"parent_id\""), "no parent field: {details}");
-    assert!(details.contains("name=\"name\""), "no name field: {details}");
-    assert!(details.contains("Create folder"), "no submit: {details}");
+    assert!(!details.contains("name=\"name\""), "quick form asks for a name: {details}");
+    assert!(details.contains("New folder"), "no New folder item: {details}");
+    // Upload files: a label for the panel's own picker, no script needed.
+    assert!(
+        details.contains("for=\"drive-upload-input\""),
+        "no upload label in the menu: {details}"
+    );
+    assert!(details.contains("Upload files"), "no Upload files item: {details}");
+    assert!(
+        body.contains("id=\"drive-upload-input\""),
+        "upload input carries no id for the label"
+    );
+}
 
-    // Creating through the POST still lands.
+#[tokio::test]
+async fn drive_quick_create_names_and_edits() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-quick", "quick@in.test", "Quick").await;
+    let me = owner_of(&app, "sub-quick").await;
+
+    // The + menu posts no name: generic name, 303 into that row's edit mode.
+    let answer = app.post("/api/folder/create", Some(&cookie), &[("parent_id", "")]).await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER);
+    let location = answer.location.clone().expect("quick create redirects nowhere");
+    assert!(location.starts_with("/drive?"), "quick create leaves the drive: {location}");
+    assert!(location.contains("edit="), "quick create skips edit mode: {location}");
+    let edit = location
+        .split("edit=")
+        .nth(1)
+        .expect("no edit id")
+        .split('&')
+        .next()
+        .unwrap();
+    assert_eq!(folder_id(&app, &me, None, "New folder").await, edit);
+
+    // A second quick create collision-suffixes instead of colliding.
+    let answer = app.post("/api/folder/create", Some(&cookie), &[("parent_id", "")]).await;
+    let location = answer.location.clone().expect("second quick create redirects nowhere");
+    let edit = location
+        .split("edit=")
+        .nth(1)
+        .expect("no edit id")
+        .split('&')
+        .next()
+        .unwrap();
+    assert_eq!(folder_id(&app, &me, None, "New folder 2").await, edit);
+
+    // A typed name keeps the old answer: back to the page, no edit mode.
     let answer = app
-        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "dup")])
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "typed")])
         .await;
-    assert!(answer.accepted(), "clean create refused: {:?}", answer.location);
+    assert!(answer.accepted(), "typed create refused: {:?}", answer.location);
+    assert!(
+        answer.location.as_deref().is_some_and(|location| !location.contains("edit=")),
+        "typed create enters edit mode: {:?}",
+        answer.location
+    );
+    folder_id(&app, &me, None, "typed").await;
 
-    // A refused create reopens the modal with the sentence inside — and only there.
+    // A refused typed create surfaces on the page line, once.
     let answer = app
-        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "dup")])
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "typed")])
         .await;
     assert_eq!(answer.status, StatusCode::SEE_OTHER);
-    assert!(
-        answer.body.contains("NameTaken"),
-        "dupe was not refused: {}",
-        answer.body
-    );
+    assert!(answer.body.contains("NameTaken"), "dupe was not refused: {}", answer.body);
     let page = app.get("/drive?refusal=name-taken&on=create", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK);
-    let body = page.text();
-    assert!(
-        body.contains("<details class=\"confirm-details\" open"),
-        "refused create left the modal shut"
-    );
     assert_eq!(
-        body.matches("<p class=\"field-error\"").count(),
+        page.text().matches("<p class=\"field-error\"").count(),
         1,
         "create refusal shows twice — or nowhere"
     );
+}
+
+#[tokio::test]
+async fn drive_edit_row_renders_the_rename_form() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-editrow", "editrow@in.test", "EditRow").await;
+    let me = owner_of(&app, "sub-editrow").await;
+
+    let answer = app
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "plans")])
+        .await;
+    assert!(answer.accepted(), "setup create refused: {:?}", answer.location);
+    let id = folder_id(&app, &me, None, "plans").await;
+
+    // Plain view: the row is a link with an edit entry, no rename input.
+    let page = app.get("/drive", Some(&cookie)).await;
+    let body = page.text();
+    assert!(body.contains(&format!("/drive?folder={id}")), "row links nowhere");
+    assert!(body.contains(&format!("/drive?edit={id}")), "row has no edit entry");
+
+    // Edit view: that row — and only that row — is the rename form, pre-filled.
+    let page = app.get(&format!("/drive?edit={id}"), Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let body = page.text();
+    assert!(
+        body.contains("action=\"/api/folder/rename\""),
+        "edit view renders no rename form"
+    );
+    assert!(body.contains("data-edit-focus"), "rename input carries no focus hook");
+    assert!(body.contains("value=\"plans\""), "rename input is not pre-filled");
+    assert!(body.contains("__inEditFocus"), "no edit focus script");
 }
