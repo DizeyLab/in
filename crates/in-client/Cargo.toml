@@ -47,3 +47,7 @@ http = "1.5"
 # Tests generate their own RSA keys, and rsa 0.9's RNG is the rand_core 0.6
 # line.
 rand_core06 = { package = "rand_core", version = "0.6.4", features = ["getrandom"] }
+
+[[example]]
+name = "mint"
+required-features = ["test-seam"]
