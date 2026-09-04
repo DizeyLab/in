@@ -852,16 +852,15 @@ const STYLE: Asset = asset!("assets/main.css");
 async fn root_layout(cx: &Cx, slot: Result) -> Result {
     // The per-user chrome knobs, read off the request's own user: the theme
     // into `data-theme`, the interface into `data-ui`, the language into
-    // `<html lang>`. Signed-out (or unreadable) renders light and ledger,
-    // and the language falls back to `Accept-Language` — both are only set
-    // when the request's own user has one to read.
+    // `<html lang>`. Signed-out (or unreadable) wears the provision defaults —
+    // dark and instrument — and the language falls back to `Accept-Language`.
     let me = match current_user(cx).await {
         Ok(user) => user.as_ref(),
         Err(_) => None,
     };
     let asking = me.is_some();
-    let dark = me.as_ref().is_some_and(|user| user.theme == "dark");
-    let ui = me.as_ref().map_or("ledger", |user| user.ui.as_str());
+    let dark = me.as_ref().map_or(true, |user| user.theme == "dark");
+    let ui = me.as_ref().map_or("instrument", |user| user.ui.as_str());
     let lang = crate::i18n::lang(cx).await;
 
     let content = match slot {

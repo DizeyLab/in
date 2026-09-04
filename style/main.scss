@@ -3412,13 +3412,14 @@ input[type="radio"] {
   }
 
   // The elastic one. `max-width: 0` with `width: 100%` is what lets a table
-  // cell be told "take the slack, and clip rather than overflow".
+  // cell be told "take the slack". Unlike iz, in never clips an address —
+  // the Everyone table administers real accounts, and an address that reads
+  // "ahmetkaangum…" cannot be told apart from the next one. Wrap instead.
   .member-col-address {
     width: 100%;
     max-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .member-row {
@@ -3515,6 +3516,21 @@ input[type="radio"] {
 // One control height, matching `.primary`, for this row's fields, so the
 // role select and the "Add member" button share one height and baseline.
 .member-invite .field-input { height: var(--control-h); }
+
+// The admin quota cell: one compact row — a control-height byte field beside
+// its quiet Set button — so the input and the button share a baseline and
+// the column stays narrow enough for the address column to keep its slack.
+// (iz's member-table rules above are untouched; this only sizes this table's
+// quota row.)
+.member-quota {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  .field-input { height: var(--control-h); width: 140px; flex: none; }
+}
+
+.member-col-role .pop-row-form + .pop-row-form { margin-top: 8px; }
 
 // The link exists once. It is shown once, and said to be shown once.
 .member-link {

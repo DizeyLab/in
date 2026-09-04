@@ -202,13 +202,15 @@ async fn drive(cx: &Cx) -> Result {
         (topbar(cx, NavPage::Drive, &user, language).await?)
         <main class="settings-stage">
             <div class="filterbar">
-                <nav class="detail-crumbs" aria-label=(current_name.clone())>
-                    <a class="detail-crumb" href="/drive">(t(language, Key::Drive))</a>
-                    for crumb in crumbs.iter() {
-                        <span class="detail-crumb-sep">"/"</span>
-                        <a class="detail-crumb" href=(format!("/drive?folder={}", crumb.id))>(crumb.name.clone())</a>
-                    }
-                </nav>
+                if current.is_some() {
+                    <nav class="detail-crumbs" aria-label=(current_name.clone())>
+                        <a class="detail-crumb" href="/drive">(t(language, Key::Drive))</a>
+                        for crumb in crumbs.iter() {
+                            <span class="detail-crumb-sep">"/"</span>
+                            <a class="detail-crumb" href=(format!("/drive?folder={}", crumb.id))>(crumb.name.clone())</a>
+                        }
+                    </nav>
+                }
                 <div class="spacer"></div>
                 <form class="tag-form" method="post" action="/api/folder/create">
                     <input type="hidden" name="parent_id" value=(current_id.clone())>

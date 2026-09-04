@@ -886,8 +886,8 @@ impl Store for TursoStore {
         let now = now_text()?;
         tx.execute(
             "INSERT INTO user (id, oidc_sub, email, display_name, admin, disabled, \
-             quota_bytes, used_bytes, created_at, last_seen_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 0, ?7, ?7)",
+             quota_bytes, used_bytes, ui, theme, language, created_at, last_seen_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 0, 'instrument', 'dark', 'en', ?7, ?7)",
             params![
                 id.clone(),
                 sub,

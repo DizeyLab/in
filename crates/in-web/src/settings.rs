@@ -322,20 +322,20 @@ async fn settings(cx: &Cx) -> Result {
                                                 <td class="member-col-address member-address">(listed.email.clone())</td>
                                                 <td class="member-col-account member-account">(format!("{} {} {}", human_bytes(listed.used_bytes), t(language, Key::QuotaOf), human_bytes(listed.quota_bytes)))</td>
                                                 <td class="member-col-role">
-                                                    <form class="pop-row-form" method="post" action="/api/settings/quota">
+                                                    <form class="pop-row-form member-quota" method="post" action="/api/settings/quota">
                                                         <input type="hidden" name="user_id" value=(listed.id.clone())>
                                                         <input class="field-input" type="number" name="quota_bytes" min="0" value=(listed.quota_bytes.to_string()) aria-label=(t(language, Key::QuotaBytes))>
-                                                        <button type="submit">(t(language, Key::SetQuota))</button>
+                                                        <button class="quiet" type="submit">(t(language, Key::SetQuota))</button>
                                                     </form>
                                                     if listed.id != fresh.id {
                                                         <form class="pop-row-form" method="post" action="/api/settings/disable">
                                                             <input type="hidden" name="user_id" value=(listed.id.clone())>
                                                             if listed.disabled {
                                                                 <input type="hidden" name="disabled" value="0">
-                                                                <button type="submit">(t(language, Key::EnableUser))</button>
+                                                                <button class="quiet" type="submit">(t(language, Key::EnableUser))</button>
                                                             } else {
                                                                 <input type="hidden" name="disabled" value="1">
-                                                                <button class="quiet-danger" type="submit">(t(language, Key::DisableUser))</button>
+                                                                <button class="quiet quiet-danger" type="submit">(t(language, Key::DisableUser))</button>
                                                             }
                                                         </form>
                                                     }

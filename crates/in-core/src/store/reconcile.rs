@@ -225,13 +225,13 @@ fn build_maps(old_has_ui: bool, old_has_theme: bool, old_has_language: bool) -> 
                 columns.push(if old_has_ui {
                     ("ui", "old.ui".into())
                 } else {
-                    ("ui", "'ledger'".into())
+                    ("ui", "'instrument'".into())
                 });
                 columns.extend(old_cols(&["created_at", "last_seen_at"]));
                 columns.push(if old_has_theme {
                     ("theme", "old.theme".into())
                 } else {
-                    ("theme", "'light'".into())
+                    ("theme", "'dark'".into())
                 });
                 columns.push(if old_has_language {
                     ("language", "old.language".into())

@@ -1905,24 +1905,25 @@ async fn settings_preferences_round_trip() {
     let cookie = app.sign_in("sub-prefs", "prefs@in.test", "Prefs").await;
     let me = owner_of(&app, "sub-prefs").await;
 
-    // Light, English and ledger are the defaults, worn on `<html>` from the
-    // first render — and light means no `data-theme` at all.
+    // Instrument, dark and English are the defaults, worn on `<html>` from
+    // the first render.
     let user = app.store.user(&me).await.unwrap().unwrap();
-    assert_eq!(user.ui, "ledger");
-    assert_eq!(user.theme, "light");
+    assert_eq!(user.ui, "instrument");
+    assert_eq!(user.theme, "dark");
     assert_eq!(user.language, "en");
     let page = app.get("/settings", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
-    assert!(page.text().contains("data-ui=\"ledger\""), "{}", page.text());
-    assert!(!page.text().contains("data-theme="), "{}", page.text());
+    assert!(page.text().contains("data-ui=\"instrument\""), "{}", page.text());
+    assert!(page.text().contains("data-theme=\"dark\""), "{}", page.text());
     assert!(page.text().contains("lang=\"en\""), "{}", page.text());
 
-    // Saving all three writes the row and re-renders the chrome.
+    // Saving all three writes the row and re-renders the chrome — away from
+    // the defaults, so the render proves the write.
     let answer = app
         .post(
             "/api/settings/preferences",
             Some(&cookie),
-            &[("ui", "instrument"), ("theme", "dark"), ("language", "tr")],
+            &[("ui", "ledger"), ("theme", "light"), ("language", "tr")],
         )
         .await;
     assert!(
@@ -1931,8 +1932,8 @@ async fn settings_preferences_round_trip() {
         answer.location
     );
     let user = app.store.user(&me).await.unwrap().unwrap();
-    assert_eq!(user.ui, "instrument");
-    assert_eq!(user.theme, "dark");
+    assert_eq!(user.ui, "ledger");
+    assert_eq!(user.theme, "light");
     assert_eq!(user.language, "tr");
 
     // The redirect carries the saved chip, rendered in the new language.
@@ -1945,26 +1946,23 @@ async fn settings_preferences_round_trip() {
     let page = app.get("/settings", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(
-        page.text().contains("data-ui=\"instrument\""),
+        page.text().contains("data-ui=\"ledger\""),
         "{}",
         page.text()
     );
-    assert!(
-        page.text().contains("data-theme=\"dark\""),
-        "{}",
-        page.text()
-    );
+    // Light means no `data-theme` at all.
+    assert!(!page.text().contains("data-theme="), "{}", page.text());
     assert!(page.text().contains("lang=\"tr\""), "{}", page.text());
     for name in ["name=\"ui\"", "name=\"theme\"", "name=\"language\""] {
         assert!(page.text().contains(name), "{}", page.text());
     }
 
-    // And back again.
+    // And back again, to the defaults.
     let answer = app
         .post(
             "/api/settings/preferences",
             Some(&cookie),
-            &[("ui", "ledger"), ("theme", "light"), ("language", "en")],
+            &[("ui", "instrument"), ("theme", "dark"), ("language", "en")],
         )
         .await;
     assert!(
@@ -1973,8 +1971,8 @@ async fn settings_preferences_round_trip() {
         answer.location
     );
     let user = app.store.user(&me).await.unwrap().unwrap();
-    assert_eq!(user.ui, "ledger");
-    assert_eq!(user.theme, "light");
+    assert_eq!(user.ui, "instrument");
+    assert_eq!(user.theme, "dark");
     assert_eq!(user.language, "en");
 }
 
@@ -2019,11 +2017,9 @@ async fn settings_preferences_rejects_unknown_values() {
         answer.location
     );
     let user = app.store.user(&me).await.unwrap().unwrap();
-    assert_eq!(user.ui, "ledger");
-    assert_eq!(user.theme, "light");
+    assert_eq!(user.ui, "instrument");
+    assert_eq!(user.theme, "dark");
     assert_eq!(user.language, "en");
-
-    // The carried refusal renders on the page, in the reader's language.
     let page = app
         .get(answer.location.as_deref().unwrap(), Some(&cookie))
         .await;
@@ -2087,14 +2083,13 @@ impl TestApp {
 async fn signed_out_settings_falls_back_to_accept_language() {
     let app = TestApp::build().await;
 
-    // No header: English chrome on a light ledger shell.
+    // No header: English chrome on a dark instrument shell.
     let page = app.get("/settings", None).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(page.text().contains("lang=\"en\""), "{}", page.text());
-    assert!(!page.text().contains("data-theme="), "{}", page.text());
-    assert!(page.text().contains("data-ui=\"ledger\""), "{}", page.text());
+    assert!(page.text().contains("data-theme=\"dark\""), "{}", page.text());
+    assert!(page.text().contains("data-ui=\"instrument\""), "{}", page.text());
     assert!(page.text().contains("Sign in first."), "{}", page.text());
-
     // A Turkish browser is answered in Turkish.
     let page = app
         .get_with_lang("/settings", None, "tr-TR,tr;q=0.9,en;q=0.8")
@@ -2217,4 +2212,57 @@ async fn public_link_dead_card_survives_the_reskin() {
         "{}",
         page.text()
     );
+}
+
+#[tokio::test]
+async fn drive_root_hides_crumbs_while_a_subfolder_shows_them() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-crumbs", "crumbs@in.test", "Crumbs").await;
+    let owner = owner_of(&app, "sub-crumbs").await;
+
+    // At the root the crumbs nav is pointless chrome: no self-link.
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(!page.text().contains("detail-crumbs"), "{}", page.text());
+    // The filterbar itself stays, holding just the create form.
+    assert!(page.text().contains("class=\"filterbar\""), "{}", page.text());
+    assert!(
+        page.text().contains("action=\"/api/folder/create\""),
+        "{}",
+        page.text()
+    );
+
+    // Inside a folder the way back renders.
+    let answer = app
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "inside")])
+        .await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.body);
+    let folder = folder_id(&app, &owner, None, "inside").await;
+    let page = app
+        .get(&format!("/drive?folder={folder}"), Some(&cookie))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("detail-crumbs"), "{}", page.text());
+    assert!(page.text().contains("inside"), "{}", page.text());
+}
+
+#[tokio::test]
+async fn settings_quota_button_wears_the_quiet_class() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-quota-btn", "quotabtn@in.test", "QuotaBtn").await;
+    let page = app.get("/settings", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    // The Set-the-quota submit is a house button in a field row, not a
+    // native gray one.
+    assert!(
+        body.contains("<form class=\"pop-row-form member-quota\""),
+        "{body}"
+    );
+    let quota_at = body.find("action=\"/api/settings/quota\"").expect("no quota form");
+    let button_at = body[quota_at..]
+        .find("<button class=\"quiet\" type=\"submit\">")
+        .expect("quota submit is not quiet");
+    let form_end = body[quota_at..].find("</form>").expect("quota form never closes");
+    assert!(button_at < form_end, "quiet button escapes the quota form: {body}");
 }

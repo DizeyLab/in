@@ -1125,8 +1125,8 @@ async fn add_share_user_needs_the_owner() {
 async fn a_provisioned_user_wears_the_default_preferences() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
-    assert_eq!(user.ui, "ledger");
-    assert_eq!(user.theme, "light");
+    assert_eq!(user.ui, "instrument");
+    assert_eq!(user.theme, "dark");
     assert_eq!(user.language, "en");
 }
 
@@ -1201,7 +1201,7 @@ async fn a_second_migration_database_gains_the_preference_columns_on_open() {
     let store = TursoStore::open(&path, Some(&storage)).await.unwrap();
     let user = store.user_by_oidc_sub("sub-old").await.unwrap().unwrap();
     assert_eq!(user.ui, "instrument");
-    assert_eq!(user.theme, "light");
+    assert_eq!(user.theme, "dark");
     assert_eq!(user.language, "en");
     // And the carried row takes new preferences like any other.
     store
