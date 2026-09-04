@@ -1,0 +1,49 @@
+[package]
+name = "in-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Domain model and storage for In"
+
+[features]
+# The domain vocabulary (record shapes) compiles anywhere, including the wasm
+# bundle. Everything that touches a database, a secret or a CSPRNG lives
+# behind `server` so none of it is shipped to the browser.
+default = ["server"]
+server = [
+  "dep:async-trait",
+  "dep:base64",
+  "dep:chacha20poly1305",
+  "dep:image",
+  "dep:rand",
+  "dep:sha2",
+  "dep:subtle",
+  "dep:tokio",
+  "dep:turso",
+  "dep:ulid",
+]
+
+[dependencies]
+async-trait = { version = "0.1.92", optional = true }
+base64 = { workspace = true, optional = true }
+chacha20poly1305 = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+toml.workspace = true
+tokio = { workspace = true, optional = true }
+turso = { workspace = true, optional = true }
+ulid = { workspace = true, optional = true }
+
+[dev-dependencies]
+async-trait = "0.1.92"
+serde_json.workspace = true
+tokio = { workspace = true }
+tempfile = "3"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

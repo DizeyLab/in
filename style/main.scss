@@ -1,0 +1,4297 @@
+// Design tokens — two design languages selected by <html data-ui>:
+//
+//   instrument  dense, neutral-cool tool (the default; the bare :root in the
+//               first block doubles as its light set and as a fallback for any
+//               document that somehow reaches this stylesheet without data-ui)
+//   ledger      warm paper, hairline rules, serif display face
+//
+// data-theme="dark" (settings.rs SaveProfileForm.theme) flips either language.
+// Component rules below read only these custom properties; the per-UI skins
+// (_instrument.scss, _ledger.scss) add overrides on top.
+@use "instrument";
+@use "ledger";
+
+// Instrument, light: warm-gray ground, quiet borders, shared accent family.
+:root,
+[data-ui="instrument"] {
+  color-scheme: light;
+  --bg: #f2f2f0;
+  --surface: #fbfbfa;
+  --border: #dcdcd8;
+  --border-strong: #d0d0cb;
+  --ink: #1a1b1d;
+  --muted: #6b7078;
+  --muted-soft: #6b7078;
+  --accent: #46557b;
+  --accent-tint: #eef0f5;
+  --accent-ink: #2f3c5c;
+
+  --field-bg: #f5f5f3;
+  --surface-sunken: #e9e9e7;
+  --surface-muted: #f5f5f3;
+  --ink-soft: #3d4045;
+  --row-hover: #ececea;
+  --panel-sunken: #eeeeec;
+  --border-soft: #d3d3ce;
+  --scrim: rgba(26, 27, 29, 0.46);
+
+  --danger: #a04a24;
+  --danger-tint: #f9ece4;
+  --danger-tint-soft: #fdf6f2;
+  --danger-tint-alt: #fbf1ec;
+  --danger-border: #e8c9b8;
+  --danger-border-soft: #eddcd3;
+  --danger-border-alt: #ecd0bf;
+
+  --warn-ink: #7a5c1e;
+  --warn-tint: #f7f0dd;
+  --warn-tint-soft: #fdfaf1;
+  --warn-border: #e6d7ae;
+
+  --positive: #5c7b46;
+  --positive-ink: #4a6636;
+  --positive-tint: #eef3e9;
+  --positive-border: #d3e0c6;
+
+  --accent-strong: #5a6a94;
+  --accent-border: #d6dbe8;
+  --accent-border-strong: #d8dce6;
+
+  --avatar-tone-1: #7b6846;
+  --avatar-tone-3: #7b4655;
+  --avatar-tone-4: #46707b;
+
+  --violet-tint: #f1eaf7;
+  --violet-border: #ddc4ec;
+  --violet-ink: #6a3f82;
+
+  --font-sans: system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: var(--font-sans);
+
+  --control-h: 32px;
+  --control-h-lg: 40px;
+  --rule-strong: #d0d0cb;
+
+  --radius: 3px;
+  --radius-sm: var(--radius);
+  --radius-md: 3px;
+  --radius-lg: 3px;
+  --topbar-height: 56px;
+
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-3: none;
+
+  --dur-fast: 120ms;
+  --ease: ease-out;
+}
+
+// Instrument, dark: near-black neutral-cool; tint fills go translucent and
+// tint borders go alpha so the ground shows through.
+[data-ui="instrument"][data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d0e10;
+  --surface: #14161a;
+  --border: #23262c;
+  --border-strong: #2e323a;
+  --ink: #e6e4de;
+  --muted: #7d8590;
+  --muted-soft: #4a4f58;
+  --accent: #8ba1e8;
+  --accent-tint: rgba(139, 161, 232, 0.14);
+  --accent-ink: #b9c6ee;
+
+  --field-bg: #101216;
+  --surface-sunken: #101216;
+  --surface-muted: #0f1013;
+  --ink-soft: #c9c7c0;
+  --row-hover: #1a1d22;
+  --panel-sunken: #101216;
+  --border-soft: #1f2226;
+  --scrim: rgba(0, 0, 0, 0.75);
+
+  --danger: #e0906a;
+  --danger-tint: rgba(224, 144, 106, 0.13);
+  --danger-tint-soft: rgba(224, 144, 106, 0.07);
+  --danger-tint-alt: rgba(224, 144, 106, 0.05);
+  --danger-border: rgba(224, 144, 106, 0.45);
+  --danger-border-soft: rgba(224, 144, 106, 0.3);
+  --danger-border-alt: rgba(224, 144, 106, 0.35);
+
+  --warn-ink: #d4b16a;
+  --warn-tint: rgba(212, 177, 106, 0.14);
+  --warn-tint-soft: rgba(212, 177, 106, 0.07);
+  --warn-border: rgba(212, 177, 106, 0.4);
+
+  --positive: #9db98a;
+  --positive-ink: #b4cba3;
+  --positive-tint: rgba(157, 185, 138, 0.13);
+  --positive-border: rgba(157, 185, 138, 0.4);
+
+  --accent-strong: #7e93d9;
+  --accent-border: #3a4152;
+  --accent-border-strong: #2b3b63;
+
+  --avatar-tone-1: #937d58;
+  --avatar-tone-3: #96606e;
+  --avatar-tone-4: #5b93a1;
+
+  --violet-tint: rgba(185, 138, 151, 0.14);
+  --violet-border: rgba(185, 138, 151, 0.4);
+  --violet-ink: #b98a97;
+
+  --font-sans: system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: var(--font-sans);
+
+  --control-h: 32px;
+  --control-h-lg: 40px;
+  --rule-strong: #2e323a;
+
+  --radius: 3px;
+  --radius-sm: var(--radius);
+  --radius-md: 3px;
+  --radius-lg: 3px;
+  --topbar-height: 56px;
+
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-3: none;
+
+  --dur-fast: 120ms;
+  --ease: ease-out;
+}
+
+// Ledger, light: warm paper; hairline rules carry structure, ink carries
+// emphasis. Tint trio stays on the proven warm palette.
+[data-ui="ledger"] {
+  color-scheme: light;
+  --bg: #f6f1e6;
+  --surface: #f6f1e6;
+  --border: #ddd5c2;
+  --border-strong: #221f18;
+  --ink: #221f18;
+  --muted: #7a7466;
+  --muted-soft: #a39b88;
+  --accent: #46557b;
+  --accent-tint: #eef0f5;
+  --accent-ink: #2f3c5c;
+
+  --field-bg: #f1ebdd;
+  --surface-sunken: #efe9da;
+  --surface-muted: #f2ecdf;
+  --ink-soft: #4a453a;
+  --row-hover: #efe9da;
+  --panel-sunken: #f1ebdd;
+  --border-soft: #cfc6b0;
+  --scrim: rgba(34, 31, 24, 0.46);
+
+  --danger: #a04a24;
+  --danger-tint: #f9ece4;
+  --danger-tint-soft: #fdf6f2;
+  --danger-tint-alt: #fbf1ec;
+  --danger-border: #e8c9b8;
+  --danger-border-soft: #eddcd3;
+  --danger-border-alt: #ecd0bf;
+
+  --warn-ink: #7a5c1e;
+  --warn-tint: #f7f0dd;
+  --warn-tint-soft: #fdfaf1;
+  --warn-border: #e6d7ae;
+
+  --positive: #5c7b46;
+  --positive-ink: #4a6636;
+  --positive-tint: #eef3e9;
+  --positive-border: #d3e0c6;
+
+  --accent-strong: #5a6a94;
+  --accent-border: #d6dbe8;
+  --accent-border-strong: #d8dce6;
+
+  --avatar-tone-1: #7b6846;
+  --avatar-tone-3: #7b4655;
+  --avatar-tone-4: #46707b;
+
+  --violet-tint: #f1eaf7;
+  --violet-border: #ddc4ec;
+  --violet-ink: #6a3f82;
+
+  --font-sans: system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: 'Newsreader', Georgia, serif;
+
+  --control-h: 32px;
+  --control-h-lg: 40px;
+  --rule-strong: #221f18;
+
+  --radius: 2px;
+  --radius-sm: var(--radius);
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --topbar-height: 56px;
+
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-3: none;
+
+  --dur-fast: 120ms;
+  --ease: ease-out;
+}
+
+// Ledger, dark: dimmed paper ground; semantic hues lifted for contrast, tint
+// fills translucent over the paper tone.
+[data-ui="ledger"][data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #171511;
+  --surface: #171511;
+  --border: #3a352a;
+  --border-strong: #e8e2d4;
+  --ink: #e8e2d4;
+  --muted: #97907f;
+  --muted-soft: #6e6757;
+  --accent: #9db0dd;
+  --accent-tint: rgba(157, 176, 221, 0.14);
+  --accent-ink: #c3cfee;
+
+  --field-bg: #1c1915;
+  --surface-sunken: #14120e;
+  --surface-muted: #1c1915;
+  --ink-soft: #cfc8b6;
+  --row-hover: #201c16;
+  --panel-sunken: #1b1814;
+  --border-soft: #2e2a20;
+  --scrim: rgba(0, 0, 0, 0.75);
+
+  --danger: #d28a5a;
+  --danger-tint: rgba(210, 138, 90, 0.13);
+  --danger-tint-soft: rgba(210, 138, 90, 0.07);
+  --danger-tint-alt: rgba(210, 138, 90, 0.05);
+  --danger-border: rgba(210, 138, 90, 0.45);
+  --danger-border-soft: rgba(210, 138, 90, 0.3);
+  --danger-border-alt: rgba(210, 138, 90, 0.35);
+
+  --warn-ink: #d4b16a;
+  --warn-tint: rgba(212, 177, 106, 0.14);
+  --warn-tint-soft: rgba(212, 177, 106, 0.07);
+  --warn-border: rgba(212, 177, 106, 0.4);
+
+  --positive: #a3bd8b;
+  --positive-ink: #b8cda4;
+  --positive-tint: rgba(163, 189, 139, 0.13);
+  --positive-border: rgba(163, 189, 139, 0.4);
+
+  --accent-strong: #8497c9;
+  --accent-border: #3f4658;
+  --accent-border-strong: #2c3550;
+
+  --avatar-tone-1: #937d58;
+  --avatar-tone-3: #96606e;
+  --avatar-tone-4: #5b93a1;
+
+  --violet-tint: rgba(201, 163, 222, 0.14);
+  --violet-border: rgba(201, 163, 222, 0.4);
+  --violet-ink: #c9a3de;
+
+  --font-sans: system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: 'Newsreader', Georgia, serif;
+
+  --control-h: 32px;
+  --control-h-lg: 40px;
+  --rule-strong: #e8e2d4;
+
+  --radius: 2px;
+  --radius-sm: var(--radius);
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --topbar-height: 56px;
+
+  --shadow-1: none;
+  --shadow-2: none;
+  --shadow-3: none;
+
+  --dur-fast: 120ms;
+  --ease: ease-out;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+// The board page owns the viewport: chrome and the occasional refusal line
+// keep their natural height, the stage absorbs the rest, the document never
+// scrolls.
+body:has(.board-stage) {
+  // dvh follows the browser chrome phones raise and lower; vh is the fallback
+  // for engines without it.
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+
+  > * { flex: none; }
+  > .board-stage { flex: 1; min-height: 0; }
+}
+
+body:has(.settings-shell) {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+
+  > * { flex: none; }
+  > .settings-shell { flex: 1; min-height: 0; }
+}
+
+// A profile is one column of its own; it pans inside itself like every other
+// page here, and the document never grows a scrollbar.
+body:has(.people-shell) {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+
+  > * { flex: none; }
+  > .people-shell { flex: 1; min-height: 0; }
+}
+// The account screens take the same lock: the card centers in what is left
+// of the viewport, and a card taller than it (a landscape phone) pans inside
+// the stage instead of growing the document.
+body:has(.auth-stage) {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+
+  > * { flex: none; }
+  > .auth-stage {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar { display: none; }
+  }
+}
+
+a {
+  color: var(--accent);
+  transition: color var(--dur-fast) var(--ease);
+  &:hover { color: var(--accent-ink); }
+}
+
+.topbar {
+  height: var(--topbar-height);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+}
+
+// The brand lockup is the one thing the two skins do NOT restyle: same
+// monogram, same face, same size in Instrument and Ledger, light and dark.
+// The mark takes the ink from `currentColor` and the tittle from the accent,
+// so it re-tints with the theme without a second drawing.
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: inherit;
+
+  &:hover { color: inherit; }
+
+  &-mark {
+    flex: none;
+    display: block;
+    width: 24px;
+    height: 24px;
+  }
+
+  // The word without the mark, on the sign-in and setup pages: nothing else
+  // in that chrome, so it can take the room the topbar version cannot.
+  &-lone &-text {
+    font-size: 18px;
+    letter-spacing: 0.01em;
+  }
+
+  &-tittle {
+    fill: var(--accent);
+  }
+
+  // Lower case, and not by taste: capitalised, the dotted `i` becomes `I` and
+  // the name reads as the English word. The tittle is the Turkish one, in the
+  // word as it is in the mark.
+  &-text {
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+}
+
+.topbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+
+.topbar-nav-links {
+  display: flex;
+  gap: 16px;
+  margin-left: auto;
+}
+
+// The spacer's flex-grow eats the free space before auto margins see any, so
+// inside the chrome the nav's auto margin does the pushing instead.
+.topbar > .spacer { display: none; }
+
+.topbar-nav {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+  // A two-word label ("Mail rules") folds under pressure and reads as two
+  // stacked links; the nav gives up room some other way.
+  white-space: nowrap;
+  padding-bottom: 2px;
+
+  &:hover { color: var(--ink); }
+
+  &-on {
+    color: var(--ink);
+    box-shadow: inset 0 -2px 0 var(--ink);
+  }
+}
+
+.scaffold-note {
+  margin: 24px;
+  padding: 20px 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--muted);
+}
+
+// --- Account screens (FirstLogin artboard) ---------------------------------
+
+.auth-stage {
+  min-height: calc(100vh - var(--topbar-height));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 40px 40px;
+}
+
+.auth-column {
+  width: 520px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auth-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 28px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  box-shadow: var(--shadow-2);
+
+  form {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+}
+
+.auth-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.auth-sub {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted-soft);
+}
+
+// The address an invited member signs in as: shown, never edited.
+.auth-locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 12px;
+  background: var(--panel-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.auth-locked-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--muted);
+  flex-grow: 1;
+}
+
+.auth-submit {
+  height: var(--control-h-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--accent);
+  color: var(--surface);
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: var(--font-sans);
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+}
+
+.auth-submit-text {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.auth-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: var(--accent-strong);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+}
+
+.auth-problem {
+  font-size: 13px;
+  color: var(--danger);
+  background: var(--danger-tint-alt);
+  border: 1px solid var(--danger-border-soft);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+.auth-note {
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--panel-sunken);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+.auth-alt {
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: none;
+  align-self: center;
+
+  &:hover { color: var(--accent-ink); }
+}
+
+// -- the board (Main and EmptyBoard artboards) -------------------------------
+
+.spacer { flex-grow: 1; }
+
+.user-menu { position: relative; }
+
+.user-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  background: none;
+  border: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+
+  &:hover { color: var(--accent-ink); }
+}
+
+.user-menu-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 30;
+  width: 220px;
+  padding: 8px 0;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), visibility var(--dur-fast) var(--ease);
+}
+
+.user-menu:hover .user-menu-panel,
+.user-menu:focus-within .user-menu-panel {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+.user-menu.user-menu-esc .user-menu-panel { visibility: hidden; opacity: 0; pointer-events: none; }
+
+.user-menu-name {
+  padding: 4px 14px 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.user-menu-email {
+  padding: 2px 14px 0;
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.user-menu-role {
+  padding: 2px 14px 6px;
+  font-size: 12px;
+  color: var(--muted-soft);
+  text-transform: capitalize;
+}
+
+.user-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 32px;
+  padding: 0 14px;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink-soft);
+  text-decoration: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+
+  &:hover { background: var(--row-hover); color: var(--ink); }
+}
+
+.user-menu-item-form { display: block; }
+
+.filterbar {
+  min-height: 52px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 8px;
+  gap: 14px;
+  padding: 8px 24px;
+}
+
+.segmented {
+  display: flex;
+  align-items: center;
+  background: var(--panel-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 2px;
+  gap: 2px;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  font-size: 11px;
+  font-weight: 600;
+
+  &-overdue {
+    background: var(--danger-tint);
+    color: var(--danger);
+  }
+
+  &-blocked {
+    background: var(--warn-tint);
+    color: var(--warn-ink);
+  }
+
+  &-role,
+  &-admin,
+  &-connected,
+  &-off {
+    text-transform: capitalize;
+  }
+
+  &-role { background: var(--surface-sunken); border: 1px solid var(--border-strong); color: var(--ink-soft); }
+  &-admin { background: var(--panel-sunken); border: 1px solid var(--border-strong); color: var(--muted); }
+  &-connected { background: var(--positive-tint); color: var(--positive-ink); }
+  &-off { background: var(--warn-tint); color: var(--warn-ink); }
+}
+
+.board-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 20px 24px 24px 24px;
+}
+
+.board-columns {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.column {
+  background: var(--surface-sunken);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 120px;
+}
+
+.column-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+}
+
+.column-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.column-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-soft);
+  background: var(--panel-sunken);
+  border-radius: var(--radius);
+  padding: 1px 6px;
+}
+
+.column-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.column-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  font-size: 12px;
+  color: var(--muted-soft);
+}
+
+.card {
+  // The card is an anchor so it has an address; it must not read as one.
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+
+  &:hover {
+    background: var(--row-hover);
+    border-color: var(--border-strong);
+  }
+}
+
+/* Where a dragged card may land. Only columns it is not already in light up:
+   the card's own column is not a destination. */
+.column-drop {
+  outline: 1px dashed var(--border-strong);
+  outline-offset: 4px;
+  border-radius: var(--radius-md);
+  background: var(--accent-tint);
+}
+
+.card-done {
+  background: var(--surface-muted);
+  box-shadow: none;
+
+  .card-title { color: var(--muted); }
+}
+
+.card-keys {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.card-key { color: var(--muted); }
+
+.card-blocks,
+.card-blocked-by { color: var(--warn-ink); }
+
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.card-deadline {
+  display: flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+
+  &-overdue {
+    color: var(--danger);
+    background: var(--danger-tint);
+  }
+
+  &-none {
+    color: var(--muted-soft);
+    background: transparent;
+    padding-left: 0;
+  }
+}
+
+.card-comments,
+.card-subtasks {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.card-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+}
+
+/// Parts still open is the same warning the blocker chips carry: this card
+/// cannot reach the done column yet.
+.card-subtasks-open { color: var(--warn-ink); }
+
+.avatars {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+
+  // The data-name tooltip pokes above the row; hovering drops the clip so it
+  // is not cut off by the overlap truncation.
+  &:has(.avatar:hover) { overflow: visible; }
+}
+
+.avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  color: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+
+  & + & { margin-left: -8px; }
+
+  &-none {
+    border: 1px dashed var(--border-strong);
+    background: transparent;
+  }
+
+  // The modal asks for two other sizes: 18px inside an assignee chip, 28px
+  // beside a comment. The border is the board's overlap trick and has no job
+  // on a lone avatar, so these drop it.
+  //
+  // They are written as `.avatar.avatar-sm` on purpose: the Instrument skin
+  // sizes `.avatar` from a `[data-ui]` scope, which outweighs a lone class —
+  // a plain `.avatar-lg` lost to it, and every size modifier collapsed to
+  // 18px on that skin without anybody noticing.
+  &.avatar-sm {
+    width: 18px;
+    height: 18px;
+    border: none;
+    font-size: 10px;
+  }
+
+  &.avatar-lg {
+    width: 28px;
+    height: 28px;
+    border: none;
+    font-size: 11px;
+    flex: none;
+  }
+
+  // The profile page's own picture: the one place a face is the subject of
+  // the screen rather than a mark beside somebody's name.
+  &.avatar-xl {
+    width: 92px;
+    height: 92px;
+    border: none;
+    font-size: 30px;
+    font-weight: 500;
+    flex: none;
+  }
+
+  // A bare avatar carries `data-name`; hovering raises a house tooltip in
+  // place of the native `title`.
+  &[data-name]:hover::after {
+    content: attr(data-name);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 3px 8px;
+    font-size: 11px;
+    color: var(--ink-soft);
+    box-shadow: var(--shadow-2);
+    white-space: nowrap;
+    z-index: 30;
+    pointer-events: none;
+  }
+
+  &-tone-0 { background: var(--accent); }
+  &-tone-1 { background: var(--avatar-tone-1); }
+  &-tone-2 { background: var(--positive); }
+  &-tone-3 { background: var(--avatar-tone-3); }
+  &-tone-4 { background: var(--avatar-tone-4); }
+}
+
+// A photo avatar is the same box with the picture where the tone fill was;
+// size and shape ride the shared .avatar classes.
+img.avatar {
+  object-fit: cover;
+  display: block;
+}
+
+// The avatar leads the profile panel. Without a photo it is itself the
+// upload control — the file input rides its `form` attribute to a hidden
+// sibling form, so nothing nests inside the profile form. With one, the
+// click opens the photo viewer and a Change button owns the picker instead.
+.identity-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+// The two faces of the profile picture box: the picker label and, once a
+// photo exists, the viewer trigger. The person page's own card wears the
+// trigger too — the box rules are shared, the size is not.
+.avatar-upload,
+.avatar-view {
+  position: relative;
+  flex: none;
+  cursor: pointer;
+
+  // The name tooltip has no job on your own picture.
+  .avatar[data-name]:hover::after { content: none; }
+}
+
+// The settings row's picture is 64px whatever size class the avatar wears;
+// the person card's keeps its xl.
+.identity-row .avatar-upload .avatar,
+.identity-row .avatar-view .avatar {
+  width: 64px;
+  height: 64px;
+  font-size: 20px;
+}
+
+// The trigger is the label's box with a button's chrome stripped.
+.avatar-view {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.avatar-upload {
+  // The upload affordance: a veil and a plus over the picture, on hover or
+  // keyboard focus only.
+  &::after {
+    content: "+";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgb(0 0 0 / 0.4);
+    border-radius: 50%;
+    color: #fff;
+    font-size: 24px;
+    font-weight: 300;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease);
+    pointer-events: none;
+  }
+
+  &:hover::after,
+  &:has(.file-upload-input:focus-visible)::after { opacity: 1; }
+}
+
+// -- the card context menu ---------------------------------------------------
+//
+// A right-click opens this at the cursor; `card_menu_script` (board.rs) sets
+// its position and the `card-menu-open` class, and a document click closes
+// whichever one is open. The panel and its rows wear the same floating-list
+// chrome as the assignee and link pickers (`.pop-panel`/`.pop-list`/`.pop-row`).
+
+.card-menu {
+  display: none;
+  position: fixed;
+  z-index: 25;
+  min-width: 160px;
+
+  &-open { display: block; }
+}
+
+.card-menu-move { position: relative; }
+
+.card-menu-submenu {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: 0;
+  margin-left: 4px;
+  min-width: 140px;
+}
+
+.card-menu-move:hover > .card-menu-submenu,
+.card-menu-move-trigger:focus + .card-menu-submenu { display: block; }
+
+.card-menu-danger { color: var(--danger); }
+
+// -- the task detail modal --------------------------------------------------
+//
+// The modal is a view. Every region that can be changed is a `<form>` wearing
+// the view's clothes: the read-only shape is a `<label>`, the form beneath it
+// is hidden until a visually-hidden checkbox is checked, and the checkbox is
+// checked by clicking that label. Cancel is a second label pointing at the
+// same checkbox, so entering and leaving the edit state both work with wasm
+// blocked. Nothing else on the screen changes when one region opens.
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 24px;
+  overflow-y: auto;
+  // The scrim is the silent pan surface for tall page-style modals: it may
+  // scroll, but it never shows a scrollbar.
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+
+  z-index: 20;
+}
+
+.modal {
+  width: 780px;
+  max-width: 100%;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+  padding: 0;
+  outline: none;
+}
+
+.modal-loading { height: 220px; }
+
+.modal-note,
+.modal-problem {
+  margin: 8px 24px 0;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.modal-new-task { width: 480px; }
+
+// The task-detail modal shares `.modal` with the new-task modal and the
+// viewer, which stay centered. The base only fixes the frame — a header on
+// top, one body that pans invisibly between header and composer — because
+// the skins reshape it: instrument docks it as a 560px side panel, ledger
+// lays it out as its own opaque page.
+.modal-task {
+  display: flex;
+  flex-direction: column;
+  max-height: none;
+  overflow: visible;
+}
+
+.detail-mast {
+  flex: none;
+}
+
+// Dependencies ride in the mast, and a task can be blocked by any number of
+// others — so the list keeps three whole rows' worth of room and pans inside itself,
+// silently, rather than pushing the task's own text off the screen.
+.detail-mast .dep-list {
+  max-height: 160px;
+  overflow-y: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.detail-mast .detail-block {
+  margin-top: 14px;
+}
+
+.detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+// The in-app file viewer: same scrim/panel chrome as the task modal, rendered
+// as a later sibling of it so the task modal underneath hides while it is
+// open — one popup on screen at a time, the same rule the delete confirm
+// uses. Closing is a `.viewer-close` anchor stretched over the whole scrim
+// under the panel — outside clicks land on it and navigate, clicks on the
+// media land on the panel above it and stay.
+.viewer-close { position: absolute; inset: 0; cursor: default; }
+
+.modal-scrim:has(~ .viewer-scrim) { visibility: hidden; }
+
+.viewer { position: relative; width: auto; max-width: min(90vw, 960px); }
+
+.viewer-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 24px 24px;
+}
+
+.viewer-media { max-width: 100%; max-height: 78vh; border-radius: var(--radius-md); }
+
+// The house audio player: the native pill is browser chrome — it ignores the
+// theme's shape language and swallows Escape while focused, so the viewer
+// draws its own controls over a hidden `<audio>`.
+.audio-player {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(480px, 80vw);
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+
+  .audio-el { display: none; }
+}
+
+.audio-play {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--accent-border);
+  border-radius: 50%;
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+  cursor: pointer;
+
+  .glyph-pause { display: none; }
+  &:hover { border-color: var(--accent-strong); }
+}
+
+.audio-playing .audio-play {
+  .glyph-play { display: none; }
+  .glyph-pause { display: block; }
+}
+
+.audio-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 34px;
+  text-align: center;
+}
+
+.audio-seek {
+  flex: 1;
+  appearance: none;
+  height: 4px;
+  margin: 0;
+  background: var(--border);
+  border-radius: 2px;
+  cursor: pointer;
+
+  &::-webkit-slider-thumb {
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  &::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  &::-moz-range-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+  }
+
+  &::-moz-range-progress {
+    height: 4px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+}
+
+.viewer-pdf { width: 100%; height: 78vh; border: 1px solid var(--border); border-radius: var(--radius-md); }
+
+// A workbook has no element of its own, so the viewer draws it: a tab strip
+// when the book has more than one sheet, and a grid that pans inside its own
+// box — the document never scrolls.
+// A workbook is wider and taller than anything else the viewer opens, so it
+// takes the panel the whole way out: the modal grows to the viewport and no
+// further, and the grid takes whatever is left under the tab strip and pans
+// inside that — the panel itself never leaves the screen.
+.viewer:has(.viewer-sheet) {
+  width: auto;
+  max-width: min(96vw, 1400px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  .viewer-body {
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+    padding: 16px 20px 20px;
+  }
+}
+
+.viewer-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  // The viewer body is a row flex, so without these the sheet's automatic
+  // minimum size is the whole table's width and height, and a wide book
+  // pushes the panel off the screen instead of panning inside it.
+  min-width: 0;
+  min-height: 0;
+}
+
+.sheet-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.sheet-tab {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.sheet-tab-on {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+// A window is sized to land on a screen, so the grid takes only the room its
+// own rows need — the pagers below it stay in view rather than being pushed
+// off by a table that always claims the whole panel.
+.sheet-grid {
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.sheet-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+
+  th,
+  td {
+    padding: 4px 8px;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+
+  // The column letters and row numbers are chrome, not data: dim, sticky at
+  // the edges they name, so a cell keeps its address while the grid pans.
+  thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface);
+    color: var(--text-dim);
+    font-weight: 500;
+  }
+
+  .sheet-gutter {
+    position: sticky;
+    left: 0;
+    background: var(--surface);
+    color: var(--text-dim);
+    font-weight: 500;
+    text-align: right;
+  }
+
+  thead .sheet-gutter { z-index: 2; }
+}
+
+.sheet-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+// A sheet is read one window at a time, and these move it: the rows down the
+// left, the columns across the right, each counted against the whole sheet.
+// A step with nowhere to go stays in place, dimmed, so the pair never moves
+// under the pointer.
+.sheet-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sheet-pager {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sheet-range {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
+}
+
+.sheet-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+
+  &:hover { color: var(--text); border-color: var(--accent); }
+}
+
+// One chevron points down; the other three are that chevron turned.
+.sheet-step-up .glyph { transform: rotate(180deg); }
+.sheet-step-left .glyph { transform: rotate(90deg); }
+.sheet-step-right .glyph { transform: rotate(-90deg); }
+
+.sheet-step-off {
+  opacity: 0.3;
+
+  &:hover { color: var(--text-dim); border-color: var(--border); }
+}
+
+// A deck is the second format no browser renders, read the same way a
+// workbook is: the panel takes the viewer the whole way out, the outline
+// pans inside its own box, and the document never scrolls. The slide strip
+// is the sheet tab strip with numbers instead of names; the pager is the
+// sheet's pair with one step set.
+.viewer:has(.viewer-slides) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  .viewer-body {
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+    padding: 16px 20px 20px;
+  }
+}
+
+.viewer-slides {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.slides-nav {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.slide-tab {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.slide-tab-on {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+// The outline is what the deck says, not what it draws, so the card takes
+// the room left under the strip and pans inside itself when a slide runs
+// long rather than pushing the pager out of view.
+.slide-card {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: none;
+  padding: 20px 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.slide-title {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.slide-line {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.slides-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.slides-pager {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.slides-range {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
+}
+
+.slides-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+
+  &:hover { color: var(--text); border-color: var(--accent); }
+}
+
+// The chevron points down; the pair turns it sideways.
+.slides-step-left .glyph { transform: rotate(90deg); }
+.slides-step-right .glyph { transform: rotate(-90deg); }
+
+.slides-step-off {
+  opacity: 0.3;
+
+  &:hover { color: var(--text-dim); border-color: var(--border); }
+}
+
+.new-task-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px 24px 24px;
+}
+
+.new-task-row {
+  display: flex;
+  gap: 16px;
+}
+
+.new-task-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+// -- the edit state ---------------------------------------------------------
+
+.edit { position: relative; }
+
+// Focusable but invisible: it is the state, and a keyboard must be able to
+// reach it. Not `display: none` — that would take it out of the tab order.
+.edit-toggle {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.edit-hit { cursor: text; }
+
+.edit-form { display: none; }
+
+.edit:not(.edit-pop) > .edit-toggle:checked ~ .edit-view { display: none; }
+.edit-toggle:checked ~ .edit-form { display: block; }
+.edit-toggle:checked ~ .title-form { display: flex; }
+.detail-head:has(.edit-toggle:checked) .detail-state,
+.detail-head:has(.edit-toggle:checked) .spacer,
+.detail-head:has(.edit-toggle:checked) .detail-esc,
+.detail-head:has(.edit-toggle:checked) .detail-close,
+.detail-head:has(.edit-toggle:checked) .detail-board {
+  display: none;
+}
+.edit-toggle:focus-visible ~ .edit-view {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.edit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.edit-save,
+.comment-post {
+  height: var(--control-h);
+  padding: 0 12px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--surface);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+
+  &:hover { background: var(--accent-strong); }
+
+  &:disabled { opacity: 0.5; cursor: default; }
+}
+
+.edit-cancel {
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+
+  &:hover { color: var(--ink); }
+}
+
+// A popover is the same machinery, floated.
+.edit-pop {
+  .edit-form {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 4;
+  }
+}
+
+.pop-panel {
+  min-width: 200px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+}
+
+.pop-panel-wide { min-width: 320px; }
+
+.pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pop-list-scroll {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.pop-row-form { display: block; }
+
+.pop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+
+  &:hover { background: var(--row-hover); }
+}
+
+.pop-row-name { font-size: 12px; }
+
+
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+
+  &:hover { background: var(--row-hover); }
+}
+
+.pick-title { color: var(--muted); }
+
+.pick-direction {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 0;
+  padding: 8px 6px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+
+  label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+  }
+}
+
+// -- header -----------------------------------------------------------------
+
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  // Measured against the artboard: the key sits 26px below the modal's own top
+  // edge, and every row under it inherits that.
+  padding: 22px 24px 0;
+}
+
+.detail-headline {
+  flex: 1;
+  min-width: 0;
+}
+
+// -- tab strip ----------------------------------------------------------
+
+.detail-tabs {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-tab {
+  padding: 9px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.detail-tab-on { color: var(--ink); }
+
+.detail-tab-count { margin-left: 4px; color: var(--muted-soft); }
+
+.detail-key {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+// Where this task sits, on one line above its title. A subtask stacked its
+// parent's key above its own read as two near-identical mono strings with
+// nothing to say which was which; left-to-right order says it instead, and
+// the parent's title is what makes its key legible at all.
+.detail-crumbs {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  // The key used to sit flush under a much larger title and got away with
+  // it; a crumb is a whole line of text with an underline dipping below its
+  // baseline, and flush reads as collided.
+  margin-bottom: 9px;
+  // The parent's title is the only part allowed to give way; a key broken
+  // across two lines is not a key any more.
+  flex-wrap: nowrap;
+
+  .detail-key {
+    flex: none;
+    white-space: nowrap;
+  }
+}
+
+.detail-crumb {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  flex: 0 1 auto;
+  color: var(--muted);
+  text-decoration: none;
+
+  &:hover {
+    color: var(--ink);
+
+    .detail-crumb-title { text-decoration: underline; }
+  }
+}
+
+.detail-crumb-key {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+// Underlined at rest, solid: the ledger skin marks a record's own key with a
+// *dotted* underline, so without this the one thing on the line that is not
+// a link was the only thing that looked like one.
+.detail-crumb-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 28ch;
+  flex: 0 1 auto;
+  min-width: 3ch;
+  font-size: 12px;
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+}
+
+.detail-crumb:hover .detail-crumb-title {
+  text-decoration-color: currentColor;
+}
+
+.detail-crumb-sep {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+.detail-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.title-form {
+  align-items: center;
+  gap: 8px;
+}
+
+.title-input {
+  flex: 1;
+  min-width: 0;
+  height: var(--control-h);
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.detail-esc {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.detail-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+
+  &:hover { background: var(--row-hover); }
+}
+
+.detail-state {
+  display: inline-flex;
+  align-items: center;
+}
+
+.detail-board {
+  align-self: center;
+  white-space: nowrap;
+}
+
+// -- the field row ----------------------------------------------------------
+
+// Status and a date are short and sit side by side; the people carry names,
+// which no third of a panel holds, so they take a row of their own.
+.detail-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 18px 24px 0;
+  margin-top: 2px;
+}
+
+.detail-field-people {
+  grid-column: 1 / -1;
+}
+
+.detail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.detail-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted-soft);
+}
+
+.detail-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-soft);
+}
+
+// Every value in the field row wears the same box, so a `<select>`, a label
+// and a plain span all line up at 36px.
+.field-box,
+.status-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-h);
+  padding: 0 10px;
+  background: var(--field-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.field-box {
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.field-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// The board's Sort and Project selects keep their natural width, but a
+// selected project can carry any name a workspace typed. Box and select
+// shrink under pressure and the label ellipsizes, instead of pushing the
+// bar past the viewport; the bar itself wraps when the row still outruns
+// the width.
+.field-box-sort {
+  flex: 0 1 auto;
+  min-width: 0;
+
+  .status-select {
+    flex: 0 1 auto;
+    width: auto;
+    min-width: 0;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+// The board's search field is the bar's third field-box, and its typing
+// area is the house's own type-as-filter input: the rules `.dd-search`
+// wears inside dropdown panels, freed of the panel-only block geometry and
+// filling the box past its label.
+.field-box-search {
+  flex: 0 1 240px;
+  min-width: 0;
+
+  .field-text { flex: none; }
+
+  .dd-search {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+    height: auto;
+    margin-bottom: 0;
+    padding: 0;
+  }
+}
+
+.glyph {
+  flex: none;
+  color: var(--muted-soft);
+}
+
+.status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted-soft);
+}
+
+.status-dot-done { background: var(--positive); }
+
+// The select carries no chrome of its own: the box around it is the control.
+.status-select {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  appearance: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.detail-overdue {
+  border-color: var(--danger-border);
+  color: var(--danger);
+
+  .glyph { color: var(--danger); }
+}
+
+// -- deadline calendar -------------------------------------------------------
+
+.datepick-panel { width: 190px; }
+
+// The time row rides the same panel as the day grid: two two-digit boxes
+// and a colon between them, one line. An input's intrinsic width is wider
+// than its half, so each box fills its half and centers what is typed.
+.datepick-time {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.datepick-time .field-input {
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+}
+
+.datepick-colon {
+  font-family: var(--font-mono);
+  color: var(--ink-soft);
+}
+
+.datepick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.datepick-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.datepick-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+
+  &:hover { background: var(--row-hover); }
+}
+
+.datepick-prev .glyph { transform: rotate(90deg); }
+.datepick-next .glyph { transform: rotate(-90deg); }
+
+.datepick-weekdays,
+.datepick-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.datepick-weekdays {
+  margin-bottom: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted-soft);
+  text-align: center;
+}
+
+.datepick-cell {
+  height: 24px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.datepick-day {
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background-color var(--dur-fast) var(--ease);
+
+  &:hover { background: var(--row-hover); }
+}
+
+.datepick-today { box-shadow: inset 0 0 0 1px var(--accent); }
+
+.datepick-selected {
+  background: var(--accent);
+  color: var(--surface);
+
+  &:hover { background: var(--accent); }
+}
+
+.datepick-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.datepick-action {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+
+  &:hover { color: var(--ink); }
+}
+
+// -- assignees --------------------------------------------------------------
+
+.detail-assignees {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 6px;
+  background: var(--field-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+}
+
+// A chip shrinks before it overflows: the field box is one cell of a three
+// column grid, so a long name has to fold into an ellipsis rather than push
+// its own remove cross — and the round "+" — out past the box edge.
+.assignee-chip {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  padding: 3px 6px 3px 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.assignee-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+// Two people share one cell, so each name gives up half its room before the
+// policy below drops names altogether.
+// Four names fit the full-width row, sharing the slack evenly. Past that the
+// labels go together — never half of them, which reads as a rendering fault —
+// and the chips stand as avatars, legible where a clipped name is not. The
+// round "+" keeps its size either way.
+.detail-assignees:has(.assignee-chip:nth-child(5)) {
+  .assignee-name { display: none; }
+}
+
+.assignee-drop { display: inline-flex; }
+
+.assignee-remove {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  color: var(--muted-soft);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+
+  &:hover { color: var(--danger); }
+}
+
+// The artboard's round dashed "+". It is a label, and the popover it opens
+// holds one tiny form per person — a submit button's own name/value does not
+// survive `ActionForm`, so each row carries its own hidden field instead.
+.assignee-add {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h);
+  height: var(--control-h);
+  border: 1px dashed var(--border-strong);
+  border-radius: 50%;
+  color: var(--muted-soft);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+
+  &:hover { color: var(--ink); border-color: var(--muted-soft); }
+}
+
+// The round "+" is the only way to assign anyone, so it never gets crowded off
+// the row: the chips give up width first.
+.detail-assignees > .edit { flex: none; }
+
+.assignee-pop .edit-form { left: auto; right: 0; }
+
+// -- blocks -----------------------------------------------------------------
+
+.detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 22px 24px 0;
+}
+
+.detail-block-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: -2px;
+}
+
+.detail-prose {
+  display: block;
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  // A pasted URL or an unbroken run of characters has no space to wrap at;
+  // without this it runs off the panel instead of folding.
+  overflow-wrap: anywhere;
+}
+
+.detail-prose-empty { color: var(--muted-soft); }
+
+// One tab's region owns the whole body: the block stretches, and the list
+// inside it pans rather than stopping short and leaving the panel empty
+// below (the old 320px cap made sense only when every region shared one
+// scrolling column).
+.detail-body { display: flex; flex-direction: column; }
+
+.detail-block-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+
+  > .comment-list,
+  > .activity-list {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+  }
+}
+
+.detail-quiet {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted-soft);
+}
+
+.detail-textarea,
+.comment-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  resize: vertical;
+}
+
+
+// -- dependencies -----------------------------------------------------------
+
+.dep-chip,
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dep-chip {
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+
+  &:hover { color: var(--ink); }
+}
+
+.dep-chip-text { font-size: 12px; }
+
+.link-pop .edit-form { left: auto; right: 0; }
+
+.dep-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dep-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  font-size: 13px;
+}
+
+// The parts fill their tab and pan inside it, the house way: a task with
+// forty of them does not scroll the document.
+.subtask-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+// A part is a lighter thing than a dependency: no box of its own, a rule
+// between rows instead, so a list of eight does not read as eight cards.
+.subtask-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+
+  &:last-child { border-bottom: none; }
+}
+
+// The key and the title are one target, so the row has one way in rather
+// than two adjacent links a pointer can fall between.
+.subtask-open {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+
+  &:hover .subtask-title { text-decoration: underline; }
+}
+
+.subtask-mark {
+  display: flex;
+  color: var(--muted-soft);
+}
+
+.subtask-key {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.subtask-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtask-status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+// A finished part stays legible and plainly out of the way. The tick and
+// the muted title each say it once; there is no strikethrough on top, which
+// only made the title harder to read and fought the hover underline.
+.subtask-row-done {
+  .subtask-title { color: var(--muted); }
+}
+
+.subtask-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.subtask-new-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.dep-row-waiting {
+  background: var(--warn-tint-soft);
+  border-color: var(--warn-border);
+
+  .dep-tag,
+  .dep-note,
+  .glyph { color: var(--warn-ink); }
+}
+
+.dep-tag {
+  flex: none;
+  width: 78px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--muted-soft);
+}
+
+.dep-tick { color: var(--positive); }
+
+.dep-key {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+.dep-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dep-note {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+// The dependency row's way in, the subtask row's own shape (`subtask-open`):
+// tag, key, title and note are one target, so the whole stretch between the
+// row's edges and the X is one anchor — `flex: 1` keeps the note at the row's
+// right edge where it stood before the row learned to open its task.
+.dep-link {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+
+  &:hover .dep-title { text-decoration: underline; }
+}
+
+.dep-unlink-form { display: inline-flex; }
+
+.dep-unlink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-soft);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+
+  &:hover { color: var(--danger); }
+}
+
+// -- files --------------------------------------------------------------
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+// Rows, not chips: every attachment takes the full width, the name takes
+// what is left, and size/note/remove hold their columns — a long name
+// ellipsizes instead of wrapping the row's tail onto a second line.
+.file-list .file-chip {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+}
+
+.file-chip-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease);
+
+  &:hover { color: var(--ink); }
+}
+
+.file-chip-size {
+  flex: none;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+.file-chip-note {
+  flex: none;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+.file-chip-drop-form { display: inline-flex; flex: none; }
+
+.file-chip-drop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-soft);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+
+  &:hover { color: var(--danger); }
+}
+
+.file-upload {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+// A button, not a text field: `.field-box`'s recessed `--field-bg` reads as
+// pressed here, so it sits back on `--surface` like `.quiet`/`.detail-delete`.
+.file-upload-box {
+  position: relative;
+  flex: none;
+  max-width: 220px;
+  background: var(--surface);
+  transition: border-color var(--dur-fast) var(--ease);
+  cursor: pointer;
+
+  &:hover { border-color: var(--accent); }
+
+  &:has(.file-upload-input:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+}
+
+.file-upload-name { max-width: 160px; }
+
+.file-upload-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  opacity: 0;
+}
+
+// Upload progress: a client-made hairline along the upload box's inside
+// bottom edge; the accent fill tracks the request as it climbs. No text and
+// no native `<progress>` chrome — the box is the control, the rule is the
+// meter, in the same border/accent pair the box itself wears.
+.upload-progress {
+  position: absolute;
+  left: 1px;
+  right: 22px;
+  bottom: 1px;
+  height: 2px;
+  background: var(--border);
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--dur-fast) var(--ease);
+}
+
+// The cancel cross is the chip remove control seconded to the bar: same
+// `.file-chip-drop` 20px hit box, glyph and hover-to-danger, only moved to
+// the track's right end. It cancels the request and nothing else — never
+// the picker the box itself is.
+.upload-progress-drop {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+}
+
+// -- comments ---------------------------------------------------------------
+
+.comment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 320px;
+  overflow-y: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.comment {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.comment-said {
+  min-width: 0;
+  flex: 1;
+}
+
+.comment-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.comment-who {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.comment-when {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+.comment-body {
+  margin-top: 3px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+}
+
+.comment-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.comment-input { font-size: 13px; }
+
+.comment-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+// -- activity ---------------------------------------------------------------
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+}
+
+.activity-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.activity-stamp {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+.activity-who {
+  flex: none;
+  color: var(--ink);
+}
+
+// -- footer -----------------------------------------------------------------
+
+// The foot sits outside `.detail-body`, so a description that runs on
+// forever scrolls under it rather than pushing Close off the panel.
+.detail-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 22px 24px 24px;
+  margin-top: 4px;
+}
+
+.detail-delete-form { display: inline-flex; }
+
+.detail-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-h);
+  padding: 0 14px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--danger);
+  cursor: pointer;
+
+  &:disabled { opacity: 0.5; cursor: default; }
+}
+
+// -- the delete confirmation ------------------------------------------------
+//
+// The open `<details>` becomes a scrim + centered panel, the same shape as
+// the task modal's `.modal-scrim`/`.modal` (main.scss above), with no script:
+// the backdrop is the open details' own `::before`. Closing is handled by
+// `escape_closes`/`card_menu_script` (outside click, Esc) — the trigger
+// summary is hidden while open (below) so it is not a second, floating
+// "Delete task" button on screen.
+
+.confirm-details[open] {
+  position: relative;
+  z-index: 21;
+}
+
+// While the confirm is open, the modal panel behind it is not visible: one
+// popup on screen at a time. `visibility` (not `display`) so the scrim
+// keeps showing and the confirm — a fixed-position descendant that would
+// otherwise inherit the hidden visibility — is pulled back to visible. The
+// summary trigger stays out of that "pulled back" set: it sits in normal
+// flow at its footer position, so leaving it visible reads as a second,
+// floating delete button.
+.modal:has(details.confirm-details[open]) {
+  visibility: hidden;
+
+  details.confirm-details[open],
+  details.confirm-details[open]::before,
+  details.confirm-details[open] .confirm {
+    visibility: visible;
+  }
+
+  details.confirm-details[open] > summary {
+    display: none;
+  }
+}
+
+.confirm-details[open]::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  z-index: 20;
+}
+
+.confirm {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 21;
+  width: 420px;
+  max-width: calc(100% - 48px);
+  margin: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-3);
+}
+
+.confirm-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.confirm-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+
+// --- Settings (Settings and MemberSettings artboards) ----------------------
+
+.settings-shell {
+  display: flex;
+}
+
+.settings-stage {
+  flex: 1;
+  min-width: 0;
+  padding: 24px 32px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 860px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+
+  &.stage-wide { max-width: 1200px; }
+
+  // A panel's own `overflow: hidden` (the corner clip) zeroes its flex
+  // min-height, so the column would compress it to the viewport and clip the
+  // rows invisibly. Panels keep natural height; the stage is what pans.
+  > * { flex: none; }
+}
+
+// The quota meter on the settings profile panel: a sunken track with an
+// accent fill. Read-only — the level rides the fill's inline width — the
+// one meter here that is a level rather than an activity.
+.quota-bar {
+  height: 8px;
+  background: var(--panel-sunken);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.quota-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-sections {
+  flex: none;
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 0;
+  border-right: 1px solid var(--border);
+}
+
+.settings-section-link {
+  display: block;
+  padding: 8px 16px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+  text-decoration: none;
+
+  &:hover { color: var(--ink); }
+}
+
+.settings-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.panel-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.panel-lede {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.panel-foot {
+  display: flex;
+  // A foot inside a `.panel-body` would inherit that column, and a foot is a row.
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+
+  // A foot with something to say on the left and the button on the right.
+  &-split { justify-content: space-between; }
+
+}
+
+// One end of a split foot: its own controls, kept together.
+.foot-side {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-grow: 1;
+  min-width: 0;
+}
+
+.field-row {
+  display: flex;
+  gap: 16px;
+}
+
+// Fields carry no top margin of their own: each wrapping container is a
+// flex column whose gap is the spacing. The one unclassed form — its id is
+// load-bearing for the foot's `form=` submit — is named directly here.
+#sender-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.field-narrow { flex-grow: 0; width: 120px; }
+
+.field-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted-soft);
+}
+
+.auth-input,
+.field-input {
+  height: 40px;
+  padding: 0 12px;
+  background: var(--field-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+
+  &:focus-visible {
+    background: var(--surface);
+    border-color: var(--accent);
+  }
+
+  &:disabled {
+    background: var(--panel-sunken);
+    color: var(--muted);
+  }
+}
+
+.auth-input-mono {
+  font-family: var(--font-mono);
+}
+
+// The house dropdown trigger — `dropdown.rs`'s <button> clone of a select —
+// draws the same chevron the rest of the app uses, so the closed look stands
+// in for the field it replaced. A native select keeps the browser's own
+// arrow on the plain .field-input box.
+.field-input.dd-trigger {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='%23726d61' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+
+// Dark theme's lighter muted ink, baked into a second copy of the chevron:
+// a data-URI can't read custom properties.
+[data-theme="dark"] {
+  .field-input.dd-trigger {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='%238b949e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+  }
+}
+
+// The browser's native option list ignores theme tokens by default — dark
+// mode showed the OS's white/blue list until these are set explicitly.
+// Belt-and-braces for any select `dropdown.rs` hasn't converted.
+option {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+option:checked {
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+
+option:hover {
+  background: var(--panel-sunken);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+// -- house dropdown (dropdown.rs) --------------------------------------------
+//
+// `dropdown.rs` hides the native `<select>` and portals a trigger + panel
+// in its place, so no browser engine's own popup chrome ever shows — every
+// engine themes identically because none of them draw this one.
+
+.dd-native { display: none; }
+
+// The trigger carries the select's own classes (`.status-select` or
+// `.field-input`), so its closed look is already right; this only resets
+// what a bare `<button>` adds on top of that.
+.dd-trigger {
+  display: flex;
+  align-items: center;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.status-select.dd-trigger { padding: 0; }
+
+.dd-panel {
+  position: fixed;
+  z-index: 60;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  padding: 8px;
+  display: none;
+}
+
+.dd-panel.dd-open { display: block; }
+
+.dd-option {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+
+  &:hover,
+  &:focus,
+  &.dd-option-active { background: var(--row-hover); outline: none; }
+}
+
+.dd-option-selected { background: var(--accent-tint); color: var(--accent-ink); }
+
+.dd-option-hidden { display: none; }
+
+// Type-to-filter, injected as the panel's first child on any select with
+// more than 7 options (dropdown.rs `enhance`) — small selects (Newest/
+// Oldest, yes/no) stay clean. Its own focus-visible override sits after
+// the shared ring rule below (same (0,2,0) trick as `.modal:focus-visible`).
+.dd-search {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+// A row that states a fact instead of pretending to be an editable field. An
+// empty box that silently does nothing is worse than a sentence.
+.field-stated {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 12px;
+  background: var(--panel-sunken);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.field-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.field-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-h);
+  padding: 0 16px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  color: var(--surface);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+
+  &:hover { background: var(--accent-ink); border-color: var(--accent-ink); color: var(--surface); }
+}
+
+// One keyboard-focus ring for everything interactive — buttons, links,
+// fields, the house dropdown trigger, tabindex'd widgets. Outline only:
+// the field recipe's background/border-color swap would invert the solid
+// buttons — their own label is var(--surface) — into invisibility.
+// Placed after .dd-option's own `&:focus { outline: none }`: the (0,2,0)
+// tie falls to this rule, so keyboard focus still rings an option.
+:is(button, a, input, select, textarea, summary, .dd-trigger, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+// Modals take programmatic focus on open (tabindex="-1") and are not
+// controls — no ring. Re-stated here because a plain `.modal` rule loses
+// the specificity tie against the shared rule above.
+.modal:focus-visible { outline: none; }
+
+// A boxed outline inside a panel that's already bordered reads as a double
+// frame; the hairline brightening to the accent color is enough.
+.dd-search:focus-visible {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+// -- the member list --------------------------------------------------------
+
+// The columns are named, not counted, and only one of them is elastic.
+//
+// This was `table-layout: fixed` with a single hardcoded `width: 30%` on the
+// last column, which made the other three exactly a third of the rest each —
+// a geometry decided without reference to anything that would be in it. A
+// mono-spaced address longer than a third of the table simply ran out from
+// under its own cell and printed across the role select next to it. Auto
+// layout asks the content instead: every column takes the width it needs,
+// and the address — the one column whose length is somebody else's decision
+// — absorbs what is left and ends in an ellipsis rather than in the
+// neighbouring column.
+.member-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 13px;
+
+  th {
+    text-align: left;
+    padding: 0 12px 8px 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    font-weight: 400;
+    color: var(--muted-soft);
+    border-bottom: 1px solid var(--border);
+  }
+
+  // Row height comes from the tallest thing in the row. A fixed 48px was a
+  // guess that held until a cell had two things in it, and then the second
+  // one hung out over the row's own border.
+  td {
+    padding: 10px 12px 10px 0;
+    vertical-align: middle;
+  }
+
+  // Everything but the address is as wide as its content and no wider:
+  // `width: 1%` is how a table cell asks for its intrinsic width.
+  .member-col-name,
+  .member-col-role,
+  .member-col-account {
+    width: 1%;
+    white-space: nowrap;
+  }
+
+  // The elastic one. `max-width: 0` with `width: 100%` is what lets a table
+  // cell be told "take the slack, and clip rather than overflow".
+  .member-col-address {
+    width: 100%;
+    max-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .member-row {
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+// Every data cell's content sits in a row wrapper, not the `<td>` itself:
+// `display: flex` directly on a `<td>` drops it out of the table's row/column
+// model, which is what left this list's columns loose and its rows
+// unevenly centered.
+.member-name-row,
+.member-account-row {
+  display: flex;
+  align-items: center;
+}
+
+.member-name { font-weight: 600; }
+.member-name-row { gap: 8px; }
+
+.member-you {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--field-bg);
+  border: 1px solid var(--border-strong);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.member-address {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.member-account { color: var(--muted); }
+.member-account-row { gap: 10px; }
+.member-status { flex: none; white-space: nowrap; }
+
+.member-resend { display: inline-flex; flex: none; }
+
+.quiet {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-h);
+  padding: 0 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--ink-soft);
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+
+  &:hover { border-color: var(--accent); color: var(--accent); }
+}
+
+// Danger modifier for a `.quiet` button — the "Delete" action in a rule row.
+// Written `.quiet.quiet-danger` for the same reason the avatar sizes are:
+// the skins style `.quiet` from a `[data-ui]` scope, which outweighs a lone
+// modifier class — on the Ledger skin a delete button lost its red border,
+// and its red text on hover, to a rule about ordinary quiet buttons.
+.quiet.quiet-danger {
+  border-color: var(--danger-border);
+  color: var(--danger);
+
+  &:hover { border-color: var(--danger); color: var(--danger); background: var(--surface-sunken); }
+}
+
+// The chevron floats over the trigger's right end rather than sitting next
+// to it in the flex row: the trigger then spans the whole box, so the box
+// is clickable edge to edge.
+.member-role {
+  position: relative;
+  padding: 0;
+
+  > .glyph { position: absolute; right: 10px; pointer-events: none; color: var(--muted); }
+  .status-select { align-self: stretch; padding: 0 28px 0 10px; }
+}
+
+.member-invite {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.field-role { flex-grow: 0; width: 140px; }
+
+// One control height, matching `.primary`, for this row's fields, so the
+// role select and the "Add member" button share one height and baseline.
+.member-invite .field-input { height: var(--control-h); }
+
+// The link exists once. It is shown once, and said to be shown once.
+.member-link {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+}
+
+.member-link-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent-ink);
+  word-break: break-all;
+}
+
+// --- Mail rules (MailRules artboard) ---------------------------------------
+
+// Text only a screen reader needs: the switch says what it does in a word the
+// eye reads from its position, and the ear cannot.
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.rules-quiet {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rule-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+
+  // A rule that is switched off is still listed — the screen shows what
+  // exists, not what is live — and reads as the quieter of the two.
+  &-off {
+    background: var(--surface-muted);
+    opacity: 0.75;
+  }
+}
+
+.rule-switch-form { display: flex; flex-shrink: 0; }
+
+.rule-switch {
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-lg);
+  background: var(--border-soft);
+  position: relative;
+  cursor: pointer;
+
+  &-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--surface);
+  }
+
+  &-on {
+    background: var(--accent);
+    .rule-switch-knob { left: auto; right: 2px; }
+  }
+}
+
+.rule-sentence {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-grow: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+// One chosen word inside the sentence: a column, a subject, an audience.
+// Identity, not state — a neutral outline so the toned verdict chips below
+// stand out next to it instead of blending in.
+.rule-term {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.rule-row-off .rule-term {
+  border-color: var(--border-soft);
+  color: var(--muted-soft);
+}
+
+// A verdict or a queue state, toned so the eye can sort a page of them
+// without reading every word: sent/queued reads as the app's accent blue,
+// failed/abandoned as its danger orange, held/pending as its warning amber,
+// no recipients gets its own violet tone, and everything that is quietly
+// not-a-failure (not matched, rule off) stays muted rather than competing
+// for attention.
+.rule-term-owed,
+.rule-term-already_owed,
+.rule-term-sent {
+  background: var(--accent-tint);
+  border-color: var(--accent-border);
+  color: var(--accent-ink);
+}
+
+.rule-term-failed,
+.rule-term-abandoned {
+  background: var(--danger-tint);
+  border-color: var(--danger-border-alt);
+  color: var(--danger);
+}
+
+.rule-term-held,
+.rule-term-pending {
+  background: var(--warn-tint);
+  border-color: var(--warn-border);
+  color: var(--warn-ink);
+}
+
+.rule-term-not_matched,
+.rule-term-disabled {
+  background: var(--surface-sunken);
+  border-color: var(--border-strong);
+  color: var(--muted);
+}
+
+.rule-term-no_recipients {
+  background: var(--violet-tint);
+  border-color: var(--violet-border);
+  color: var(--violet-ink);
+}
+
+.rule-term-task_gone {
+  background: var(--danger-tint-soft);
+  border-color: var(--danger-border-soft);
+  color: var(--danger);
+}
+
+// One event and every rule's verdict on it, so the task and moment are said
+// once instead of once per rule.
+.decision-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.decision-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.decision-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.decision-verdicts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.decision-verdict {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.rule-stamp {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+// Activity log: a columnar register, not a card list — one line per event,
+// time-first, ruled by hairlines instead of boxed rows.
+.log-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-stamp {
+  flex-shrink: 0;
+  min-width: 110px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.log-actor {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.log-line {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// The activity panel's filter row is the board's control row living inside a
+// panel body: the page-bar chrome (min strip, own bottom rule, bar padding)
+// is opted out of — the panel head rules the row, the body pads it. The
+// two-class selector out-ranks both `.filterbar` bases, the
+// narrow-viewport one included.
+.filterbar.log-filterbar {
+  min-height: 0;
+  padding: 0;
+  background: none;
+  border-bottom: none;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.log-range-dash {
+  align-self: center;
+  margin: 0 2px;
+  color: var(--muted);
+}
+
+// The pager foot's read of where the rendered rows sit in the whole feed.
+.log-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.log-title {
+  flex-shrink: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-key {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+
+.rule-new {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.rule-new-open {
+  display: flex;
+  align-items: center;
+  height: var(--control-h);
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-ink);
+  cursor: pointer;
+  list-style: none;
+
+  &::marker, &::-webkit-details-marker { display: none; }
+  &::before { content: '+'; margin-right: 8px; font-size: 13px; }
+}
+
+.rule-new-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.rule-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tag-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.tag-name {
+  flex-grow: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// How many cards are on the project, in the same chip the board counts its
+// columns with. It is also the reason the delete control beside it is or is
+// not there.
+.tag-count {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-soft);
+  background: var(--panel-sunken);
+  border-radius: var(--radius);
+  padding: 1px 6px;
+}
+
+.tag-new {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.tag-new-open {
+  display: flex;
+  align-items: center;
+  height: var(--control-h);
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-ink);
+  cursor: pointer;
+  list-style: none;
+
+  &::marker, &::-webkit-details-marker { display: none; }
+  &::before { content: '+'; margin-right: 8px; font-size: 13px; }
+}
+
+.tag-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.tag-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+// --- Profile (a member's page) ----------------------------------------------
+
+.people-shell {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 32px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
+  > * { flex: none; }
+}
+
+// A face or a name that leads to the person it names. The chrome stays the
+// chrome — the link exists to be clicked, not to look like one.
+.person-link {
+  display: inline-flex;
+  align-items: center;
+  gap: inherit;
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+
+  &:hover { text-decoration: underline; }
+}
+
+.person-card {
+  overflow: hidden;
+}
+
+// The head is the identity: a picture big enough to be a picture, the name,
+// what the workspace calls this person, and — on your own page only — the way
+// to the one screen that can change any of it.
+.person-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 22px 22px 20px;
+}
+
+.person-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.person-name {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.person-marks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.person-edit {
+  margin-left: auto;
+  flex: none;
+}
+
+// Every fact sits in a named cell instead of floating as a line of text. The
+// cells share the panel's own hairlines, so the block reads as one table
+// rather than as paragraphs that happen to be near each other.
+.person-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+
+.person-field {
+  padding: 12px 22px 14px;
+  min-width: 0;
+  border-right: 1px solid var(--border);
+
+  &:last-child { border-right: none; }
+
+  dt {
+    font-size: 10px;
+    letter-spacing: 0.09em;
+    color: var(--muted);
+  }
+
+  dd {
+    margin: 4px 0 0;
+    font-size: 13px;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.person-field dd.person-address {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+// The hover tooltip names a face that is standing beside its own name.
+.person-head .avatar[data-name]:hover::after { content: none; }
+
+// Four counts, four boxes. The number leads and the label sits under it, so a
+// column reads as one thing rather than as a word with a digit beside it.
+.person-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin: 0;
+
+  @media (max-width: 620px) {
+    grid-template-columns: repeat(2, 1fr);
+
+    // Two by two: the rule runs between the columns and under the first
+    // row, not off the right edge of every cell.
+    .person-stat {
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+
+      &:nth-child(odd) { border-right: 1px solid var(--border); }
+      &:nth-child(n + 3) { border-bottom: none; }
+    }
+  }
+}
+
+.person-stat {
+  padding: 16px 22px 18px;
+  border-right: 1px solid var(--border);
+
+  &:last-child { border-right: none; }
+
+  dd {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 26px;
+    font-weight: 500;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  dt {
+    margin-top: 6px;
+    font-size: 10px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+}
+
+.person-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.person-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 18px;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+
+  &:first-child { border-top: none; }
+  &:hover { background: var(--surface-muted); }
+}
+
+.person-verb {
+  flex: none;
+  width: 88px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.person-task {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+
+  &:hover .person-title { text-decoration: underline; }
+}
+
+.person-key {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.person-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.person-day {
+  margin-left: auto;
+  flex: none;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+// --- Mobile (narrow viewports) ----------------------------------------------
+//
+// One breakpoint, at the same 620px the person stats already fold at. The
+// document stays viewport-locked on every page (the body:has(...) rules
+// above); what a narrow screen changes is geometry: chrome tightens, the
+// settings rail becomes a strip, the board's columns pan sideways, and the
+// regions that already pan keep panning. Nothing here may open a document
+// scrollbar, and nothing here may grow explainer text.
+@media (max-width: 620px) {
+  // -- chrome ----------------------------------------------------------------
+
+  .topbar {
+    gap: 10px;
+    padding: 0 12px;
+  }
+
+  .topbar-nav-links {
+    gap: 12px;
+    // Five admin links outrun the narrowest phones; the strip pans under the
+    // finger the way every other overflow region here does, and the wordmark
+    // and avatar stay pinned at the edges.
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar { display: none; }
+  }
+
+  // The avatar says who is signed in at this width; the name is the menu's.
+  .user-menu-trigger-name { display: none; }
+
+  // The last squeeze, below the smallest common phone: the chrome gives up
+  // its air before the nav gives up legibility.
+  @media (max-width: 360px) {
+    .topbar {
+      gap: 8px;
+      padding: 0 8px;
+    }
+
+    .topbar-nav-links { gap: 10px; }
+  }
+
+  // -- board -----------------------------------------------------------------
+
+  .filterbar {
+    height: auto;
+    min-height: 44px;
+    flex-wrap: wrap;
+    row-gap: 8px;
+    padding: 8px 12px;
+  }
+
+  // A rule floating alone at the head of a wrapped row says nothing.
+  .filterbar .topbar-divider { display: none; }
+
+  .filterbar .primary,
+  .filterbar .chip { flex: none; }
+
+  .board-stage { padding: 12px; }
+
+  // The columns stop sharing one row and become a rail: each as wide as a
+  // card needs, the row panning sideways under the finger, silently.
+  .board-columns {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: min(72vw, 280px);
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar { display: none; }
+  }
+
+  .column { scroll-snap-align: start; }
+
+  // -- modals ----------------------------------------------------------------
+
+  .modal-scrim { padding: 16px; }
+
+  .modal { max-height: calc(100dvh - 32px); }
+
+  .new-task-row { flex-wrap: wrap; }
+
+  .detail-head { padding: 16px 16px 0; }
+
+  // Six tabs outrun a phone; the strip pans, the way a column of cards does.
+  .detail-tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar { display: none; }
+  }
+
+  .detail-tab { white-space: nowrap; }
+
+  .detail-crumb-title { max-width: 16ch; }
+
+  .detail-fields {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 14px 16px 0;
+  }
+
+  .detail-block { padding: 16px 16px 0; }
+
+  .detail-foot { padding: 14px 16px 16px; }
+
+  // -- the settings shell: rail becomes a strip -------------------------------
+
+  .settings-shell { flex-direction: column; }
+
+  .settings-sections {
+    width: auto;
+    flex-direction: row;
+    padding: 0 8px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar { display: none; }
+  }
+
+  .settings-section-link {
+    flex: none;
+    padding: 12px 10px;
+    white-space: nowrap;
+  }
+
+  .settings-stage { padding: 16px 16px 32px; }
+
+  // The members register keeps its named columns and pans inside the panel
+  // rather than squeezing the role select out of the screen.
+  .table-pan {
+    overflow-x: auto;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar { display: none; }
+
+    .member-table { min-width: 560px; }
+  }
+
+  .field-row { flex-wrap: wrap; }
+
+  // -- people -----------------------------------------------------------------
+
+  .people-shell { padding: 16px 16px 32px; }
+
+  .person-head { flex-wrap: wrap; }
+
+  .person-fields { grid-template-columns: minmax(0, 1fr); }
+
+  // Stacked cells rule underneath each other, not off their right edge.
+  .person-field {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+
+    &:last-child {
+      border-right: none;
+      border-bottom: none;
+    }
+  }
+
+  // -- account screens ---------------------------------------------------------
+
+  .auth-stage { padding: 0 16px 24px; }
+}

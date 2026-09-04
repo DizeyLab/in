@@ -1,0 +1,49 @@
+[package]
+name = "in-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Drop-in OIDC client for topcoat apps authenticating against im"
+
+[dependencies]
+topcoat = { version = "0.6.2", default-features = false, features = [
+  "router",
+  "cookie",
+] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+base64.workspace = true
+rand.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+chacha20poly1305.workspace = true
+# rsa 0.9 verifies through the digest 0.10 traits, so its hasher comes from
+# the sha2 0.10 line; the workspace sha2 0.11 stays for PKCE.
+sha2-for-rsa = { package = "sha2", version = "0.10", features = ["oid"] }
+rsa = "0.9.10"
+reqwest = { version = "0.13.4", default-features = false, features = [
+  "rustls",
+  "json",
+  "form",
+] }
+
+
+[features]
+test-seam = []
+
+[dev-dependencies]
+topcoat = { version = "0.6.2", default-features = false, features = [
+  "router",
+  "cookie",
+  "view",
+  "serve",
+  "discover",
+] }
+http = "1.5"
+# Tests generate their own RSA keys, and rsa 0.9's RNG is the rand_core 0.6
+# line.
+rand_core06 = { package = "rand_core", version = "0.6.4", features = ["getrandom"] }

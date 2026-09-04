@@ -1,0 +1,228 @@
+on:
+  push:
+    branches:
+      - main
+
+# The deploy swaps a release directory and restarts one service; two of them
+# racing would leave the binary and the running process from different builds.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  # A gnu binary links against the runner's glibc, so the runner is pinned
+  # (see runs-on below) to the same 24.04 the server runs; the day either
+  # side moves, the pin is what forces a conscious decision rather than a
+  # broken deploy. In exchange: no cross-toolchain, and the linker is
+  # rustc's default bundled lld.
+  TARGET: x86_64-unknown-linux-gnu
+  # The systemd user unit that owns the process. See in.service.
+  SERVICE: in
+  # `release` keeps fat LTO in one codegen unit for when the last few percent
+  # are worth five minutes. `dist` is that profile with thin LTO and the cores
+  # actually used: measured on a 12-core machine, the relink every deploy pays
+  # for goes from 2m27s to 25s, for a binary this server will never be
+  # CPU-bound on. See the profile in Cargo.toml.
+  PROFILE: dist
+  TOPCOAT: 0.6.2
+  # The deploy lives in this subdirectory of the SSH user's home. The home
+  # itself is resolved on the server ($HOME), so switching the deploy user
+  # moves the path with it — a baked-in absolute path once kept pointing at
+  # the previous user's home and failed the deploy on permissions.
+  DEPLOY_SUBDIR: in
+  # Baked into the binary by build.rs and asserted against after the
+  # deploy restart: a /healthz answered by a stale process from an old
+  # deploy now fails and rolls back instead of reporting green (observed
+  # on the initial in deploy).
+  IN_BUILD_SHA: ${{ github.sha }}
+
+jobs:
+  deploy:
+    name: Deploy
+    # Pinned, not `latest`: ubuntu-latest floating to the next LTS would
+    # one day ship a glibc newer than the server's, and the gnu binary
+    # would stop running there. See the TARGET comment above.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true
+          # Bump when the target, the profile or any rustflags change: the
+          # key does not otherwise see those, and a run that restores the
+          # old key reports it up-to-date at save time — discarding the
+          # recompiled dependencies and silently recompiling them on every
+          # later run (observed when the musl→gnu move landed on this key).
+          prefix-key: v1-rust-gnu
+
+      # Compiling the CLI from source costs minutes and it changes only when
+      # the pinned version does, so it is cached on that version alone.
+      - name: Cache the topcoat CLI
+        id: topcoat-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/topcoat
+          key: topcoat-cli-${{ env.TOPCOAT }}-${{ runner.os }}
+
+      - name: Install the topcoat CLI
+        # Installed before the cargo config below exists, so the CLI itself
+        # is built for the host and not for the deploy target.
+        if: steps.topcoat-cache.outputs.cache-hit != 'true'
+        run: cargo install topcoat-cli@${{ env.TOPCOAT }} --locked
+
+      - name: Point cargo at the deploy target
+        run: |
+          set -euo pipefail
+          # `topcoat asset bundle` runs its own `cargo build` and strips every
+          # CARGO_* variable from it, so the target cannot be passed by
+          # environment; it goes into the cargo config that inner build
+          # reads. This file is written in CI only; it is not committed.
+          #
+          # With the gnu target the linker is rustc's default — the bundled
+          # rust-lld — and it matters: a warm relink of this binary measured
+          # 142s under the BFD that an explicit `linker = "gcc"` would pick,
+          # against 23s under lld. That link is the largest single chunk of
+          # the deploy build, so the default is deliberately left alone.
+          mkdir -p .cargo
+          printf '[build]\ntarget = "%s"\n' "$TARGET" >> .cargo/config.toml
+
+      - name: Build the binary and bundle its assets
+        run: |
+          set -euo pipefail
+          # One compile: this builds in-web and writes out the asset bundle
+          # embedded in the binary it produced.
+          topcoat asset bundle --package in-web --profile "$PROFILE" --out stage/assets
+          cp "target/$TARGET/$PROFILE/in-web" stage/in-web
+          strip stage/in-web
+          ls -l stage stage/assets
+
+      - name: Install SSH keys
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SSH_HOST }} > ~/.ssh/known_hosts
+
+      - name: Upload the release
+        run: |
+          set -euo pipefail
+          ssh_target="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+
+          # The server's login shell is not bash, and ssh would hand this
+          # script to it; `bash -s` takes it on stdin instead, so the login
+          # shell only ever parses one plain command.
+          #
+          # The deploy path is $DEPLOY_SUBDIR under the SSH user's home,
+          # resolved on the server as $HOME: there is no path secret to go
+          # stale, and switching the deploy user moves the deploy with it.
+          ssh "$ssh_target" "bash -se -- '$DEPLOY_SUBDIR'" <<'REMOTE'
+          set -euo pipefail
+          case "$1" in
+            ''|/*|*..*)
+              echo "Refusing a broad deploy subdirectory: '$1'" >&2
+              exit 1
+              ;;
+          esac
+          deploy_path=$HOME/$1
+          # The deploy path is the service's working directory: config/,
+          # in.db and in.key live there and are never touched from here.
+          # Only 'current' is replaced.
+          mkdir -p -- "$deploy_path"
+          rm -rf -- "$deploy_path/current.new"
+          mkdir -p -- "$deploy_path/current.new"
+          REMOTE
+          # stdin carries the tarball, so the script cannot; the extraction
+          # still goes through bash -c because the login shell is fish and
+          # would not expand $HOME.
+          tar -C stage -czf - . | ssh "$ssh_target" "bash -c 'exec tar -xzf - -C \"\$HOME/\$1/current.new\"' -- '$DEPLOY_SUBDIR'"
+
+      - name: Swap and restart
+        run: |
+          set -euo pipefail
+          ssh_target="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+
+          # bash -s for the same reason as above: the login shell is not
+          # bash and must never see this script.
+          ssh "$ssh_target" "bash -se -- '$DEPLOY_SUBDIR' '$SERVICE' '$GITHUB_SHA'" <<'REMOTE'
+          set -euo pipefail
+          deploy_path=$HOME/$1
+          service=$2
+          expected="ok $3"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          # Read before anything moves: a config the health check cannot
+          # read is a failure to stop on, not one to roll back from.
+          listen=$(sed -n 's/^listen[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$deploy_path/config/in.toml")
+          if [ -z "$listen" ]; then
+            echo "no listen address in $deploy_path/config/in.toml" >&2
+            exit 1
+          fi
+          chmod +x -- "$deploy_path/current.new/in-web"
+          rm -rf -- "$deploy_path/current.previous"
+          if [ -e "$deploy_path/current" ]; then
+            mv -- "$deploy_path/current" "$deploy_path/current.previous"
+          fi
+          mv -- "$deploy_path/current.new" "$deploy_path/current"
+          systemctl --user restart "$service"
+          # The unit is Type=simple, so a restart returns before the new
+          # process has bound its port — and before an old one has let go
+          # of it. Wait for the health route rather than a clock, and
+          # check the answer names this commit: a stale process can still
+          # answer, and did once (the initial in deploy deployed green over
+          # a stale server).
+          rollback() {
+            rm -rf -- "$deploy_path/current"
+            mv -- "$deploy_path/current.previous" "$deploy_path/current"
+            systemctl --user restart "$service"
+          }
+          for _ in $(seq 1 30); do
+            served=$(curl -fsS "http://$listen/healthz" 2>/dev/null) || { sleep 1; continue; }
+            if [ "$served" != "$expected" ]; then
+              echo "/healthz answered '$served', wanted '$expected'; rolling back" >&2
+              rollback
+              exit 1
+            fi
+            echo 'in is up'
+            rm -rf -- "$deploy_path/current.previous"
+            exit 0
+          done
+          echo 'in did not answer /healthz; rolling back' >&2
+          rollback
+          exit 1
+          REMOTE
+
+      # The boot-time fingerprint guard refuses a foreign bundle, so a
+      # mixed generation cannot get this far unnoticed — this is the
+      # independent after-the-fact check: the page's stylesheet URL must
+      # answer with bytes byte-identical to the bundle this deploy staged.
+      - name: Verify the served stylesheet is this deploy's
+        run: |
+          set -euo pipefail
+          ssh_target="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+          # One remote script: mixing runner-side and server-side variables in
+          # nested ssh quoting once shipped a check that failed on a healthy
+          # deploy. Everything server-side happens inside the heredoc; only the
+          # stylesheet bytes come back on stdout.
+          ssh "$ssh_target" "bash -se -- '$DEPLOY_SUBDIR'" > served-stylesheet.css <<'REMOTE'
+          set -euo pipefail
+          deploy_path=$HOME/$1
+          listen=$(sed -n 's/^listen[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$deploy_path/config/in.toml")
+          url=$(curl -fsS "http://${listen}/" | grep -oE '/_topcoat/assets/main-[a-f0-9]+\.css' | head -n1)
+          if [ -z "$url" ]; then
+            echo 'the served page references no stylesheet' >&2
+            exit 1
+          fi
+          echo "served stylesheet url: $url" >&2
+          curl -fsS "http://${listen}${url}"
+          REMOTE
+          staged=$(sha256sum stage/assets/main-*.css | cut -d' ' -f1)
+          served=$(sha256sum served-stylesheet.css | cut -d' ' -f1)
+          echo "staged sha256:$staged, served sha256:$served"
+          test "$staged" = "$served"
+
+      - name: Cleaning
+        run: rm -rf ~/.ssh

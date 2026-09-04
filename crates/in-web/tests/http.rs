@@ -1,0 +1,1898 @@
+//! The drive driven the way a browser drives it: real router, real store,
+//! real session cookie, fake im.
+//!
+//! Auth in tests: the OIDC dance cannot run against a live im, so each test
+//! spins a fake one — a bare TCP server answering `POST /introspect` — and
+//! signs users in with `in_client::mint_session_cookie` (feature
+//! `test-seam`). The token<->claims map is per-test, so one test's session
+//! is meaningless to the next.
+//!
+//! New HTTP tests belong in this file rather than a new `tests/*.rs`: one
+//! test binary links and runs once.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use http::{HeaderValue, Request, StatusCode, header};
+use in_core::store::{ShareKind, Store, TursoStore};
+use in_core::{Config, OidcConfig};
+use in_web::server::App;
+use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
+use topcoat::cookie::RouterBuilderCookieExt;
+use topcoat::router::{Body, BodyLimit, Router, RouterBuilderDiscoverExt, to_bytes};
+use ulid::Ulid;
+
+/// The bundle `cargo build -p in-web` + `topcoat asset bundle --bin in-web`
+/// write next to the crate's own `target/debug`, not next to the test
+/// binary (which lives in `target/debug/deps`) — `AssetBundle::load` looks
+/// beside `current_exe` and would miss it, so the path is given explicitly
+/// instead.
+fn asset_dir() -> PathBuf {
+    PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../target/debug/assets"
+    ))
+}
+
+/// A fake im: answers `POST /introspect` from its token map, `{"active":
+/// false}` for anything it does not know. Bare TCP + hand-rolled HTTP/1.1 —
+/// just enough for the client's form post.
+struct FakeIm {
+    addr: std::net::SocketAddr,
+    tokens: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+}
+
+impl FakeIm {
+    async fn spawn() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let tokens: Arc<Mutex<HashMap<String, serde_json::Value>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let map = tokens.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let map = map.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut socket = socket;
+                    let mut buf = vec![0u8; 8192];
+                    let mut req = Vec::new();
+                    // One request after another on the same connection:
+                    // closing it after every answer races the client's
+                    // pool, which may hand out the dead socket for the
+                    // next introspection and read that as signed-out.
+                    loop {
+                        let body_start = loop {
+                            let Ok(n) = socket.read(&mut buf).await else {
+                                return;
+                            };
+                            if n == 0 {
+                                return;
+                            }
+                            req.extend_from_slice(&buf[..n]);
+                            if let Some(end) = headers_end(&req) {
+                                let head = String::from_utf8_lossy(&req[..end]).to_string();
+                                let len = content_length(&head);
+                                if req.len() >= end + len {
+                                    break end;
+                                }
+                            }
+                            if req.len() > 1_000_000 {
+                                return;
+                            }
+                        };
+                        let head = String::from_utf8_lossy(&req[..body_start]).to_string();
+                        let first = head.lines().next().unwrap_or("").to_string();
+                        // The body may already hold the next pipelined
+                        // request's first bytes; take exactly this one.
+                        let len = content_length(&head);
+                        let body: Vec<u8> = req[body_start..body_start + len].to_vec();
+                        req.drain(..body_start + len);
+                        let answer = answer_for(&map, &first, &body);
+                        let payload = serde_json::to_vec(&answer).unwrap();
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                            payload.len()
+                        );
+                        if socket.write_all(response.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        if socket.write_all(&payload).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        Self { addr, tokens }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+}
+
+fn headers_end(req: &[u8]) -> Option<usize> {
+    req.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|pos| pos + 4)
+}
+
+fn content_length(head: &str) -> usize {
+    head.lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            (name.trim().eq_ignore_ascii_case("content-length"))
+                .then(|| value.trim().parse().ok())?
+        })
+        .unwrap_or(0)
+}
+
+/// Percent-decoding, enough for the opaque tokens these tests mint.
+fn decode(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut bytes = raw.as_bytes().iter();
+    while let Some(&b) = bytes.next() {
+        if b == b'+' {
+            out.push(' ');
+        } else if b == b'%' {
+            let hi = bytes.next().copied().unwrap_or(b'0');
+            let lo = bytes.next().copied().unwrap_or(b'0');
+            let hex = |c: u8| (c as char).to_digit(16).unwrap_or(0) as u8;
+            out.push((hex(hi) * 16 + hex(lo)) as char);
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
+}
+
+fn answer_for(
+    map: &Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    request_line: &str,
+    body: &[u8],
+) -> serde_json::Value {
+    let mut head = request_line.split_whitespace();
+    let is_introspect = head.next() == Some("POST") && head.next() == Some(in_client::introspect_path());
+    if !is_introspect {
+        return serde_json::json!({"active": false});
+    }
+    let text = String::from_utf8_lossy(body).to_string();
+    let token = text
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(name, _)| *name == "token")
+        .map(|(_, value)| decode(value));
+    match token.and_then(|token| map.lock().unwrap().get(&token).cloned()) {
+        Some(claims) => claims,
+        None => serde_json::json!({"active": false}),
+    }
+}
+
+/// A throwaway workspace: its own database file, its own fake im, its own
+/// router.
+struct TestApp {
+    dir: PathBuf,
+    router: Router,
+    store: Arc<dyn Store>,
+    config: Config,
+    client: in_client::Config,
+    fake: FakeIm,
+    stop: tokio::sync::watch::Sender<bool>,
+}
+
+impl TestApp {
+    async fn build() -> Self {
+        let dir = std::env::temp_dir().join(format!("in-http-{}", Ulid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("in.db");
+        let storage = dir.join("storage");
+        let store: Arc<dyn Store> = Arc::new(
+            TursoStore::open(db.to_str().unwrap(), Some(storage.as_path()))
+                .await
+                .unwrap(),
+        );
+        let fake = FakeIm::spawn().await;
+        let client = in_client::Config {
+            issuer: fake.url(),
+            client_id: "in-test".to_string(),
+            client_secret: "s3cr3t".to_string(),
+            redirect_uri: "http://127.0.0.1:7655/auth/callback".to_string(),
+            cookie_name: "in_session".to_string(),
+            cookie_key: [7u8; 32],
+        };
+        let config = Config {
+            database: db.to_str().unwrap().to_string(),
+            storage,
+            listen: "127.0.0.1:7655".parse().unwrap(),
+            live_seconds: 300,
+            purge_after_days: 30,
+            default_quota_bytes: 10 * 1024 * 1024 * 1024,
+            oidc: OidcConfig {
+                issuer: fake.url(),
+                client_id: "in-test".to_string(),
+                client_secret: "s3cr3t".to_string(),
+                redirect_uri: "http://127.0.0.1:7655/auth/callback".to_string(),
+            },
+            ignored: Vec::new(),
+            defaulted: false,
+        };
+        let (stop, stopping) = tokio::sync::watch::channel(false);
+        let router = in_client::mount(
+            Router::builder()
+                .discover()
+                .layer(BodyLimit::max(16 * 1024 * 1024).at("/api/upload"))
+                .layer(BodyLimit::max(64 * 1024 * 1024).at("/files"))
+                .cookies()
+                .assets(
+                    AssetBundle::load_dir(asset_dir())
+                        .expect("run `topcoat asset bundle` before the http suite"),
+                ),
+            client.clone(),
+        )
+        .app_context(App {
+            store: store.clone(),
+            config: config.clone(),
+            shutdown: in_web::live::Shutdown(stopping),
+        })
+        .app_context(in_web::live::LiveWindow(std::time::Duration::from_secs(10)))
+        .build();
+        Self {
+            dir,
+            router,
+            store,
+            config,
+            client,
+            fake,
+            stop,
+        }
+    }
+
+    /// Provisions the row and mints a session for it, returning the `Cookie`
+    /// header value to send.
+    async fn sign_in(&self, sub: &str, email: &str, name: &str) -> String {
+        let user = self
+            .store
+            .provision_user(sub, email, name, self.config.default_quota_bytes)
+            .await
+            .unwrap();
+        let token = format!("tok-{}", Ulid::new());
+        let exp = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+        self.fake.tokens.lock().unwrap().insert(
+            token.clone(),
+            serde_json::json!({
+                "active": true,
+                "sub": user.oidc_sub,
+                "email": user.email,
+                "name": user.display_name,
+                "exp": exp.unix_timestamp(),
+            }),
+        );
+        let value = in_client::mint_session_cookie(&self.client, &token, exp);
+        format!("in_session={value}")
+    }
+
+    /// Posts a form the way a hydrated caller does: `Accept:
+    /// application/json`, no `Referer`. Every mutating `/api/*` route
+    /// answers `303 See Other` regardless — [`Router::handle`] never follows
+    /// a redirect, so the answer is read straight off this response.
+    async fn post(&self, path: &str, cookie: Option<&str>, form: &[(&str, &str)]) -> Answer {
+        let body = form
+            .iter()
+            .map(|(key, value)| format!("{}={}", encode(key), encode(value)))
+            .collect::<Vec<_>>()
+            .join("&");
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::ACCEPT, "application/json")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
+        }
+        let response = self
+            .router
+            .handle(request.body(Body::from(body)).unwrap())
+            .await;
+        Answer::from_response(response).await
+    }
+
+    /// Posts JSON the way the upload script does.
+    async fn post_json(
+        &self,
+        path: &str,
+        cookie: Option<&str>,
+        value: serde_json::Value,
+    ) -> Answer {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::ACCEPT, "application/json")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
+        }
+        let response = self
+            .router
+            .handle(request.body(Body::from(value.to_string())).unwrap())
+            .await;
+        Answer::from_response(response).await
+    }
+
+    /// Puts raw bytes the way the upload script sends one chunk.
+    async fn put_bytes(&self, path: &str, cookie: Option<&str>, bytes: &[u8]) -> Answer {
+        let mut request = Request::builder()
+            .method("PUT")
+            .uri(path)
+            .header(header::ACCEPT, "application/json")
+            .header(header::CONTENT_TYPE, "application/octet-stream");
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
+        }
+        let response = self
+            .router
+            .handle(request.body(Body::from(bytes.to_vec())).unwrap())
+            .await;
+        Answer::from_response(response).await
+    }
+
+    /// Posts a multipart form the way the drive's upload control does,
+    /// hand-built rather than pulling in a client crate for it: the fields
+    /// first, in the order given, then one `file` part per file.
+    async fn post_multipart(
+        &self,
+        path: &str,
+        cookie: Option<&str>,
+        fields: &[(&str, &str)],
+        files: &[(&str, &str, &[u8])],
+    ) -> Answer {
+        const BOUNDARY: &str = "in-test-boundary";
+        let mut body = Vec::new();
+        for (name, value) in fields {
+            body.extend_from_slice(
+                format!(
+                    "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+                )
+                .as_bytes(),
+            );
+        }
+        for (filename, content_type, bytes) in files {
+            body.extend_from_slice(
+                format!(
+                    "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+            body.extend_from_slice(bytes);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+
+        let mut request = Request::builder().method("POST").uri(path).header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        );
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
+        }
+        let response = self
+            .router
+            .handle(request.body(Body::from(body)).unwrap())
+            .await;
+        Answer::from_response(response).await
+    }
+
+    /// Gets a page or a download the way a browser does, raw bytes back
+    /// untouched — a download's body is not always UTF-8.
+    async fn get(&self, path: &str, cookie: Option<&str>) -> Raw {
+        self.get_with(path, cookie, None, None).await
+    }
+
+    /// Like `get`, but with a `Range` header, for the partial-content path.
+    async fn get_with_range(&self, path: &str, cookie: Option<&str>, range: &str) -> Raw {
+        self.get_with(path, cookie, Some(range), None).await
+    }
+
+    /// Like `get`, but with `If-None-Match`, for the thumbnail revalidate
+    /// path.
+    async fn get_with_if_none_match(&self, path: &str, cookie: Option<&str>, etag: &str) -> Raw {
+        self.get_with(path, cookie, None, Some(etag)).await
+    }
+
+    async fn get_with(
+        &self,
+        path: &str,
+        cookie: Option<&str>,
+        range: Option<&str>,
+        if_none_match: Option<&str>,
+    ) -> Raw {
+        let mut request = Request::builder().method("GET").uri(path);
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
+        }
+        if let Some(range) = range {
+            request = request.header(header::RANGE, range);
+        }
+        if let Some(if_none_match) = if_none_match {
+            request = request.header(header::IF_NONE_MATCH, if_none_match);
+        }
+        let response = self
+            .router
+            .handle(request.body(Body::empty()).unwrap())
+            .await;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let header = |name| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        };
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        Raw {
+            status,
+            content_type: header(header::CONTENT_TYPE),
+            disposition: header(header::CONTENT_DISPOSITION),
+            content_range: header(header::CONTENT_RANGE),
+            accept_ranges: header(header::ACCEPT_RANGES),
+            cache_control: header(header::CACHE_CONTROL),
+            etag: header(header::ETAG),
+            location: header(header::LOCATION),
+            bytes,
+        }
+    }
+}
+
+impl Drop for TestApp {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+/// A mutating call's answer: always a 303, carrying the refusal (or its
+/// absence) as JSON — the same body a hydrated caller reads.
+struct Answer {
+    status: StatusCode,
+    body: String,
+    location: Option<String>,
+}
+
+impl Answer {
+    async fn from_response(response: topcoat::router::response::Response) -> Self {
+        let status = response.status();
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        Answer {
+            status,
+            location,
+            body: String::from_utf8(bytes.to_vec()).unwrap(),
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.body).unwrap()
+    }
+
+    fn refused(&self, code: &str, call: &str) -> bool {
+        self.status == StatusCode::SEE_OTHER
+            && self
+                .location
+                .as_deref()
+                .is_some_and(|location| {
+                    location.contains(&format!("refusal={code}")) && location.contains(&format!("on={call}"))
+                })
+    }
+
+    fn accepted(&self) -> bool {
+        self.status == StatusCode::SEE_OTHER
+            && self
+                .location
+                .as_deref()
+                .is_some_and(|location| !location.contains("refusal="))
+    }
+}
+
+/// A GET answer kept as raw bytes: a page's HTML or a download's file.
+struct Raw {
+    status: StatusCode,
+    content_type: Option<String>,
+    disposition: Option<String>,
+    content_range: Option<String>,
+    accept_ranges: Option<String>,
+    cache_control: Option<String>,
+    etag: Option<String>,
+    location: Option<String>,
+    bytes: Vec<u8>,
+}
+
+impl Raw {
+    fn text(&self) -> String {
+        String::from_utf8(self.bytes.clone()).unwrap()
+    }
+}
+
+/// Form encoding, enough for the names these tests send.
+fn encode(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// The 1x1 transparent PNG: the smallest thing the thumbnailer must accept.
+fn tiny_png() -> Vec<u8> {
+    vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+        0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+        0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+        0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+        0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ]
+}
+
+/// The newest live folder with this name under this parent, read straight
+/// off the store.
+async fn folder_id(app: &TestApp, owner: &str, parent: Option<&str>, name: &str) -> String {
+    app.store
+        .list_children(owner, parent)
+        .await
+        .unwrap()
+        .folders
+        .iter()
+        .find(|folder| folder.name == name)
+        .expect("folder was not created")
+        .id
+        .clone()
+}
+/// The token off a creation redirect's `?created=` pair.
+fn created_token(location: &str) -> String {
+    let query = location.split_once('?').map(|(_, query)| query).unwrap_or("");
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(name, _)| *name == "created")
+        .map(|(_, value)| value.to_string())
+        .expect("creation set no token")
+}
+
+async fn file_id(app: &TestApp, owner: &str, name: &str, bytes: &[u8]) -> String {
+    app.store
+        .insert_file(owner, None, name, bytes)
+        .await
+        .unwrap()
+        .id
+}
+
+async fn owner_of(app: &TestApp, sub: &str) -> String {
+    app.store
+        .provision_user(sub, "x@y.z", "X", app.config.default_quota_bytes)
+        .await
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
+async fn drive_redirects_without_session() {
+    let app = TestApp::build().await;
+    let page = app.get("/drive", None).await;
+    assert_eq!(page.status, StatusCode::SEE_OTHER);
+    assert_eq!(page.location.as_deref(), Some("/"));
+}
+
+#[tokio::test]
+async fn folder_crud_and_cycle_is_refused() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-crud", "crud@in.test", "Crud").await;
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-crud")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let answer = app
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "projects")])
+        .await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.body);
+    assert_eq!(answer.body, "null", "creating was refused");
+
+    let projects = folder_id(&app, &user.id, None, "projects").await;
+    let answer = app
+        .post(
+            "/api/folder/create",
+            Some(&cookie),
+            &[("parent_id", &projects), ("name", "sub")],
+        )
+        .await;
+    assert_eq!(answer.body, "null", "creating was refused");
+    let sub = folder_id(&app, &user.id, Some(&projects), "sub").await;
+
+    // Nesting `projects` inside its own descendant is refused, not looped.
+    let answer = app
+        .post(
+            "/api/folder/move",
+            Some(&cookie),
+            &[("id", &projects), ("parent_id", &sub)],
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER);
+    assert!(
+        answer.body.contains("Forbidden"),
+        "cycle was not refused: {}",
+        answer.body
+    );
+
+    // A legal move, a rename and a delete all land clean.
+    let answer = app
+        .post("/api/folder/move", Some(&cookie), &[("id", &sub), ("parent_id", "")])
+        .await;
+    assert_eq!(answer.body, "null", "moving was refused: {}", answer.body);
+    let answer = app
+        .post(
+            "/api/folder/rename",
+            Some(&cookie),
+            &[("id", &sub), ("name", "moved")],
+        )
+        .await;
+    assert_eq!(answer.body, "null", "renaming was refused: {}", answer.body);
+    let answer = app
+        .post("/api/folder/delete", Some(&cookie), &[("id", &sub)])
+        .await;
+    assert_eq!(answer.body, "null", "deleting was refused: {}", answer.body);
+
+    // The drive page names what is left.
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text().contains("projects"), "drive hides the folder");
+}
+
+#[tokio::test]
+async fn small_upload_round_trip() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-small", "small@in.test", "Small").await;
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-small")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let bytes = b"hello in";
+    let answer = app
+        .post_multipart(
+            "/files",
+            Some(&cookie),
+            &[("folder_id", "")],
+            &[("hello.txt", "text/plain", bytes)],
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.location.unwrap_or_default());
+    assert!(
+        !answer.location.as_deref().unwrap_or("").contains("refusal="),
+        "upload was refused: {}",
+        answer.location.unwrap_or_default()
+    );
+
+    let file = app
+        .store
+        .list_children(&user.id, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .find(|file| file.name == "hello.txt")
+        .expect("file was not stored");
+    assert_eq!(file.mime, "text/plain");
+
+    let got = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
+    assert_eq!(got.status, StatusCode::OK);
+    assert_eq!(got.bytes, bytes);
+    assert_eq!(got.accept_ranges.as_deref(), Some("bytes"));
+    assert!(
+        got.cache_control.as_deref().unwrap_or("").contains("immutable"),
+        "missing immutable cache directive"
+    );
+}
+
+#[tokio::test]
+async fn chunked_upload_round_trip() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-chunk", "chunk@in.test", "Chunk").await;
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-chunk")
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Two chunks: the 8 MiB server size plus a tail, so the finish assembles
+    // more than one staged piece.
+    let total = 8 * 1024 * 1024 + 100;
+    let mut bytes = Vec::with_capacity(total);
+    for i in 0..total {
+        bytes.push((i % 251) as u8);
+    }
+
+    let answer = app
+        .post_json(
+            "/api/upload/start",
+            Some(&cookie),
+            serde_json::json!({"folder_id": null, "name": "big.bin", "size_bytes": total}),
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    let started = answer.json();
+    let session = started["Ok"]["id"].as_str().expect("start was refused").to_string();
+    assert_eq!(started["Ok"]["chunk_size"].as_u64(), Some(8 * 1024 * 1024));
+
+    let answer = app
+        .put_bytes(
+            &format!("/api/upload/{session}/0"),
+            Some(&cookie),
+            &bytes[..8 * 1024 * 1024],
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(answer.json()["Ok"]["received_bytes"].as_u64(), Some(8 * 1024 * 1024));
+
+    let answer = app
+        .put_bytes(&format!("/api/upload/{session}/1"), Some(&cookie), &bytes[8 * 1024 * 1024..])
+        .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(answer.json()["Ok"]["received_bytes"].as_u64(), Some(total as u64));
+
+    let answer = app
+        .post_json(
+            &format!("/api/upload/{session}/finish"),
+            Some(&cookie),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    let file_id = answer.json()["Ok"].as_str().expect("finish was refused").to_string();
+
+    let got = app.get(&format!("/file/{file_id}"), Some(&cookie)).await;
+    assert_eq!(got.status, StatusCode::OK);
+    assert_eq!(got.bytes, bytes);
+
+    let row = app.store.file(&file_id).await.unwrap().unwrap();
+    assert_eq!(row.owner_id, user.id);
+}
+
+#[tokio::test]
+async fn range_request_serves_a_slice() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-range", "range@in.test", "Range").await;
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-range")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let bytes = b"hello in";
+    app.post_multipart(
+        "/files",
+        Some(&cookie),
+        &[("folder_id", "")],
+        &[("hello.txt", "text/plain", bytes)],
+    )
+    .await;
+    let file = app
+        .store
+        .list_children(&user.id, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+
+    let slice = app
+        .get_with_range(&format!("/file/{}", file.id), Some(&cookie), "bytes=0-4")
+        .await;
+    assert_eq!(slice.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(slice.bytes, b"hello");
+    assert_eq!(slice.content_range.as_deref(), Some("bytes 0-4/8"));
+
+    let past_end = app
+        .get_with_range(&format!("/file/{}", file.id), Some(&cookie), "bytes=99-")
+        .await;
+    assert_eq!(past_end.status, StatusCode::RANGE_NOT_SATISFIABLE);
+}
+
+#[tokio::test]
+async fn quota_is_refused_before_and_during_upload() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-quota", "quota@in.test", "Quota").await;
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-quota")
+        .await
+        .unwrap()
+        .unwrap();
+    app.store.set_user_quota(&user.id, 10).await.unwrap();
+
+    let answer = app
+        .post_json(
+            "/api/upload/start",
+            Some(&cookie),
+            serde_json::json!({"folder_id": null, "name": "too-big.bin", "size_bytes": 100}),
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(
+        answer.json()["Err"].as_str(),
+        Some("QuotaExceeded"),
+        "start was not refused: {}",
+        answer.body
+    );
+
+    let answer = app
+        .post_multipart(
+            "/files",
+            Some(&cookie),
+            &[("folder_id", "")],
+            &[("twenty.txt", "text/plain", b"12345678901234567890")],
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER);
+    let location = answer.location.unwrap_or_default();
+    assert!(
+        location.contains("quota-exceeded"),
+        "small upload was not refused: {location}"
+    );
+}
+
+#[tokio::test]
+async fn thumbnail_is_served_after_image_upload() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-thumb", "thumb@in.test", "Thumb").await;
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-thumb")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let png = tiny_png();
+    let answer = app
+        .post_multipart(
+            "/files",
+            Some(&cookie),
+            &[("folder_id", "")],
+            &[("dot.png", "image/png", &png)],
+        )
+        .await;
+    assert!(
+        !answer.location.as_deref().unwrap_or("").contains("refusal="),
+        "image upload was refused: {}",
+        answer.location.unwrap_or_default()
+    );
+    let file = app
+        .store
+        .list_children(&user.id, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .find(|file| file.name == "dot.png")
+        .expect("image was not stored");
+    assert_eq!(file.mime, "image/png");
+
+    let thumb = app.get(&format!("/thumb/{}", file.id), Some(&cookie)).await;
+    assert_eq!(thumb.status, StatusCode::OK, "no thumbnail served");
+    assert_eq!(thumb.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(&thumb.bytes[0..4], b"RIFF");
+    assert_eq!(&thumb.bytes[8..12], b"WEBP");
+
+    let etag = thumb.etag.clone().expect("no etag on the thumbnail");
+    let cached = app
+        .get_with_if_none_match(&format!("/thumb/{}", file.id), Some(&cookie), &etag)
+        .await;
+    assert_eq!(cached.status, StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn cross_owner_answers_not_found() {
+    let app = TestApp::build().await;
+    let alice = app.sign_in("sub-alice", "alice@in.test", "Alice").await;
+    let alice_user = app.store.user_by_oidc_sub("sub-alice").await.unwrap().unwrap();
+    let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+
+    app.post("/api/folder/create", Some(&alice), &[("parent_id", ""), ("name", "hers")])
+        .await;
+    let hers = folder_id(&app, &alice_user.id, None, "hers").await;
+    app.post_multipart(
+        "/files",
+        Some(&alice),
+        &[("folder_id", "")],
+        &[("hers.txt", "text/plain", b"hers")],
+    )
+    .await;
+    let file = app
+        .store
+        .list_children(&alice_user.id, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+
+    let bytes = app.get(&format!("/file/{}", file.id), Some(&bob)).await;
+    assert_eq!(bytes.status, StatusCode::NOT_FOUND);
+    let thumb = app.get(&format!("/thumb/{}", file.id), Some(&bob)).await;
+    assert_eq!(thumb.status, StatusCode::NOT_FOUND);
+    let page = app.get(&format!("/drive?folder={hers}"), Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND);
+
+    let answer = app
+        .post("/api/folder/rename", Some(&bob), &[("id", &hers), ("name", "theirs")])
+        .await;
+    assert!(
+        answer.body.contains("NotFound"),
+        "cross-owner write was not refused as not-found: {}",
+        answer.body
+    );
+    let answer = app
+        .post("/api/file/delete", Some(&bob), &[("id", &file.id)])
+        .await;
+    assert!(
+        answer.body.contains("NotFound"),
+        "cross-owner delete was not refused as not-found: {}",
+        answer.body
+    );
+}
+
+#[tokio::test]
+async fn file_rename_move_and_delete() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-fops", "fops@in.test", "Fops").await;
+    let user = app.store.user_by_oidc_sub("sub-fops").await.unwrap().unwrap();
+
+    app.post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "box")])
+        .await;
+    let boxed = folder_id(&app, &user.id, None, "box").await;
+    app.post_multipart(
+        "/files",
+        Some(&cookie),
+        &[("folder_id", "")],
+        &[("note.txt", "text/plain", b"note")],
+    )
+    .await;
+    let file = app
+        .store
+        .list_children(&user.id, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+
+    let answer = app
+        .post("/api/file/rename", Some(&cookie), &[("id", &file.id), ("name", "renamed.txt")])
+        .await;
+    assert_eq!(answer.body, "null", "renaming was refused: {}", answer.body);
+    let answer = app
+        .post("/api/file/move", Some(&cookie), &[("id", &file.id), ("folder_id", &boxed)])
+        .await;
+    assert_eq!(answer.body, "null", "moving was refused: {}", answer.body);
+    let moved = app.store.file(&file.id).await.unwrap().unwrap();
+    assert_eq!(moved.name, "renamed.txt");
+    assert_eq!(moved.folder_id.as_deref(), Some(boxed.as_str()));
+
+    let answer = app.post("/api/file/delete", Some(&cookie), &[("id", &file.id)]).await;
+    assert_eq!(answer.body, "null", "deleting was refused: {}", answer.body);
+    let trashed = app.store.file(&file.id).await.unwrap().unwrap();
+    assert!(trashed.deleted_at.is_some(), "delete did not trash the file");
+    // And the bytes answer 404 once trashed.
+    let gone = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn upload_abort_and_bad_chunk() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-abort", "abort@in.test", "Abort").await;
+
+    let answer = app
+        .post_json(
+            "/api/upload/start",
+            Some(&cookie),
+            serde_json::json!({"folder_id": null, "name": "never.bin", "size_bytes": 100}),
+        )
+        .await;
+    let session = answer.json()["Ok"]["id"].as_str().unwrap().to_string();
+
+    // A short piece is a bad chunk, not a short file.
+    let answer = app.put_bytes(&format!("/api/upload/{session}/0"), Some(&cookie), b"short").await;
+    assert_eq!(
+        answer.json()["Err"].as_str(),
+        Some("BadChunk"),
+        "short chunk was not refused: {}",
+        answer.body
+    );
+
+    let answer = app
+        .post_json(&format!("/api/upload/{session}/abort"), Some(&cookie), serde_json::json!({}))
+        .await;
+    assert_eq!(answer.json()["Ok"], serde_json::Value::Null, "{}", answer.body);
+
+    // The finish after the abort finds an expired session, with the chunks
+    // still staged for nothing.
+    let answer = app
+        .post_json(&format!("/api/upload/{session}/finish"), Some(&cookie), serde_json::json!({}))
+        .await;
+    assert_eq!(
+        answer.json()["Err"].as_str(),
+        Some("UploadExpired"),
+        "finish after abort was not refused: {}",
+        answer.body
+    );
+}
+
+#[tokio::test]
+async fn forced_download_is_attachment() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-dl", "dl@in.test", "Dl").await;
+    let user = app.store.user_by_oidc_sub("sub-dl").await.unwrap().unwrap();
+
+    app.post_multipart(
+        "/files",
+        Some(&cookie),
+        &[("folder_id", "")],
+        &[("readme.txt", "text/plain", b"read me")],
+    )
+    .await;
+    let file = app
+        .store
+        .list_children(&user.id, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+
+    let inline = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
+    assert!(
+        inline.disposition.as_deref().unwrap_or("").starts_with("inline"),
+        "text should render inline: {:?}",
+        inline.disposition
+    );
+    let forced = app.get(&format!("/file/{}?dl=1", file.id), Some(&cookie)).await;
+    assert_eq!(forced.status, StatusCode::OK);
+    assert!(
+        forced.disposition.as_deref().unwrap_or("").starts_with("attachment"),
+        "?dl=1 did not force attachment: {:?}",
+        forced.disposition
+    );
+    assert_eq!(forced.bytes, b"read me");
+}
+
+// -- public links (merged from http_d2.rs; one binary per crate) ------------
+
+#[tokio::test]
+async fn link_create_public_view_revoke_gone() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
+
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+
+    // Public: no cookie, the card renders.
+    let page = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("notes.txt"), "{}", page.text());
+
+    // Public download carries the bytes.
+    let bytes = app.get(&format!("/s/{token}?dl=1"), None).await;
+    assert_eq!(bytes.status, StatusCode::OK);
+    assert_eq!(bytes.bytes, b"hello in");
+
+    // Revoke: only the id travels; look it up straight off the store.
+    let id = app.store.share_links(&owner).await.unwrap()[0].id.clone();
+    let answer = app
+        .post("/api/share/link/revoke", Some(&admin), &[("id", &id)])
+        .await;
+    assert!(answer.accepted(), "revoke refused: {:?}", answer.location);
+
+    let gone = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(gone.status, StatusCode::OK);
+    assert!(
+        gone.text().contains("no longer works"),
+        "revoked link showed: {}",
+        gone.text()
+    );
+}
+
+#[tokio::test]
+async fn expired_link_is_dead() {
+    let app = TestApp::build().await;
+    let _ = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "old.txt", b"old").await;
+    let past = time::OffsetDateTime::now_utc() - time::Duration::days(1);
+    let created = app
+        .store
+        .create_share_link(&owner, ShareKind::File, &file, true, Some(past))
+        .await
+        .unwrap();
+    let page = app.get(&format!("/s/{}", created.token), None).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(
+        page.text().contains("no longer works"),
+        "expired link showed: {}",
+        page.text()
+    );
+}
+
+#[tokio::test]
+async fn view_only_link_download_is_dead_card() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "secret.txt", b"eyes only").await;
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "0"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+
+    let page = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("secret.txt"), "{}", page.text());
+
+    let blocked = app.get(&format!("/s/{token}?dl=1"), None).await;
+    assert_eq!(blocked.status, StatusCode::OK, "{}", blocked.text());
+    assert!(
+        blocked.text().contains("no longer works"),
+        "view-only download showed: {}",
+        blocked.text()
+    );
+}
+
+#[tokio::test]
+async fn folder_link_lists_and_serves_children() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let folder = app
+        .store
+        .create_folder(&owner, None, "shared")
+        .await
+        .unwrap();
+    app.store
+        .insert_file(&owner, Some(&folder.id), "child.txt", b"child bytes")
+        .await
+        .unwrap();
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "folder"),
+                ("target_id", &folder.id),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+
+    let page = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("child.txt"), "{}", page.text());
+
+    let child = app
+        .store
+        .list_children(&owner, Some(&folder.id))
+        .await
+        .unwrap()
+        .files[0]
+        .id
+        .clone();
+    let bytes = app
+        .get(
+            &format!("/s/{token}?folder={}&file={child}&dl=1", folder.id),
+            None,
+        )
+        .await;
+    assert_eq!(bytes.status, StatusCode::OK, "{}", bytes.text());
+    assert_eq!(bytes.bytes, b"child bytes");
+}
+
+#[tokio::test]
+async fn cross_owner_link_create_is_not_found() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let _ = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+    let bob = owner_of(&app, "sub-bob").await;
+    let file = file_id(&app, &bob, "bobs.txt", b"bob").await;
+    // Ada names Bob's file: answered as not-found, never forbidden.
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[("kind", "file"), ("target_id", &file), ("can_download", "1")],
+        )
+        .await;
+    assert!(answer.refused("not-found", "create"), "{:?}", answer.location);
+}
+
+// -- per-user shares --------------------------------------------------------
+
+#[tokio::test]
+async fn per_user_share_lands_in_shared_with_me() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+    let cara = app.sign_in("sub-cara", "cara@in.test", "Cara").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "joint.txt", b"joint").await;
+
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("email", "BOB@in.test"),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "add refused: {:?}", answer.location);
+
+    let bobs = app.get("/shared", Some(&bob)).await;
+    assert_eq!(bobs.status, StatusCode::OK, "{}", bobs.text());
+    assert!(bobs.text().contains("joint.txt"), "{}", bobs.text());
+
+    let caras = app.get("/shared", Some(&cara)).await;
+    assert_eq!(caras.status, StatusCode::OK, "{}", caras.text());
+    assert!(!caras.text().contains("joint.txt"), "{}", caras.text());
+
+    // Unknown addresses are not-found, not a stack.
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("email", "ghost@in.test"),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.refused("not-found", "add"), "{:?}", answer.location);
+
+    // Unshare and it leaves Bob's page.
+    let answer = app
+        .post(
+            "/api/share/user/remove",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("email", "bob@in.test"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "remove refused: {:?}", answer.location);
+    let bobs = app.get("/shared", Some(&bob)).await;
+    assert!(!bobs.text().contains("joint.txt"), "{}", bobs.text());
+}
+
+// -- trash ------------------------------------------------------------------
+
+#[tokio::test]
+async fn trash_restore_purge_empty_flows() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let one = file_id(&app, &owner, "one.txt", b"one").await;
+    let two = file_id(&app, &owner, "two.txt", b"two").await;
+    app.store.delete_file(&one).await.unwrap();
+    app.store.delete_file(&two).await.unwrap();
+
+    let page = app.get("/trash", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("one.txt"), "{}", page.text());
+    assert!(page.text().contains("two.txt"), "{}", page.text());
+
+    // Restore one: it leaves the trash and keeps its bytes.
+    let answer = app
+        .post("/api/trash/restore", Some(&admin), &[("kind", "file"), ("id", &one)])
+        .await;
+    assert!(answer.accepted(), "restore refused: {:?}", answer.location);
+    assert!(
+        app.store.file(&one).await.unwrap().unwrap().deleted_at.is_none()
+    );
+
+    // Purge the other: the row and its bytes go.
+    let answer = app
+        .post("/api/trash/purge", Some(&admin), &[("kind", "file"), ("id", &two)])
+        .await;
+    assert!(answer.accepted(), "purge refused: {:?}", answer.location);
+    assert!(app.store.file(&two).await.unwrap().is_none());
+
+    // Empty takes the rest.
+    let three = file_id(&app, &owner, "three.txt", b"three").await;
+    app.store.delete_file(&three).await.unwrap();
+    let answer = app.post("/api/trash/empty", Some(&admin), &[]).await;
+    assert!(answer.accepted(), "empty refused: {:?}", answer.location);
+    assert!(
+        app.store
+            .list_trash(&owner)
+            .await
+            .unwrap()
+            .files
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn restore_under_trashed_ancestor_is_refused() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let folder = app
+        .store
+        .create_folder(&owner, None, "box")
+        .await
+        .unwrap();
+    let file = app
+        .store
+        .insert_file(&owner, Some(&folder.id), "inbox.txt", b"in")
+        .await
+        .unwrap();
+    app.store.delete_folder(&folder.id).await.unwrap();
+
+    let answer = app
+        .post(
+            "/api/trash/restore",
+            Some(&admin),
+            &[("kind", "file"), ("id", &file.id)],
+        )
+        .await;
+    assert!(
+        answer.refused("ancestor-trashed", "restore"),
+        "{:?}",
+        answer.location
+    );
+
+    // The folder itself restores with its child.
+    let answer = app
+        .post(
+            "/api/trash/restore",
+            Some(&admin),
+            &[("kind", "folder"), ("id", &folder.id)],
+        )
+        .await;
+    assert!(answer.accepted(), "restore refused: {:?}", answer.location);
+}
+
+#[tokio::test]
+async fn folder_purge_destroys_its_tree() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let folder = app
+        .store
+        .create_folder(&owner, None, "doomed")
+        .await
+        .unwrap();
+    let file = app
+        .store
+        .insert_file(&owner, Some(&folder.id), "gone.txt", b"gone")
+        .await
+        .unwrap();
+    app.store.delete_folder(&folder.id).await.unwrap();
+
+    let answer = app
+        .post(
+            "/api/trash/purge",
+            Some(&admin),
+            &[("kind", "folder"), ("id", &folder.id)],
+        )
+        .await;
+    assert!(answer.accepted(), "purge refused: {:?}", answer.location);
+    assert!(app.store.folder(&folder.id).await.unwrap().is_none());
+    assert!(app.store.file(&file.id).await.unwrap().is_none());
+}
+
+// -- search -----------------------------------------------------------------
+
+#[tokio::test]
+async fn search_scopes_to_owner_and_hides_trashed() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+    let ada = owner_of(&app, "sub-admin").await;
+    let bob_id = owner_of(&app, "sub-bob").await;
+    let mine = file_id(&app, &ada, "quarterly report.txt", b"a").await;
+    let _ = file_id(&app, &bob_id, "quarterly notes.txt", b"b").await;
+    let buried = file_id(&app, &ada, "quarterly draft.txt", b"c").await;
+    app.store.delete_file(&buried).await.unwrap();
+
+    // Empty query is the prompt, not the whole drive.
+    let page = app.get("/search", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(!page.text().contains("quarterly report.txt"), "{}", page.text());
+
+    let page = app.get("/search?q=quarterly", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("quarterly report.txt"), "{}", page.text());
+    assert!(!page.text().contains("quarterly notes.txt"), "{}", page.text());
+    assert!(!page.text().contains("quarterly draft.txt"), "{}", page.text());
+    assert!(app.store.file(&mine).await.unwrap().is_some());
+
+    let page = app.get("/search?q=quarterly", Some(&bob)).await;
+    assert!(page.text().contains("quarterly notes.txt"), "{}", page.text());
+    assert!(!page.text().contains("quarterly report.txt"), "{}", page.text());
+}
+
+// -- settings ---------------------------------------------------------------
+
+#[tokio::test]
+async fn settings_quota_and_disable_guards() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+    let bob_id = owner_of(&app, "sub-bob").await;
+    let admin_id = owner_of(&app, "sub-admin").await;
+
+    let page = app.get("/settings", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("ada@in.test"), "{}", page.text());
+
+    // Admin sets Bob's quota.
+    let answer = app
+        .post(
+            "/api/settings/quota",
+            Some(&admin),
+            &[("user_id", &bob_id), ("quota_bytes", "123456")],
+        )
+        .await;
+    assert!(answer.accepted(), "quota refused: {:?}", answer.location);
+    assert_eq!(app.store.user(&bob_id).await.unwrap().unwrap().quota_bytes, 123456);
+
+    // A non-admin is refused the same call.
+    let answer = app
+        .post(
+            "/api/settings/quota",
+            Some(&bob),
+            &[("user_id", &bob_id), ("quota_bytes", "999")],
+        )
+        .await;
+    assert!(answer.refused("forbidden", "quota"), "{:?}", answer.location);
+
+    // Disabling yourself is refused; disabling Bob signs him out.
+    let answer = app
+        .post(
+            "/api/settings/disable",
+            Some(&admin),
+            &[("user_id", &admin_id), ("disabled", "1")],
+        )
+        .await;
+    assert!(answer.refused("forbidden", "disable"), "{:?}", answer.location);
+
+    let answer = app
+        .post(
+            "/api/settings/disable",
+            Some(&admin),
+            &[("user_id", &bob_id), ("disabled", "1")],
+        )
+        .await;
+    assert!(answer.accepted(), "disable refused: {:?}", answer.location);
+    let page = app.get("/settings", Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(
+        !page.text().contains("bob@in.test"),
+        "disabled account still served: {}",
+        page.text()
+    );
+}
+
+#[tokio::test]
+async fn signed_out_mutations_ask_to_sign_in() {
+    let app = TestApp::build().await;
+    for (path, call, form) in [
+        (
+            "/api/share/link/create",
+            "create",
+            &[("kind", "file"), ("target_id", "x"), ("can_download", "1")][..],
+        ),
+        ("/api/share/link/revoke", "revoke", &[("id", "x")][..]),
+        (
+            "/api/share/user/add",
+            "add",
+            &[("kind", "file"), ("target_id", "x"), ("email", "a@b.c")][..],
+        ),
+        (
+            "/api/trash/restore",
+            "restore",
+            &[("kind", "file"), ("id", "x")][..],
+        ),
+        ("/api/trash/empty", "empty", &[][..]),
+        (
+            "/api/settings/quota",
+            "quota",
+            &[("user_id", "x"), ("quota_bytes", "1")][..],
+        ),
+    ] {
+        let answer = app.post(path, None, form).await;
+        assert!(
+            answer.refused("sign-in-first", call),
+            "{path}: {:?}",
+            answer.location
+        );
+    }
+    // A never-real token is the dead card, not a stack.
+    let page = app.get("/s/never-real-token", None).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text().contains("no longer works"), "{}", page.text());
+}
+
+#[tokio::test]
+async fn empty_file_upload_round_trip() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-empty", "empty@in.test", "Empty").await;
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-empty")
+        .await
+        .unwrap()
+        .unwrap();
+
+    let answer = app
+        .post_multipart(
+            "/files",
+            Some(&cookie),
+            &[("folder_id", "")],
+            &[("empty.txt", "text/plain", &[])],
+        )
+        .await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.location.clone().unwrap_or_default());
+    assert!(
+        !answer.location.as_deref().unwrap_or("").contains("refusal="),
+        "empty upload was refused: {}",
+        answer.location.clone().unwrap_or_default()
+    );
+
+    let file = app
+        .store
+        .list_children(&user.id, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .find(|file| file.name == "empty.txt")
+        .expect("empty file was not stored");
+    assert_eq!(file.size_bytes, 0);
+
+    let got = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
+    assert_eq!(got.status, StatusCode::OK);
+    assert!(got.bytes.is_empty(), "expected 0 bytes, got {}", got.bytes.len());
+}
+
+// -- share review regressions (FullSilkworm) ------------------------------------
+
+#[tokio::test]
+async fn view_only_download_matches_dead_token() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "quiet.txt", b"quiet").await;
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "0"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+
+    // A view-only download attempt is the dead card — the same answer as a
+    // token that never existed, so the surface never says which tokens exist.
+    let blocked = app.get(&format!("/s/{token}?dl=1"), None).await;
+    let dead = app.get("/s/never-real-token", None).await;
+    assert_eq!(blocked.status, dead.status, "{}", blocked.text());
+    assert_eq!(blocked.status, StatusCode::OK, "{}", blocked.text());
+    assert!(
+        blocked.text().contains("no longer works"),
+        "view-only download showed: {}",
+        blocked.text()
+    );
+    assert!(
+        dead.text().contains("no longer works"),
+        "dead token showed: {}",
+        dead.text()
+    );
+}
+
+#[tokio::test]
+async fn malformed_expiry_is_forbidden() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "lease.txt", b"lease").await;
+    // Non-numeric, zero and negative values must not mint a link — and must
+    // never silently mint a never-expiring one.
+    for raw in ["not-a-number", "0", "-2", "1.5"] {
+        let answer = app
+            .post(
+                "/api/share/link/create",
+                Some(&admin),
+                &[
+                    ("kind", "file"),
+                    ("target_id", &file),
+                    ("can_download", "1"),
+                    ("expires_in_days", raw),
+                ],
+            )
+            .await;
+        assert!(
+            answer.refused("forbidden", "create"),
+            "{raw:?}: {:?}",
+            answer.location
+        );
+    }
+    assert!(
+        app.store.share_links(&owner).await.unwrap().is_empty(),
+        "a refused mint left a link behind"
+    );
+    // A positive value still mints an expiring link; an empty one still means
+    // no expiry.
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+                ("expires_in_days", "30"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "good expiry refused: {:?}", answer.location);
+    let links = app.store.share_links(&owner).await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert!(
+        links[0].expires_at.is_some(),
+        "a 30-day link carries no expiry"
+    );
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+                ("expires_in_days", ""),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "empty expiry refused: {:?}", answer.location);
+    let links = app.store.share_links(&owner).await.unwrap();
+    assert_eq!(links.len(), 2);
+    assert!(
+        links.iter().any(|link| link.expires_at.is_none()),
+        "an empty expiry should mean no expiry"
+    );
+}
+
+#[tokio::test]
+async fn unshare_trashed_target_still_revokes() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "doomed.txt", b"doomed").await;
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("email", "bob@in.test"),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "add refused: {:?}", answer.location);
+    let bobs = app.get("/shared", Some(&bob)).await;
+    assert!(bobs.text().contains("doomed.txt"), "{}", bobs.text());
+
+    // Trash the target: unsharing must still go through for the owner.
+    app.store.delete_file(&file).await.unwrap();
+    let answer = app
+        .post(
+            "/api/share/user/remove",
+            Some(&admin),
+            &[("kind", "file"), ("target_id", &file), ("email", "bob@in.test")],
+        )
+        .await;
+    assert!(answer.accepted(), "remove refused: {:?}", answer.location);
+    // The grant row is really gone: restoring the file does not bring the
+    // share back to Bob's page.
+    app.store.restore_file(&file).await.unwrap();
+    let bobs = app.get("/shared", Some(&bob)).await;
+    assert!(!bobs.text().contains("doomed.txt"), "{}", bobs.text());
+}
+
+#[tokio::test]
+async fn view_only_public_thumb_serves_webp() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let png = tiny_png();
+    let answer = app
+        .post_multipart(
+            "/files",
+            Some(&admin),
+            &[("folder_id", "")],
+            &[("dot.png", "image/png", &png)],
+        )
+        .await;
+    assert!(
+        !answer.location.as_deref().unwrap_or("").contains("refusal="),
+        "image upload was refused: {}",
+        answer.location.unwrap_or_default()
+    );
+    let file = app
+        .store
+        .list_children(&owner, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .find(|file| file.name == "dot.png")
+        .expect("image was not stored");
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file.id),
+                ("can_download", "0"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+    // The card previews through the thumb route, never the raw bytes.
+    let page = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(
+        page.text().contains("?thumb=1"),
+        "card previews off nothing public: {}",
+        page.text()
+    );
+    assert!(
+        !page.text().contains("?dl=1"),
+        "card must not point at the raw bytes: {}",
+        page.text()
+    );
+
+    // View-only still grants the 512px preview: webp bytes, etag revalidates.
+    let thumb = app.get(&format!("/s/{token}?thumb=1"), None).await;
+    assert_eq!(thumb.status, StatusCode::OK, "{}", thumb.text());
+    assert_eq!(thumb.content_type.as_deref(), Some("image/webp"));
+    assert_eq!(&thumb.bytes[0..4], b"RIFF");
+    assert_eq!(&thumb.bytes[8..12], b"WEBP");
+    let etag = thumb.etag.clone().expect("no etag on the public thumbnail");
+    let cached = app
+        .get_with_if_none_match(&format!("/s/{token}?thumb=1"), None, &etag)
+        .await;
+    assert_eq!(cached.status, StatusCode::NOT_MODIFIED);
+
+    // The full bytes stay behind the download gate even so.
+    let blocked = app.get(&format!("/s/{token}?dl=1"), None).await;
+    assert_eq!(blocked.status, StatusCode::OK, "{}", blocked.text());
+    assert!(
+        blocked.text().contains("no longer works"),
+        "view-only download showed: {}",
+        blocked.text()
+    );
+
+    // A dead token's thumb is the dead card, not a stack.
+    let dead = app.get("/s/never-real-token?thumb=1", None).await;
+    assert_eq!(dead.status, StatusCode::OK, "{}", dead.text());
+    assert!(
+        dead.text().contains("no longer works"),
+        "dead thumb showed: {}",
+        dead.text()
+    );
+}
+
+#[tokio::test]
+async fn a_refused_upload_carries_a_well_formed_query() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-dupe", "dupe@in.test", "Dupe").await;
+
+    // One file in, then the same name again: the refusal redirect must join
+    // the feedback pairs with `?`, not `&` — a `/drive&refusal=...` Location
+    // is a different path entirely and 404s (observed live).
+    for _ in 0..2 {
+        app.post_multipart(
+            "/files",
+            Some(&cookie),
+            &[("folder_id", "")],
+            &[("same.txt", "text/plain", b"first or second")],
+        )
+        .await;
+    }
+    let answer = app
+        .post_multipart(
+            "/files",
+            Some(&cookie),
+            &[("folder_id", "")],
+            &[("same.txt", "text/plain", b"third")],
+        )
+        .await;
+    let location = answer.location.expect("no Location on the refusal");
+    assert_eq!(answer.status, StatusCode::SEE_OTHER);
+    assert!(
+        location.starts_with("/drive?"),
+        "refusal Location was: {location}"
+    );
+    assert!(location.contains("refusal=name-taken"), "{location}");
+
+    // And the browser that follows it lands on the drive page, not the 404.
+    let page = app.get(&location, Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("already taken"), "{}", page.text());
+}

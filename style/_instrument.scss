@@ -1,0 +1,283 @@
+// Instrument UI skin — dense, neutral-cool, chrome-quiet. Tokens live in
+// main.scss; skin-specific overrides and component rules for
+// [data-ui="instrument"] land here.
+//
+// Cascade note: this file is `@use`d at the TOP of main.scss, before every
+// component rule, so any override must out-specify its base rule rather than
+// rely on source order. Everything below sits inside the wrapper block, which
+// adds one attribute selector (0,1,0) to every rule.
+
+[data-ui="instrument"] {
+
+  // --- Instrument skin: chrome (topbar, nav) ---------------------------------
+
+  // 44px chrome strip.
+  .topbar {
+    height: 44px;
+  }
+
+  .filterbar {
+    height: 40px;
+  }
+
+  // Active nav underlines in accent, not ink.
+  .topbar-nav-on {
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  // Active detail tab underlines in accent, same idiom as the topbar nav.
+  .detail-tab-on {
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  // --- Instrument skin: board (ruled columns) --------------------------------
+
+  // Columns are not floating wells; they are panels separated by hairline
+  // rules. Cards keep surface/1px border/radius-3/no-shadow — the instrument
+  // tokens already supply all four, so .card itself needs no override.
+  .board-columns {
+    gap: 0;
+  }
+
+  .column {
+    background: transparent;
+    border-right: 1px solid var(--border);
+
+    &:last-child {
+      border-right: none;
+    }
+  }
+
+  // --- Instrument skin: chips (status LEDs) ----------------------------------
+
+  // Tint fills go away; a chip is its colored text plus a 6px LED square.
+  // Per-variant colors (.chip-overdue etc.) survive untouched — this rule
+  // never declares `color`.
+  .chip {
+    background: transparent;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+
+    &::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      margin-right: 6px;
+      flex: none;
+      background: currentColor;
+    }
+  }
+
+  // --- Instrument skin: avatars (squares) ------------------------------------
+
+  // Circles become 18px squares; the 2px overlap ring is gone, so assignees
+  // butt closer. 2px is intentional (below the 3px radius token) — squares
+  // must not read as chips.
+  .avatar {
+    width: 18px;
+    height: 18px;
+    border-radius: 2px;
+    border: none;
+  }
+
+  .avatar + .avatar {
+    margin-left: -4px;
+  }
+
+  // The upload veil squares off with the avatar under it.
+  .avatar-upload::after {
+    border-radius: 2px;
+  }
+
+  // Keep the empty-assignee slot's dashed outline, which the border: none
+  // above would otherwise silence.
+  .avatar-none {
+    border: 1px dashed var(--border-strong);
+    background: transparent;
+  }
+
+  // --- Instrument skin: fields & controls -------------------------------------
+
+  // The primary action is an outlined target, not a filled one.
+  .primary {
+    background: transparent;
+    border: 1px solid var(--accent-border);
+    color: var(--accent);
+
+    &:hover {
+      background: transparent;
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+  }
+
+  // Quiet stays outline-muted; only the fill drops so fields and buttons
+  // share one flat ground.
+  .quiet {
+    background: transparent;
+  }
+
+  // --- Instrument skin: mono metadata idiom -----------------------------------
+
+  // Timestamps, card meta and member statuses join .field-label/.detail-label
+  // in tracked uppercase mono. (Emails stay sentence-case — .member-address
+  // keeps its mono but gains no uppercase; uppercase addresses hurt reading.)
+  .comment-when {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .card-comments,
+  .card-deadline {
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .member-status {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .member-you {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-radius: var(--radius-sm);
+  }
+
+  // --- Instrument skin: density & spacing --------------------------------------
+
+  // (Deliberately sparse: density lives in the chrome heights, the gapless
+  // ruled columns and the square avatars above. Token values — control
+  // heights, radii, shadows — already carry the rest.)
+
+  // --- Instrument skin: activity log -----------------------------------------
+
+  .log-row {
+    padding: 6px 2px;
+  }
+
+  // --- Instrument skin: settings rail -----------------------------------------
+
+  .settings-sections { width: 200px; }
+
+  .settings-section-link {
+    font-size: 13px;
+    letter-spacing: normal;
+    text-transform: none;
+
+    &.active {
+      background: var(--row-hover);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+  }
+
+}
+
+// -- task detail: 560px side panel over the board ----------------------------
+// The board stays live underneath; the panel docks right and dims the board
+// through the scrim. The base `.modal-task` only fixes the frame — this rule
+// moves it out of the centered flow and gives it the panel geometry.
+[data-ui="instrument"] .modal-scrim:has(> .modal-task) {
+  background: color-mix(in srgb, var(--scrim) 65%, transparent);
+  justify-content: flex-end;
+  padding: 0;
+}
+
+[data-ui="instrument"] .modal-task {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 560px;
+  max-width: 100%;
+  max-height: none;
+  background: var(--surface);
+  border: none;
+  border-radius: 0;
+  box-shadow: var(--shadow-3);
+}
+
+// Header: key + title left (stacked), Esc and the close cross right. The
+// header's own state chip is suppressed — status lives in the body's field
+// grid. The tab strip sits directly under it, so the header itself carries
+// no bottom rule any more.
+[data-ui="instrument"] .modal-task .detail-head {
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+[data-ui="instrument"] .detail-tabs {
+  padding: 0 16px;
+}
+
+[data-ui="instrument"] .detail-state,
+[data-ui="instrument"] .detail-board {
+  display: none;
+}
+
+[data-ui="instrument"] .detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+[data-ui="instrument"] .detail-title {
+  font-size: 20px;
+}
+
+// The fields ride in the masthead, so they carry its inset themselves.
+[data-ui="instrument"] .detail-fields {
+  gap: 10px;
+  padding: 0 16px 14px;
+  margin-top: 14px;
+}
+
+// Blocks run down the panel body below the title; only the composer pins.
+[data-ui="instrument"] .detail-block {
+  margin-top: 18px;
+}
+
+// Pinned at the panel's foot, wearing the composer's rule and padding: the
+// two are the same kind of thing, a bar the body scrolls beneath.
+[data-ui="instrument"] .detail-foot {
+  padding: 14px 20px;
+  margin-top: 0;
+  border-top: 1px solid var(--border);
+}
+
+// Composer is the last child of `.modal-task` (outside `.detail-body`), so on
+// the flex panel it stays pinned while the body above scrolls.
+[data-ui="instrument"] .comment-composer {
+  flex: none;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+// -- mobile (narrow viewports) -----------------------------------------------
+// Geometry that the skin sets with [data-ui]-prefixed rules and that the
+// shared mobile layer in main.scss cannot out-specify.
+@media (max-width: 620px) {
+  // The rail is a strip; its width is a desktop's and its active rule runs
+  // under the section, not beside it.
+  [data-ui="instrument"] .settings-sections { width: auto; }
+
+  [data-ui="instrument"] .settings-section-link.active {
+    background: none;
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  // The filterbar wraps at this width; the skin's fixed 40px would clip it.
+  [data-ui="instrument"] .filterbar { height: auto; }
+
+  // A phone carries no Escape key; the hint is chrome for a keyboard.
+  [data-ui="instrument"] .modal-task .detail-esc { display: none; }
+}

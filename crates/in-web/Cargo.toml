@@ -1,0 +1,49 @@
+[package]
+name = "in-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In web app: topcoat UI, routes and the server"
+
+[dependencies]
+topcoat = { version = "0.6.2", default-features = false, features = [
+  "router",
+  "view",
+  "runtime",
+  "asset",
+  "cookie",
+  "discover",
+  "serve",
+  "compression",
+  "multipart",
+  "sse",
+] }
+in-core = { workspace = true, features = ["server"] }
+in-client.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+async-trait = "0.1.92"
+# The live stream is built with `futures_util::stream::unfold`; topcoat does
+# not re-export the futures traits, so this is named directly.
+futures-util = { version = "0.3", default-features = false }
+# Hashes the compiled stylesheet against the bundle's bytes at boot, so a
+# bundle from another generation refuses the boot instead of serving under
+# this binary (see `server.rs`'s `stylesheet_guard`).
+sha2 = "0.10"
+ulid = { workspace = true }
+
+[build-dependencies]
+grass = "0.13"
+sha2 = "0.10"
+
+[dev-dependencies]
+http = "1.5"
+# Reads an SSE body frame by frame, so a live-channel test can wait for the
+# announcement it expects instead of for a clock.
+http-body-util = "0.1"
+ulid = { workspace = true }
+in-client = { workspace = true, features = ["test-seam"] }

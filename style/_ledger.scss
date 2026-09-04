@@ -1,0 +1,503 @@
+// Ledger UI skin — warm paper, hairline rules, serif display (Newsreader).
+// Tokens live in main.scss; skin-specific overrides and component rules for
+// [data-ui="ledger"] land here.
+
+// Every selector carries the [data-ui="ledger"] prefix (one nested block
+// below). That attribute+class specificity outranks the same-name class
+// rules in main.scss, so the order of the @use never matters.
+
+[data-ui="ledger"] {
+  // --- Ledger skin: typography -------------------------------------------------
+
+  // The display face carries named things: page/board/panel titles, task
+  // titles, people. Keys, dates, counts and labels stay IBM Plex Mono 10px
+  // uppercase — main.scss's metadata idiom is left alone, and so is the
+  // wordmark, which is the same lockup on both skins.
+  .auth-title,
+  .settings-title,
+  .detail-title,
+  .title-input,
+  .panel-title,
+  .column-name,
+  .card-title,
+  .member-name {
+    font-family: var(--font-display);
+  }
+
+  .settings-title { font-size: 22px; }
+  .panel-title { font-size: 15px; }
+  .card-title { font-size: 16px; }
+
+  // --- Ledger skin: rules & ornaments (no boxes) -------------------------------
+
+  // Panels and cards give up their chrome: the paper itself is the surface
+  // and a hairline separates entries. Section heads sit on a 2px ink rule.
+  .panel {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+  }
+
+  .panel-head {
+    border-bottom: 2px solid var(--rule-strong);
+    padding: 0 0 10px;
+  }
+
+  .auth-card {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+  }
+
+  .column {
+    background: transparent;
+    border-radius: 0;
+  }
+
+  .column-empty {
+    background: transparent;
+    border-color: var(--border-soft);
+  }
+
+  .column-head {
+    padding: 2px 4px 8px;
+    border-bottom: 2px solid var(--rule-strong);
+  }
+
+  // A card is an entry in the ledger: no box, a hairline under it, and the
+  // hover darkens that rule instead of flooding a background.
+  .card {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    box-shadow: none;
+    padding: 12px 2px 14px 2px;
+    transition: border-color var(--dur-fast) var(--ease);
+
+    &:hover {
+      background: transparent;
+      border-bottom-color: var(--rule-strong);
+    }
+  }
+
+  .card-done {
+    background: transparent;
+
+    .card-title { text-decoration: line-through; }
+  }
+
+  // Ledger entries stack into a continuous ruled column — no gaps between rows.
+  .column-cards {
+    gap: 0;
+  }
+
+  .rule-row {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    padding: 14px 2px;
+
+    &-off { background: transparent; }
+  }
+
+  .tag-row {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    padding: 14px 2px;
+  }
+
+  // Activity log reads as a ruled ledger column too: no boxes, the actor
+  // named in the display face like .member-name.
+  .log-row {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .log-actor {
+    font-family: var(--font-display);
+  }
+
+  // --- Ledger skin: baseline header --------------------------------------------
+
+  .topbar {
+    background: transparent;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  .topbar-nav-on {
+    border-bottom: 2px solid var(--rule-strong);
+    box-shadow: none;
+  }
+
+  .detail-tab-on {
+    border-bottom: 2px solid var(--ink);
+    box-shadow: none;
+  }
+
+  // --- Ledger skin: chips as inked text ----------------------------------------
+
+  .chip {
+    display: inline-flex;
+    align-items: baseline;
+    height: auto;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-bottom: 1px dotted currentColor;
+    border-radius: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+
+    // The tint fills and boxes go; the hue stays on as the ink color.
+    &-overdue,
+    &-blocked,
+    &-role,
+    &-admin,
+    &-connected,
+    &-off { background: transparent; }
+
+    &-role,
+    &-admin { border: none; border-bottom: 1px dotted currentColor; }
+
+    &-role,
+    &-admin,
+    &-connected,
+    &-off { text-transform: uppercase; }
+  }
+
+  // --- Ledger skin: controls -----------------------------------------------------
+
+  // Outlined-ink controls; the primary action is set in solid ink with paper
+  // text, inverting cleanly in the dark set because both sides are tokens.
+  .primary {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--bg);
+
+    &:hover {
+      background: var(--ink-soft);
+      border-color: var(--ink-soft);
+      color: var(--bg);
+    }
+  }
+
+  .auth-submit,
+  .edit-save,
+  .comment-post {
+    background: var(--ink);
+    color: var(--bg);
+  }
+
+  .auth-submit:hover,
+  .edit-save:hover,
+  .comment-post:hover {
+    background: var(--ink-soft);
+  }
+
+  .quiet {
+    background: transparent;
+    border-color: var(--ink-soft);
+
+    &:hover {
+      border-color: var(--ink);
+      color: var(--ink);
+    }
+  }
+
+  .quiet-danger {
+    border-color: var(--danger);
+
+    &:hover {
+      border-color: var(--danger);
+      background: transparent;
+    }
+  }
+
+  .detail-delete {
+    background: transparent;
+    border-color: var(--danger);
+  }
+
+  // Fields rule themselves onto the paper: transparent ground, ink outline.
+  .auth-input,
+  .field-input,
+  .title-input {
+    background: transparent;
+    border-color: var(--ink-soft);
+
+    &:focus-visible {
+      background: transparent;
+      border-color: var(--ink);
+    }
+
+    &:disabled { background: transparent; }
+  }
+
+  .auth-locked,
+  .field-box,
+  .status-form {
+    background: transparent;
+    border-color: var(--ink-soft);
+  }
+
+  // --- Ledger skin: toggles ------------------------------------------------------
+
+  // The switch becomes what a mark is on paper: an empty ink square when
+  // off, a filled one when on. The knob has no role here.
+  .rule-switch {
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--ink);
+    border-radius: 0;
+    background: transparent;
+
+    .rule-switch-knob { display: none; }
+  }
+
+  .rule-switch-on { background: var(--ink); }
+}
+
+// -- task detail: its own page ------------------------------------------------
+// No chrome, no floating card: the modal opens as an opaque paper page. The
+// scrim carries the paper ground and the invisible panning; the column is
+// static content on top of it, so nothing inside ever scrolls or shows a
+// scrollbar.
+[data-ui="ledger"] .modal-scrim:has(> .modal-task) {
+  background: var(--bg);
+  justify-content: center;
+  // Neither top nor bottom padding: the sticky masthead and foot carry the
+  // page's margins in their own padding, so both sit flush on the pan
+  // surface's edges instead of floating with text showing past them.
+  padding: 0 40px;
+}
+
+[data-ui="ledger"] .modal-task {
+  position: static;
+  width: 720px;
+  max-width: 100%;
+  max-height: none;
+  overflow: visible;
+  display: block;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+[data-ui="ledger"] .detail-body {
+  overflow: visible;
+}
+
+// Meta row: key + state chip left, `<- Board` right. The panel chrome — Esc
+// hint, close cross — and the body's status fieldbox (the chip already says
+// it) are suppressed.
+[data-ui="ledger"] .modal-task .detail-head {
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+}
+
+[data-ui="ledger"] .detail-tabs {
+  padding: 0;
+  margin-top: 14px;
+}
+
+// The masthead holds at the top of the paper: the task names itself however
+// far down the comments you are.
+[data-ui="ledger"] .detail-mast {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 36px 0 6px;
+  background: var(--bg);
+}
+
+[data-ui="ledger"] .modal-task .detail-esc,
+[data-ui="ledger"] .modal-task .detail-close,
+[data-ui="ledger"] .detail-body .detail-field-status {
+  display: none;
+}
+
+// Dependency rows lose the card chrome - the page reads as ruled paper.
+[data-ui="ledger"] .dep-row {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+
+[data-ui="ledger"] .modal-task .detail-key {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+[data-ui="ledger"] .detail-state {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-ui="ledger"] .detail-state .field-box,
+[data-ui="ledger"] .detail-state .status-form {
+  height: auto;
+  padding: 0;
+  background: transparent;
+  border: none;
+  font: inherit;
+  color: var(--ink);
+}
+
+[data-ui="ledger"] .detail-state .status-select {
+  width: auto;
+  flex: none;
+  font: inherit;
+  text-transform: uppercase;
+}
+
+[data-ui="ledger"] .detail-state .status-dot {
+  display: none;
+}
+
+[data-ui="ledger"] .detail-board {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  height: auto;
+}
+
+// Serif title over a heavy rule; the edit form gets the same rule so the
+// title area holds still while editing. The title now lives in the header,
+// stacked under the key, ahead of the tab strip.
+[data-ui="ledger"] .detail-head .detail-title,
+[data-ui="ledger"] .title-form {
+  padding-bottom: 10px;
+  border-bottom: 2px solid var(--ink);
+}
+
+[data-ui="ledger"] .detail-title {
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: 32px;
+  font-weight: 400;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+[data-ui="ledger"] .title-input {
+  height: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: 32px;
+  font-weight: 400;
+}
+
+// Hairline ruled rows instead of boxed controls.
+[data-ui="ledger"] .detail-fields {
+  display: block;
+  padding: 0;
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+[data-ui="ledger"] .detail-field {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+[data-ui="ledger"] .detail-field > .detail-label {
+  flex: none;
+  width: 130px;
+}
+
+[data-ui="ledger"] .detail-field .field-box,
+[data-ui="ledger"] .detail-field .status-form {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  height: auto;
+}
+
+[data-ui="ledger"] .detail-field .status-dot {
+  display: none;
+}
+
+// Long-form sections run as prose on paper.
+[data-ui="ledger"] .detail-block {
+  margin-top: 24px;
+}
+
+[data-ui="ledger"] .comment-list {
+  border-top: 1px solid var(--border);
+}
+
+// Composer sits in the flow at the end of the page — the body above is
+// static, so it simply follows the sections.
+// The page pans, but the way out must not pan with it. The foot and the
+// composer hold at the bottom of the paper with the ground under them, so a
+// description or a comment run of any length still ends within reach.
+[data-ui="ledger"] .detail-foot,
+[data-ui="ledger"] .comment-composer {
+  position: sticky;
+  bottom: 0;
+  margin-top: 24px;
+  padding: 16px 0 36px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+// Settings rail: a narrower column, mono/uppercase stays, the active section
+// marked with an ink rule rather than a fill.
+[data-ui="ledger"] .settings-sections {
+  width: 170px;
+}
+
+[data-ui="ledger"] .settings-section-link.active {
+  border-bottom: 2px solid var(--ink);
+}
+// -- mobile (narrow viewports) -----------------------------------------------
+// Geometry that the skin sets with [data-ui]-prefixed rules and that the
+// shared mobile layer in main.scss cannot out-specify.
+@media (max-width: 620px) {
+  // The paper page keeps its mast and foot flush; only the side margins give.
+  [data-ui="ledger"] .modal-scrim:has(> .modal-task) { padding: 0 12px; }
+
+  [data-ui="ledger"] .detail-mast { padding: 20px 0 6px; }
+
+  [data-ui="ledger"] .detail-title,
+  [data-ui="ledger"] .title-input { font-size: 24px; }
+
+  // The labeled rows stack: no third of a phone holds label and value side
+  // by side.
+  [data-ui="ledger"] .detail-field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  [data-ui="ledger"] .detail-field > .detail-label { width: auto; }
+
+  // The rail is a strip; the 170px column is a desktop's.
+  [data-ui="ledger"] .settings-sections { width: auto; }
+}

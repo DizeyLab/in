@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = ["crates/in-core", "crates/in-client", "crates/in-web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/DizeyLab/in"
+
+[workspace.dependencies]
+in-core = { path = "crates/in-core", default-features = false }
+in-client = { path = "crates/in-client" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.20"
+ulid = "1"
+time = { version = "0.3.55", features = ["serde", "formatting", "parsing", "macros"] }
+tokio = { version = "1.53.1", features = ["full"] }
+turso = "=0.8.0-pre.8"
+rand = "0.10.2"
+sha2 = "0.11.0"
+subtle = "2.6.1"
+chacha20poly1305 = "0.10.1"
+base64 = "0.22.1"
+toml = "1"
+async-trait = "0.1.92"
+image = { version = "0.25", default-features = false, features = [
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+
+# What the deploy builds. Fat LTO and one codegen unit buy the last few
+# percent by optimizing the whole program in a single non-parallel pass —
+# worth it for something CPU-bound, not for a server whose time goes to
+# SQLite, TLS and the network. Thin LTO still optimizes across crates, in
+# parallel, so `release` stays available for when the trade is worth making.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
