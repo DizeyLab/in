@@ -10,7 +10,6 @@ pub mod i18n;
 pub mod layout;
 pub mod live;
 pub mod pages;
-pub mod search;
 pub mod server;
 pub mod settings;
 pub mod share;

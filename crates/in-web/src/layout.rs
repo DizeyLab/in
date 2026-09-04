@@ -138,7 +138,6 @@ pub enum NavPage {
     Drive,
     Shared,
     Trash,
-    Search,
     Settings,
 }
 
@@ -146,14 +145,13 @@ impl NavPage {
     /// Settings is deliberately absent: it lives in the user menu, not the
     /// page nav — the variant stays so the settings page can still name
     /// itself active without a link to mark.
-    const ALL: [Self; 4] = [Self::Drive, Self::Shared, Self::Trash, Self::Search];
+    const ALL: [Self; 3] = [Self::Drive, Self::Shared, Self::Trash];
 
     fn href(self) -> &'static str {
         match self {
             Self::Drive => "/drive",
             Self::Shared => "/shared",
             Self::Trash => "/trash",
-            Self::Search => "/search",
             Self::Settings => "/settings",
         }
     }
@@ -163,7 +161,6 @@ impl NavPage {
             Self::Drive => Key::NavDrive,
             Self::Shared => Key::NavShared,
             Self::Trash => Key::NavTrash,
-            Self::Search => Key::NavSearch,
             Self::Settings => Key::NavSettings,
         }
     }

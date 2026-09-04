@@ -7,6 +7,11 @@
 //! is trashed is unreachable, and a move that would nest a folder inside
 //! itself is refused. Anything naming another owner's tree answers 404,
 //! never 403.
+//!
+//! `GET /drive?q=<text>` keeps the same page and swaps the folder panels
+//! for library-wide name hits — the filterbar's search box, submitted as a
+//! plain GET form. The old `GET /search?q=` address 303s here, so old links
+//! keep working.
 
 use in_core::store::{Folder, Store, StoreError, ThumbState};
 use topcoat::router::request::uri;
@@ -48,9 +53,13 @@ fn redirect(cx: &Cx, refusal: Option<Refusal>) -> Redirect {
     ))
 }
 
+/// How many hits each search list carries at most.
+const LIMIT: u32 = 50;
+
 #[query_params]
 struct DriveQuery {
     folder: Option<String>,
+    q: Option<String>,
 }
 
 /// The folder the query names, if it names one this account may open: owned,
@@ -169,9 +178,21 @@ async fn drive(cx: &Cx) -> Result {
     let language = lang(cx).await;
     let store = app(cx).store.clone();
 
-    let wanted = query_params::<DriveQuery>(cx)
-        .ok()
-        .and_then(|query| query.folder.clone());
+    let params = query_params::<DriveQuery>(cx).ok();
+    let wanted = params.as_ref().and_then(|query| query.folder.clone());
+    // The filterbar's search box, trimmed: anything else on the query is
+    // ignored, and an empty box is the plain folder view, never the whole
+    // library.
+    let asked = params
+        .as_ref()
+        .and_then(|query| query.q.clone())
+        .map(|query| query.trim().to_string())
+        .filter(|query| !query.is_empty());
+    let hits = match asked.as_deref() {
+        Some(query) => Some(store.search(&user.id, query, LIMIT).await?),
+        None => None,
+    };
+    let box_text = asked.clone().unwrap_or_default();
     let current = current_folder(store.as_ref(), &user.id, wanted.as_deref()).await?;
     let crumbs = breadcrumbs(store.as_ref(), current.as_ref()).await;
     let listing = match store
@@ -202,22 +223,39 @@ async fn drive(cx: &Cx) -> Result {
         (topbar(cx, NavPage::Drive, &user, language).await?)
         <main class="settings-stage">
             <div class="filterbar">
-                if current.is_some() {
-                    <nav class="detail-crumbs" aria-label=(current_name.clone())>
-                        <a class="detail-crumb" href="/drive">(t(language, Key::Drive))</a>
-                        for crumb in crumbs.iter() {
-                            <span class="detail-crumb-sep">"/"</span>
-                            <a class="detail-crumb" href=(format!("/drive?folder={}", crumb.id))>(crumb.name.clone())</a>
-                        }
-                    </nav>
+                if let Some(query) = asked.as_deref() {
+                    <p class="detail-quiet">(t(language, Key::SearchResults)) (format!(" “{query}”"))</p>
+                } else {
+                    if current.is_some() {
+                        <nav class="detail-crumbs" aria-label=(current_name.clone())>
+                            <a class="detail-crumb" href="/drive">(t(language, Key::Drive))</a>
+                            for crumb in crumbs.iter() {
+                                <span class="detail-crumb-sep">"/"</span>
+                                <a class="detail-crumb" href=(format!("/drive?folder={}", crumb.id))>(crumb.name.clone())</a>
+                            }
+                        </nav>
+                    }
                 }
                 <div class="spacer"></div>
-                <form class="tag-form" method="post" action="/api/folder/create">
-                    <input type="hidden" name="parent_id" value=(current_id.clone())>
-                    <input class="field-input" type="text" name="name" maxlength="255"
-                        placeholder=(t(language, Key::FolderName)) required="" aria-label=(t(language, Key::FolderName))>
-                    <button class="primary" type="submit">(t(language, Key::CreateFolder))</button>
+                <form class="field-box-search" method="get" action="/drive">
+                    <input
+                        class="field-input"
+                        type="search"
+                        name="q"
+                        value=(box_text)
+                        placeholder=(t(language, Key::SearchPlaceholder))
+                        aria-label=(t(language, Key::SearchPlaceholder))
+                    >
                 </form>
+                <details class="tag-new">
+                    <summary class="tag-new-open">(t(language, Key::NewFolder))</summary>
+                    <form class="tag-form" method="post" action="/api/folder/create">
+                        <input type="hidden" name="parent_id" value=(current_id.clone())>
+                        <input class="field-input" type="text" name="name" maxlength="255"
+                            placeholder=(t(language, Key::FolderName)) required="" aria-label=(t(language, Key::FolderName))>
+                        <button class="primary" type="submit">(t(language, Key::CreateFolder))</button>
+                    </form>
+                </details>
             </div>
             if let Some(refusal) = refusal {
                 <p class="field-error">(refusal.message_in(language))</p>
@@ -231,6 +269,37 @@ async fn drive(cx: &Cx) -> Result {
                     </div>
                 </section>
             }
+            if let Some(hits) = hits {
+                if hits.folders.is_empty() && hits.files.is_empty() {
+                    <p class="detail-quiet">(t(language, Key::NoResults))</p>
+                }
+                if !hits.folders.is_empty() {
+                    <section class="panel">
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
+                            <span class="chip">(format!("{}", hits.folders.len()))</span>
+                        </div>
+                        <div class="panel-body">
+                            for folder in &hits.folders {
+                                <p><a href=(format!("/drive?folder={}", folder.id))>(folder.name.clone())</a></p>
+                            }
+                        </div>
+                    </section>
+                }
+                if !hits.files.is_empty() {
+                    <section class="panel">
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
+                            <span class="chip">(format!("{}", hits.files.len()))</span>
+                        </div>
+                        <div class="panel-body">
+                            for file in &hits.files {
+                                <p><a href=(format!("/file/{}", file.id))>(file.name.clone())</a></p>
+                            }
+                        </div>
+                    </section>
+                }
+            } else {
             <section class="panel">
                 <div class="panel-head">
                     <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
@@ -321,10 +390,39 @@ async fn drive(cx: &Cx) -> Result {
                     </div>
                 </div>
             </section>
+            }
         </main>
         (crate::dropdown::dropdown_script(cx).await?)
         (upload_script(cx).await?)
     }
+}
+
+/// `GET /search`: the old address — a 303 to the drive's search box, keeping
+/// the query so old links land on their results. Nothing renders here.
+#[page("/search")]
+async fn search_redirect(cx: &Cx) -> Result {
+    let target = match query_value(uri(cx).query().unwrap_or(""), "q") {
+        Some(raw) if !raw.trim().is_empty() => format!("/drive?q={raw}"),
+        _ => "/drive".to_string(),
+    };
+    let location = (
+        header::LOCATION,
+        HeaderValue::from_str(&target).unwrap_or(HeaderValue::from_static("/drive")),
+    );
+    view! {
+        cx =>
+        (StatusCode::SEE_OTHER)
+        (location)
+    }
+}
+
+/// The value of one query pair, if present. A hand-edited query names
+/// nothing rather than failing the redirect.
+fn query_value(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name == key).then(|| value.to_string())
+    })
 }
 
 /// The upload control's client half: files under 8 MiB ride the form's own

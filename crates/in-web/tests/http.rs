@@ -1458,21 +1458,153 @@ async fn search_scopes_to_owner_and_hides_trashed() {
     let buried = file_id(&app, &ada, "quarterly draft.txt", b"c").await;
     app.store.delete_file(&buried).await.unwrap();
 
-    // Empty query is the prompt, not the whole drive.
-    let page = app.get("/search", Some(&admin)).await;
+    // Empty query is the folder view, not the whole library under a new
+    // name: the upload control renders, no results caption does.
+    let page = app.get("/drive", Some(&admin)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
-    assert!(!page.text().contains("quarterly report.txt"), "{}", page.text());
+    assert!(page.text().contains("id=\"upload-form\""), "{}", page.text());
+    assert!(!page.text().contains("Search results"), "{}", page.text());
 
-    let page = app.get("/search?q=quarterly", Some(&admin)).await;
+    let page = app.get("/drive?q=quarterly", Some(&admin)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(page.text().contains("quarterly report.txt"), "{}", page.text());
     assert!(!page.text().contains("quarterly notes.txt"), "{}", page.text());
     assert!(!page.text().contains("quarterly draft.txt"), "{}", page.text());
     assert!(app.store.file(&mine).await.unwrap().is_some());
 
-    let page = app.get("/search?q=quarterly", Some(&bob)).await;
+    let page = app.get("/drive?q=quarterly", Some(&bob)).await;
     assert!(page.text().contains("quarterly notes.txt"), "{}", page.text());
     assert!(!page.text().contains("quarterly report.txt"), "{}", page.text());
+}
+
+#[tokio::test]
+async fn drive_search_results_replace_the_folder_panels() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-search-in-place", "inplace@in.test", "InPlace").await;
+    let owner = owner_of(&app, "sub-search-in-place").await;
+    let answer = app
+        .post(
+            "/api/folder/create",
+            Some(&cookie),
+            &[("parent_id", ""), ("name", "holiday photos")],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let folder = folder_id(&app, &owner, None, "holiday photos").await;
+    let file = file_id(&app, &owner, "holiday report.txt", b"sun").await;
+
+    let page = app.get("/drive?q=holiday", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    // Both hits render in place on the drive, wired to their surfaces.
+    assert!(body.contains("holiday photos"), "{body}");
+    assert!(body.contains("holiday report.txt"), "{body}");
+    assert!(body.contains(&format!("/drive?folder={folder}")), "{body}");
+    assert!(body.contains(&format!("/file/{file}")), "{body}");
+    // One chip per list, like the folder panels they replace.
+    assert_eq!(body.matches("<span class=\"chip\">1</span>").count(), 2, "{body}");
+    // The caption names the query and the box keeps it.
+    assert!(body.contains("Search results"), "{body}");
+    assert!(body.contains("holiday"), "{body}");
+    assert!(body.contains("value=\"holiday\""), "{body}");
+    assert!(body.contains("name=\"q\""), "{body}");
+    // The folder view is gone: no crumbs, no upload, no row mutations.
+    assert!(!body.contains("detail-crumbs"), "{body}");
+    assert!(!body.contains("id=\"upload-form\""), "{body}");
+    assert!(!body.contains("action=\"/api/folder/rename\""), "{body}");
+}
+
+#[tokio::test]
+async fn drive_search_never_shows_other_owners_hits() {
+    let app = TestApp::build().await;
+    let ada = app.sign_in("sub-search-ada", "ada2@in.test", "Ada").await;
+    let bob = app.sign_in("sub-search-bob", "bob2@in.test", "Bob").await;
+    let bob_id = owner_of(&app, "sub-search-bob").await;
+    let _ = file_id(&app, &bob_id, "secret ledger.txt", b"b").await;
+    let answer = app
+        .post(
+            "/api/folder/create",
+            Some(&bob),
+            &[("parent_id", ""), ("name", "secret drawer")],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+
+    // Ada's library-wide search stays hers: Bob's file and folder hits never
+    // appear, and the quiet note says so.
+    let page = app.get("/drive?q=secret", Some(&ada)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    assert!(!body.contains("secret ledger.txt"), "{body}");
+    assert!(!body.contains("secret drawer"), "{body}");
+    assert!(body.contains("Nothing found."), "{body}");
+
+    // Sanity: the same query finds them for their owner.
+    let page = app.get("/drive?q=secret", Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("secret ledger.txt"), "{}", page.text());
+    assert!(page.text().contains("secret drawer"), "{}", page.text());
+}
+
+#[tokio::test]
+async fn drive_search_empty_query_is_the_folder_view() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-search-empty", "empty@in.test", "Empty").await;
+    let owner = owner_of(&app, "sub-search-empty").await;
+    let _ = file_id(&app, &owner, "plain.txt", b"p").await;
+
+    for path in ["/drive?q=", "/drive?q=%20%20"] {
+        let page = app.get(path, Some(&cookie)).await;
+        assert_eq!(page.status, StatusCode::OK, "{}: {}", path, page.text());
+        let body = page.text();
+        // The folder listing renders as usual — the file is there through
+        // its directory, not through a result — with the box held empty.
+        assert!(body.contains("plain.txt"), "{path}: {body}");
+        assert!(body.contains("id=\"upload-form\""), "{path}: {body}");
+        assert!(body.contains("name=\"q\""), "{path}: {body}");
+        assert!(!body.contains("Search results"), "{path}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn old_search_address_redirects_to_drive() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-search-old", "old@in.test", "Old").await;
+
+    let page = app.get("/search?q=quarterly", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::SEE_OTHER, "{}", page.text());
+    assert_eq!(page.location.as_deref(), Some("/drive?q=quarterly"));
+
+    // The raw pair rides through untouched, so encoded queries survive.
+    let page = app.get("/search?q=holiday+report", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::SEE_OTHER, "{}", page.text());
+    assert_eq!(page.location.as_deref(), Some("/drive?q=holiday+report"));
+
+    // No query is the plain drive; no session still redirects, never 401s.
+    let page = app.get("/search", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::SEE_OTHER, "{}", page.text());
+    assert_eq!(page.location.as_deref(), Some("/drive"));
+    let page = app.get("/search?q=quarterly", None).await;
+    assert_eq!(page.status, StatusCode::SEE_OTHER, "{}", page.text());
+    assert_eq!(page.location.as_deref(), Some("/drive?q=quarterly"));
+}
+
+#[tokio::test]
+async fn topbar_nav_has_no_search_link() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-search-nav", "nav@in.test", "Nav").await;
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    let nav_start = body.find("topbar-nav-links").expect("no nav");
+    let nav_end = body[nav_start..].find("</nav>").expect("nav never closes");
+    let nav = &body[nav_start..nav_start + nav_end];
+    // Drive, Shared, Trash — and nothing else.
+    assert!(nav.contains("href=\"/drive\""), "{nav}");
+    assert!(nav.contains("href=\"/shared\""), "{nav}");
+    assert!(nav.contains("href=\"/trash\""), "{nav}");
+    assert!(!nav.contains("/search"), "search leaked into the nav: {nav}");
+    assert!(!nav.contains("Search"), "search leaked into the nav: {nav}");
 }
 
 // -- settings ---------------------------------------------------------------
@@ -2119,7 +2251,7 @@ async fn settings_panels_nest_inside_the_stage() {
     assert!(body.contains("<th class=\"member-col-name\""), "{body}");
 }
 
-// The /shared, /trash and /search strip fix: content belongs in the stage,
+// The /shared and /trash strip fix: content belongs in the stage,
 // never directly in the flex-row shell. Mirrors
 // settings_panels_nest_inside_the_stage.
 fn assert_stage_nests(body: &str, markers: &[&str]) {
@@ -2187,12 +2319,12 @@ async fn trash_panels_nest_inside_the_stage() {
 }
 
 #[tokio::test]
-async fn search_panels_nest_inside_the_stage() {
+async fn drive_search_panels_nest_inside_the_stage() {
     let app = TestApp::build().await;
     let admin = app.sign_in("sub-stage-search", "stagesearch@in.test", "StageSearch").await;
     let owner = owner_of(&app, "sub-stage-search").await;
     file_id(&app, &owner, "staged-report.txt", b"staged").await;
-    let page = app.get("/search?q=staged-report", Some(&admin)).await;
+    let page = app.get("/drive?q=staged-report", Some(&admin)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert_stage_nests(
         &page.text(),
@@ -2224,8 +2356,9 @@ async fn drive_root_hides_crumbs_while_a_subfolder_shows_them() {
     let page = app.get("/drive", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(!page.text().contains("detail-crumbs"), "{}", page.text());
-    // The filterbar itself stays, holding just the create form.
+    // The filterbar itself stays, holding the search box and the create form.
     assert!(page.text().contains("class=\"filterbar\""), "{}", page.text());
+    assert!(page.text().contains("name=\"q\""), "{}", page.text());
     assert!(
         page.text().contains("action=\"/api/folder/create\""),
         "{}",
