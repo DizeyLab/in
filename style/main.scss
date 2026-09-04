@@ -732,6 +732,18 @@ a {
   padding: 8px 24px;
 }
 
+// The drive page's create-folder form sits inside the filterbar, where the
+// column form's stacking (gap, padding, top rule) would blow the 40px
+// instrument bar apart and float oddly centred in ledger too: inline here,
+// so the row fits the bar in both skins.
+.filterbar .tag-form {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border-top: none;
+}
+
 .segmented {
   display: flex;
   align-items: center;
@@ -3127,6 +3139,14 @@ img.avatar {
   font-size: 10px;
   letter-spacing: 0.08em;
   color: var(--muted-soft);
+}
+
+// A read-only value under a field label — the profile's name, address and
+// quota line. Same type size as a field input, without the box: the label
+// above it is the structure, not a border.
+.field-static {
+  font-size: 13px;
+  color: var(--ink);
 }
 
 .auth-input,

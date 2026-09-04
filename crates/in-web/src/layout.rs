@@ -850,12 +850,14 @@ const STYLE: Asset = asset!("assets/main.css");
 
 #[layout("/")]
 async fn root_layout(cx: &Cx, slot: Result) -> Result {
-    // v1 has no per-user theme or language: every page renders light, and
-    // the language comes off the request's Accept-Language header.
-    let asking = match current_user(cx).await {
-        Ok(user) => user.is_some(),
-        Err(_) => false,
+    // The one per-user chrome knob: the UI density, read off the request's
+    // own user. Signed-out (or unreadable) renders ledger, the default.
+    let me = match current_user(cx).await {
+        Ok(user) => user.as_ref(),
+        Err(_) => None,
     };
+    let asking = me.is_some();
+    let ui = me.as_ref().map_or("ledger", |user| user.ui.as_str());
     let lang = crate::i18n::lang(cx);
 
     let content = match slot {
@@ -878,7 +880,7 @@ async fn root_layout(cx: &Cx, slot: Result) -> Result {
     let build = STYLE.id().as_u64().to_string();
     view! {
         <!DOCTYPE html>
-        <html lang=(lang.code()) data-ui="ledger" data-build=(build)>
+        <html lang=(lang.code()) data-ui=(ui) data-build=(build)>
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">

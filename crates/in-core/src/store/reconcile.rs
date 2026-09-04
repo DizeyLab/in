@@ -202,26 +202,34 @@ struct TableMap {
     columns: Vec<(&'static str, String)>,
 }
 
-/// Builds the explicit column map. Every table maps every column to its old
-/// self: In's first schema is the declared one, so a database old enough to
-/// be reconciled carries the same columns, and the map is the receipt that
-/// says nothing was dropped, renamed or defaulted on the way across.
-fn build_maps() -> Vec<TableMap> {
+/// Builds the explicit column map. Unchanged tables map every column to its
+/// old self; the user table carries the migration-specific expression for
+/// `ui`: a database old enough to predate the column starts on the schema's
+/// own default rather than on an empty string, which no writer would ever
+/// store and no reader would ever honour.
+fn build_maps(old_has_ui: bool) -> Vec<TableMap> {
     vec![
         TableMap {
             name: "user",
-            columns: old_cols(&[
-                "id",
-                "oidc_sub",
-                "email",
-                "display_name",
-                "admin",
-                "disabled",
-                "quota_bytes",
-                "used_bytes",
-                "created_at",
-                "last_seen_at",
-            ]),
+            columns: {
+                let mut columns = old_cols(&[
+                    "id",
+                    "oidc_sub",
+                    "email",
+                    "display_name",
+                    "admin",
+                    "disabled",
+                    "quota_bytes",
+                    "used_bytes",
+                ]);
+                columns.push(if old_has_ui {
+                    ("ui", "old.ui".into())
+                } else {
+                    ("ui", "'ledger'".into())
+                });
+                columns.extend(old_cols(&["created_at", "last_seen_at"]));
+                columns
+            },
         },
         TableMap {
             name: "folder",
@@ -363,14 +371,15 @@ async fn validate_maps(conn: &Connection, maps: &[TableMap]) -> Result<()> {
 /// main schema, in foreign-key-safe order: owners before folders, folders
 /// before the files and sessions that name them, everything before the
 /// shares that name all of it.
-async fn copy_data(_old_conn: &Connection, new_conn: &Connection, path: &str) -> Result<()> {
+async fn copy_data(old_conn: &Connection, new_conn: &Connection, path: &str) -> Result<()> {
     let escaped = path.replace('\'', "''");
     new_conn
         .execute(&format!("ATTACH DATABASE '{}' AS old", escaped), ())
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))?;
 
-    let maps = build_maps();
+    let old_has_ui = old_has_column(old_conn, "user", "ui").await?;
+    let maps = build_maps(old_has_ui);
     validate_maps(new_conn, &maps).await?;
 
     // Foreign keys stay off during the copy and are checked by `verify`
@@ -555,12 +564,10 @@ fn backup_name(path: &str) -> Result<String> {
     }
 }
 
-/// A probe the copy plan can ask: whether the old database already carries
-/// `column` on `table`. Unused while the declared schema is the first one —
-/// every database old enough to be reconciled predates every column it
-/// would probe — and kept because the second migration will need exactly
-/// this question on its first day.
-#[allow(dead_code)]
+/// A probe the copy plan asks: whether the old database already carries
+/// `column` on `table`. A column the second migration added is absent on a
+/// database old enough to predate it, and the map backfills the default
+/// instead of reading a column that is not there.
 async fn old_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut rows = conn
         .query(&format!("PRAGMA table_info({table})"), ())

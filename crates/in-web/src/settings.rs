@@ -117,6 +117,29 @@ async fn set_disabled(cx: &Cx, Form(input): Form<DisableForm>) -> Redirect {
     }
 }
 
+#[derive(Deserialize)]
+struct UiForm {
+    ui: String,
+}
+
+/// Switches the reader's own interface between the ledger and the
+/// instrument. Anything else is refused — the form only ever offers the
+/// two, so another value is a hand-built post, not a typo.
+#[route(POST "/api/settings/ui")]
+async fn set_ui(cx: &Cx, Form(input): Form<UiForm>) -> Redirect {
+    let user = match require_user(cx).await {
+        Ok(user) => user,
+        Err(refusal) => return redirect_back(cx, "ui", Some(refusal)),
+    };
+    if input.ui != "ledger" && input.ui != "instrument" {
+        return redirect_back(cx, "ui", Some(Refusal::BadUi));
+    }
+    match app(cx).store.set_user_ui(&user.id, &input.ui).await {
+        Ok(()) => redirect_back(cx, "ui", None),
+        Err(error) => redirect_back(cx, "ui", Some(refusal_of(error))),
+    }
+}
+
 /// The reader's profile and quota, their live share links, and — for an
 /// admin — every account with its quota and kill switch.
 #[page("/settings")]
@@ -157,92 +180,139 @@ async fn settings(cx: &Cx) -> Result {
     let origin = app(cx).config.listen_url();
     view! {
         cx =>
-        <main class="settings-shell">
-            (topbar(cx, NavPage::Settings, &fresh, language).await?)
-            <h1 class="settings-title">(t(language, Key::Settings))</h1>
-            (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable"]).await?)
-            if let Some(token) = created {
+        (topbar(cx, NavPage::Settings, &fresh, language).await?)
+        <div class="settings-shell">
+            <main class="settings-stage">
+                <h1 class="settings-title">(t(language, Key::Settings))</h1>
+                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "ui"]).await?)
+                if let Some(token) = created {
+                    <section class="panel">
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::LinkCreated))</h2>
+                        </div>
+                        <div class="panel-body">
+                            <p class="field-note">(t(language, Key::CopyLinkOnce))</p>
+                            <p class="member-link-value">(format!("{origin}/s/{token}"))</p>
+                        </div>
+                    </section>
+                }
                 <section class="panel">
-                    <h2 class="panel-title">(t(language, Key::LinkCreated))</h2>
+                    <div class="panel-head">
+                        <h2 class="panel-title">(t(language, Key::Profile))</h2>
+                    </div>
                     <div class="panel-body">
-                        <p class="field-note">(t(language, Key::CopyLinkOnce))</p>
-                        <p class="member-link-value">(format!("{origin}/s/{token}"))</p>
+                        <label class="field">
+                            <span class="field-label">(t(language, Key::DisplayName))</span>
+                            <span class="field-static">(fresh.display_name.clone())</span>
+                        </label>
+                        <label class="field">
+                            <span class="field-label">(t(language, Key::EmailAddress))</span>
+                            <span class="field-static">(fresh.email.clone())</span>
+                        </label>
+                        <div class="field">
+                            <span class="field-label">(t(language, Key::QuotaUsage))</span>
+                            <span class="field-static">(format!("{} {} {}", human_bytes(fresh.used_bytes), t(language, Key::QuotaOf), human_bytes(fresh.quota_bytes)))</span>
+                            <div class="quota-bar" role="progressbar" aria-valuenow=(quota_percent(&fresh).to_string()) aria-valuemin="0" aria-valuemax="100">
+                                <div class="quota-fill" style=(format!("width: {}%", quota_percent(&fresh)))></div>
+                            </div>
+                        </div>
+                        <form class="field" method="post" action="/api/settings/ui">
+                            <label class="field">
+                                <span class="field-label">(t(language, Key::UiLabel))</span>
+                                <select class="field-input" name="ui">
+                                    <option value="instrument" selected=(fresh.ui == "instrument")>"Instrument"</option>
+                                    <option value="ledger" selected=(fresh.ui == "ledger")>"Ledger"</option>
+                                </select>
+                            </label>
+                            <div class="panel-foot">
+                                <button class="primary" type="submit">(t(language, Key::Save))</button>
+                            </div>
+                        </form>
                     </div>
                 </section>
-            }
-            <section class="panel">
-                <h2 class="panel-title">(t(language, Key::Profile))</h2>
-                <div class="panel-body">
-                    <p><span class="field-label">(t(language, Key::DisplayName))</span> (fresh.display_name.clone())</p>
-                    <p><span class="field-label">(t(language, Key::EmailAddress))</span> (fresh.email.clone())</p>
-                    <p>
-                        <span class="field-label">(t(language, Key::QuotaUsage))</span>
-                        (format!("{} {} {}", human_bytes(fresh.used_bytes), t(language, Key::QuotaOf), human_bytes(fresh.quota_bytes)))
-                    </p>
-                    <div class="quota-bar" role="progressbar" aria-valuenow=(quota_percent(&fresh).to_string()) aria-valuemin="0" aria-valuemax="100">
-                        <div class="quota-fill" style=(format!("width: {}%", quota_percent(&fresh)))></div>
-                    </div>
-                </div>
-            </section>
-            <section class="panel">
-                <h2 class="panel-title">(t(language, Key::ManageLinks))</h2>
-                <div class="panel-body">
-                    if live_links.is_empty() {
-                        <p class="field-note">(t(language, Key::NoLinks))</p>
-                    }
-                    for link in live_links {
-                        <div class="member-row">
-                            <span class="member-name">(format!("{} · {}", link.kind.as_str(), link.target_id.clone()))</span>
-                            <span class="field-note">(expiry_line(language, link.expires_at))</span>
-                            <span class="field-note">(if link.can_download { t(language, Key::CanDownload) } else { t(language, Key::ViewOnly) })</span>
-                            <form class="pop-row-form" method="post" action="/api/share/link/revoke">
-                                <input type="hidden" name="id" value=(link.id.clone())>
-                                <button type="submit">(t(language, Key::RevokeLink))</button>
-                            </form>
-                        </div>
-                    }
-                </div>
-            </section>
-            if fresh.admin {
                 <section class="panel">
-                    <h2 class="panel-title">(t(language, Key::AdminPanel))</h2>
+                    <div class="panel-head">
+                        <h2 class="panel-title">(t(language, Key::ManageLinks))</h2>
+                    </div>
                     <div class="panel-body">
-                        <div class="member-table">
-                            for listed in &users {
-                                <div class="member-row">
-                                    <span class="member-name">(listed.display_name.clone())</span>
-                                    <span class="member-address">(listed.email.clone())</span>
-                                    <span class="field-note">(format!("{} {} {}", human_bytes(listed.used_bytes), t(language, Key::QuotaOf), human_bytes(listed.quota_bytes)))</span>
-                                    if listed.admin {
-                                        <span class="chip chip-admin">(t(language, Key::AdminBadge))</span>
-                                    }
-                                    if listed.disabled {
-                                        <span class="chip chip-off">(t(language, Key::DisabledBadge))</span>
-                                    }
-                                    <form class="pop-row-form" method="post" action="/api/settings/quota">
-                                        <input type="hidden" name="user_id" value=(listed.id.clone())>
-                                        <input class="field-input" type="number" name="quota_bytes" min="0" value=(listed.quota_bytes.to_string()) aria-label=(t(language, Key::QuotaBytes))>
-                                        <button type="submit">(t(language, Key::SetQuota))</button>
-                                    </form>
-                                    if listed.id != fresh.id {
-                                        <form class="pop-row-form" method="post" action="/api/settings/disable">
-                                            <input type="hidden" name="user_id" value=(listed.id.clone())>
-                                            if listed.disabled {
-                                                <input type="hidden" name="disabled" value="0">
-                                                <button type="submit">(t(language, Key::EnableUser))</button>
-                                            } else {
-                                                <input type="hidden" name="disabled" value="1">
-                                                <button class="quiet-danger" type="submit">(t(language, Key::DisableUser))</button>
-                                            }
-                                        </form>
-                                    }
-                                </div>
-                            }
-                        </div>
+                        if live_links.is_empty() {
+                            <p class="field-note">(t(language, Key::NoLinks))</p>
+                        }
+                        for link in live_links {
+                            <div class="member-row">
+                                <span class="member-name">(format!("{} · {}", link.kind.as_str(), link.target_id.clone()))</span>
+                                <span class="field-note">(expiry_line(language, link.expires_at))</span>
+                                <span class="field-note">(if link.can_download { t(language, Key::CanDownload) } else { t(language, Key::ViewOnly) })</span>
+                                <form class="pop-row-form" method="post" action="/api/share/link/revoke">
+                                    <input type="hidden" name="id" value=(link.id.clone())>
+                                    <button type="submit">(t(language, Key::RevokeLink))</button>
+                                </form>
+                            </div>
+                        }
                     </div>
                 </section>
-            }
-        </main>
+                if fresh.admin {
+                    <section class="panel">
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::AdminPanel))</h2>
+                        </div>
+                        <div class="panel-body">
+                            <div class="table-pan">
+                                <table class="member-table">
+                                    <thead>
+                                        <tr>
+                                            <th class="member-col-name" scope="col">(t(language, Key::NameColumn))</th>
+                                            <th class="member-col-address" scope="col">(t(language, Key::EmailAddress))</th>
+                                            <th class="member-col-account" scope="col">(t(language, Key::QuotaUsage))</th>
+                                            <th class="member-col-role" scope="col"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        for listed in &users {
+                                            <tr class="member-row">
+                                                <td class="member-col-name member-name">
+                                                    <span class="member-name-row">
+                                                        (listed.display_name.clone())
+                                                        if listed.admin {
+                                                            <span class="chip chip-admin">(t(language, Key::AdminBadge))</span>
+                                                        }
+                                                        if listed.disabled {
+                                                            <span class="chip chip-off">(t(language, Key::DisabledBadge))</span>
+                                                        }
+                                                    </span>
+                                                </td>
+                                                <td class="member-col-address member-address">(listed.email.clone())</td>
+                                                <td class="member-col-account member-account">(format!("{} {} {}", human_bytes(listed.used_bytes), t(language, Key::QuotaOf), human_bytes(listed.quota_bytes)))</td>
+                                                <td class="member-col-role">
+                                                    <form class="pop-row-form" method="post" action="/api/settings/quota">
+                                                        <input type="hidden" name="user_id" value=(listed.id.clone())>
+                                                        <input class="field-input" type="number" name="quota_bytes" min="0" value=(listed.quota_bytes.to_string()) aria-label=(t(language, Key::QuotaBytes))>
+                                                        <button type="submit">(t(language, Key::SetQuota))</button>
+                                                    </form>
+                                                    if listed.id != fresh.id {
+                                                        <form class="pop-row-form" method="post" action="/api/settings/disable">
+                                                            <input type="hidden" name="user_id" value=(listed.id.clone())>
+                                                            if listed.disabled {
+                                                                <input type="hidden" name="disabled" value="0">
+                                                                <button type="submit">(t(language, Key::EnableUser))</button>
+                                                            } else {
+                                                                <input type="hidden" name="disabled" value="1">
+                                                                <button class="quiet-danger" type="submit">(t(language, Key::DisableUser))</button>
+                                                            }
+                                                        </form>
+                                                    }
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
+                }
+            </main>
+        </div>
+        (crate::dropdown::dropdown_script(cx).await?)
     }
 }
 

@@ -36,7 +36,7 @@ const UPLOADS_DIR: &str = "uploads";
 const THUMB_SOURCE_CAP: u64 = 64 * 1024 * 1024;
 
 const USER_COLUMNS: &str =
-    "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, created_at, last_seen_at";
+    "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, ui, created_at, last_seen_at";
 const FOLDER_COLUMNS: &str = "id, owner_id, parent_id, name, created_at, deleted_at";
 const FILE_COLUMNS: &str =
     "id, owner_id, folder_id, name, mime, size_bytes, thumb_state, created_at, updated_at, deleted_at";
@@ -713,8 +713,9 @@ fn user_from(row: &Row) -> Result<User> {
         disabled: row.get::<i64>(5).map_err(backend)? != 0,
         quota_bytes: row.get::<i64>(6).map_err(backend)?.max(0) as u64,
         used_bytes: row.get::<i64>(7).map_err(backend)?.max(0) as u64,
-        created_at: parse_stamp(&text(row, 8)?)?,
-        last_seen_at: opt_stamp(row, 9)?,
+        ui: text(row, 8)?,
+        created_at: parse_stamp(&text(row, 9)?)?,
+        last_seen_at: opt_stamp(row, 10)?,
     })
 }
 
@@ -943,6 +944,23 @@ impl Store for TursoStore {
         }
         drop(conn);
         self.announce([Topic::Admin(user_id.to_string())]);
+        Ok(())
+    }
+
+    async fn set_user_ui(&self, id: &str, ui: &str) -> Result<()> {
+        if ui != "ledger" && ui != "instrument" {
+            return Err(StoreError::Corrupt(format!("ui {ui:?}")));
+        }
+        let conn = self.conn.lock().await;
+        let n = conn
+            .execute("UPDATE user SET ui = ?1 WHERE id = ?2", params![ui, id])
+            .await
+            .map_err(backend)?;
+        if n == 0 {
+            return Err(StoreError::NotFound);
+        }
+        drop(conn);
+        self.announce([Topic::Admin(id.to_string())]);
         Ok(())
     }
 

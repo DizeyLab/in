@@ -212,6 +212,8 @@ pub enum Refusal {
     AncestorTrashed,
     /// The store failed to say. Never a sign-in prompt — see `require_user`.
     Unavailable,
+    /// The ui field was not one of the values the form offers.
+    BadUi,
 }
 
 impl Refusal {
@@ -232,6 +234,7 @@ impl Refusal {
             Refusal::BadChunk => "That piece arrived damaged — send it again.".to_string(),
             Refusal::AncestorTrashed => "Restore the folder it is in first.".to_string(),
             Refusal::Unavailable => "Something went wrong.".to_string(),
+            Refusal::BadUi => "That interface choice is not offered.".to_string(),
         }
     }
 
@@ -252,8 +255,9 @@ impl Refusal {
             Refusal::ShareRevoked => "Bu bağlantı artık çalışmıyor.".to_string(),
             Refusal::UploadExpired => "Bu yüklemenin süresi doldu — yeniden başlat.".to_string(),
             Refusal::BadChunk => "Bu parça bozuk geldi — yeniden gönder.".to_string(),
-            Refusal::AncestorTrashed => "Önce içinde olduğu klasörü geri yükle.".to_string(),
             Refusal::Unavailable => "Bir şeyler ters gitti.".to_string(),
+            Refusal::AncestorTrashed => "Önce içinde olduğu klasörü geri yükle.".to_string(),
+            Refusal::BadUi => "Bu arayüz seçeneği sunulmuyor.".to_string(),
         }
     }
 
@@ -274,6 +278,7 @@ impl Refusal {
             "bad-chunk" => Refusal::BadChunk,
             "ancestor-trashed" => Refusal::AncestorTrashed,
             "unavailable" => Refusal::Unavailable,
+            "bad-ui" => Refusal::BadUi,
             _ => return None,
         })
     }
@@ -298,6 +303,7 @@ impl Refusal {
             Refusal::BadChunk => "bad-chunk",
             Refusal::AncestorTrashed => "ancestor-trashed",
             Refusal::Unavailable => "unavailable",
+            Refusal::BadUi => "bad-ui",
         }
     }
 }

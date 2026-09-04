@@ -11,8 +11,12 @@ use turso::Connection;
 
 /// The declared migrations, in order. An empty database is built by applying
 /// them one after another; each one applies cleanly to what the ones before
-/// it built, so their concatenation is itself a valid whole-schema script.
-pub(crate) const MIGRATIONS: &[&str] = &[include_str!("../../migrations/0001_init.sql")];
+/// it built (`0002` is `ALTER`s), so their concatenation is itself a valid
+/// whole-schema script.
+pub(crate) const MIGRATIONS: &[&str] = &[
+    include_str!("../../migrations/0001_init.sql"),
+    include_str!("../../migrations/0002_ui.sql"),
+];
 
 /// The whole declared schema — every migration applied in order — as one
 /// batch of SQL.

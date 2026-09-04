@@ -161,6 +161,7 @@ pub enum Key {
     ViewOnly,
     NoLinks,
     ManageLinks,
+    UiLabel,
 }
 
 pub fn t(lang: Lang, key: Key) -> &'static str {
@@ -259,6 +260,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             ViewOnly => "View only — preview, no downloads",
             NoLinks => "No share links yet.",
             ManageLinks => "Share links",
+            UiLabel => "Interface",
         },
         Lang::Tr => match key {
             Cancel => "Vazgeç",
@@ -353,6 +355,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             ViewOnly => "Yalnızca görüntüleme — önizleme, indirme yok",
             NoLinks => "Henüz paylaşım bağlantısı yok.",
             ManageLinks => "Paylaşım bağlantıları",
+            UiLabel => "Arayüz",
         },
     }
 }

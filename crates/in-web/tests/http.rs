@@ -1896,3 +1896,92 @@ async fn a_refused_upload_carries_a_well_formed_query() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(page.text().contains("already taken"), "{}", page.text());
 }
+
+// -- settings ui picker --------------------------------------------------------
+
+#[tokio::test]
+async fn settings_ui_picker_round_trips() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-ui", "ui@in.test", "Ui").await;
+    let me = owner_of(&app, "sub-ui").await;
+
+    // The ledger is the default, worn on `<html>` from the first render.
+    assert_eq!(app.store.user(&me).await.unwrap().unwrap().ui, "ledger");
+    let page = app.get("/settings", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("data-ui=\"ledger\""), "{}", page.text());
+
+    // Picking the instrument writes the row and re-renders the chrome.
+    let answer = app
+        .post("/api/settings/ui", Some(&cookie), &[("ui", "instrument")])
+        .await;
+    assert!(answer.accepted(), "ui refused: {:?}", answer.location);
+    assert_eq!(
+        app.store.user(&me).await.unwrap().unwrap().ui,
+        "instrument"
+    );
+    let page = app.get("/settings", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(
+        page.text().contains("data-ui=\"instrument\""),
+        "{}",
+        page.text()
+    );
+    assert!(page.text().contains("name=\"ui\""), "{}", page.text());
+
+    // And back again.
+    let answer = app
+        .post("/api/settings/ui", Some(&cookie), &[("ui", "ledger")])
+        .await;
+    assert!(answer.accepted(), "ui refused: {:?}", answer.location);
+    assert_eq!(app.store.user(&me).await.unwrap().unwrap().ui, "ledger");
+}
+
+#[tokio::test]
+async fn settings_ui_rejects_unknown_values() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-ui-bad", "uibad@in.test", "UiBad").await;
+    let me = owner_of(&app, "sub-ui-bad").await;
+
+    let answer = app
+        .post("/api/settings/ui", Some(&cookie), &[("ui", "mosaic")])
+        .await;
+    assert!(answer.refused("bad-ui", "ui"), "{:?}", answer.location);
+    assert_eq!(app.store.user(&me).await.unwrap().unwrap().ui, "ledger");
+
+    // The carried refusal renders under the picker form.
+    let page = app
+        .get(answer.location.as_deref().unwrap(), Some(&cookie))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(
+        page.text().contains("That interface choice is not offered."),
+        "{}",
+        page.text()
+    );
+
+    // Signed out, the same post asks to sign in first.
+    let answer = app
+        .post("/api/settings/ui", None, &[("ui", "instrument")])
+        .await;
+    assert!(answer.refused("sign-in-first", "ui"), "{:?}", answer.location);
+}
+
+#[tokio::test]
+async fn settings_panels_nest_inside_the_stage() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-stage", "stage@in.test", "Stage").await;
+    let page = app.get("/settings", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    let stage = body
+        .find("<main class=\"settings-stage\">")
+        .expect("no settings-stage");
+    let close = body.find("</main>").expect("no main close");
+    for marker in ["panel-head", "member-table", "name=\"ui\""] {
+        let at = body.find(marker).unwrap_or_else(|| panic!("no {marker}"));
+        assert!(stage < at && at < close, "{marker} escapes the stage");
+    }
+    // The admin register is a table now: one named column per fact.
+    assert!(body.contains("<th class=\"member-col-name\""), "{body}");
+}

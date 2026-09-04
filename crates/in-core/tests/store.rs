@@ -1120,3 +1120,68 @@ async fn add_share_user_needs_the_owner() {
     scratch.store.add_share_user(&user.id, ShareKind::File, &file.id, &stranger.id, true).await.unwrap();
     assert!(scratch.store.can_see(ShareKind::File, &file.id, &stranger.id).await.unwrap());
 }
+
+#[tokio::test]
+async fn a_provisioned_user_wears_the_ledger_ui() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    assert_eq!(user.ui, "ledger");
+}
+
+#[tokio::test]
+async fn the_ui_round_trips_and_refuses_what_is_not_offered() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    scratch.store.set_user_ui(&user.id, "instrument").await.unwrap();
+    let back = scratch.store.user(&user.id).await.unwrap().unwrap();
+    assert_eq!(back.ui, "instrument");
+    // A value no settings screen offers is refused, and the row keeps what
+    // the last good write left — the same Corrupt the store answers a bad
+    // enum it reads.
+    assert!(matches!(
+        scratch.store.set_user_ui(&user.id, "dense").await,
+        Err(StoreError::Corrupt(_))
+    ));
+    let kept = scratch.store.user(&user.id).await.unwrap().unwrap();
+    assert_eq!(kept.ui, "instrument");
+    assert!(matches!(
+        scratch.store.set_user_ui("no-such-user", "ledger").await,
+        Err(StoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn a_first_migration_database_gains_the_ui_column_on_open() {
+    // A database built from 0001 alone — the shape In was deployed with —
+    // carries no `ui` column. Opening it with the current code reconciles it
+    // onto the declared schema, and its people arrive wearing the default.
+    let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("in.db").to_string_lossy().into_owned();
+    {
+        let db = turso::Builder::new_local(&path).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute_batch(include_str!("../migrations/0001_init.sql"))
+            .await
+            .unwrap();
+        conn.execute(
+            "INSERT INTO user (id, oidc_sub, email, display_name, admin, disabled, \
+             quota_bytes, used_bytes, created_at, last_seen_at) \
+             VALUES ('u-old', 'sub-old', 'old@example.com', 'Old', 1, 0, 100, 0, \
+             '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+    }
+    let storage = dir.join("storage");
+    let store = TursoStore::open(&path, Some(&storage)).await.unwrap();
+    let user = store.user_by_oidc_sub("sub-old").await.unwrap().unwrap();
+    assert_eq!(user.ui, "ledger");
+    // And the carried row takes a new preference like any other.
+    store.set_user_ui(&user.id, "instrument").await.unwrap();
+    let back = store.user(&user.id).await.unwrap().unwrap();
+    assert_eq!(back.ui, "instrument");
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}

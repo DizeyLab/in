@@ -16,8 +16,12 @@
     height: 44px;
   }
 
+  // In's drive filterbar carries a full create-folder form (iz's only holds
+  // chips), so the skin's fixed 40px clips it: 40px is the floor, not the
+  // ceiling.
   .filterbar {
-    height: 40px;
+    min-height: 40px;
+    height: auto;
   }
 
   // Active nav underlines in accent, not ink.

@@ -93,6 +93,9 @@ pub struct User {
     /// file that can be restored still costs. Recomputed from the rows after
     /// every mutation, never blindly incremented.
     pub used_bytes: u64,
+    /// Display-only, the way `quota_bytes` is data: 'ledger' or 'instrument',
+    /// read by `root_layout` into `data-ui`. Nothing stored depends on it.
+    pub ui: String,
     pub created_at: OffsetDateTime,
     pub last_seen_at: Option<OffsetDateTime>,
 }
@@ -357,6 +360,12 @@ pub trait Store: 'static + Send + Sync {
     /// Disables an account. A disabled account signs in to nothing: the auth
     /// layer reads this and treats the person as signed out.
     async fn set_user_disabled(&self, user_id: &str, disabled: bool) -> Result<()>;
+
+    /// Writes the person's UI density: `ledger` or `instrument`, read by
+    /// `root_layout` into `data-ui`. Anything else is refused with
+    /// [`StoreError::Corrupt`] — the same refusal a bad enum read from the
+    /// row gets, because a bad enum written is a corrupt row.
+    async fn set_user_ui(&self, id: &str, ui: &str) -> Result<()>;
 
     // -- folders -----------------------------------------------------------
 
