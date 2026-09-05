@@ -370,11 +370,10 @@ async fn drive(cx: &Cx) -> Result {
                     <form id="upload-form" class="file-upload" method="post" action="/files"
                         enctype="multipart/form-data" data-hard="" data-failed-label=(t(language, Key::UploadFailed))>
                         <input type="hidden" name="folder_id" value=(current_id.clone())>
-                        <label class="file-upload-box">
-                            <span class="file-upload-name">(t(language, Key::ChooseFiles))</span>
-                            <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
-                        </label>
-                        <span class="field-note">(t(language, Key::DropFilesHere))</span>
+                        // No visible chooser here: the + menu's "Upload files"
+                        // label targets this input. It stays in the DOM, display-
+                        // none via the file-upload-input rule.
+                        <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
                     </form>
                     <div class="file-list">
                         for file in listing.files.iter() {
@@ -515,7 +514,7 @@ async fn upload_script(cx: &Cx) -> Result {
                 if (!form || form.id !== 'upload-form') { return; } \
                 e.preventDefault(); \
                 var input = form.querySelector('.file-upload-input'); \
-                var box = form.querySelector('.file-upload-box'); \
+                var box = form.querySelector('.file-upload-box') || form; \
                 var folder = form.querySelector('input[name=folder_id]').value; \
                 var files = input && input.files ? Array.prototype.slice.call(input.files) : []; \
                 if (!files.length) { return; } \
