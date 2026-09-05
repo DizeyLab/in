@@ -560,6 +560,17 @@ pub trait Store: 'static + Send + Sync {
         user_id: &str,
     ) -> Result<()>;
 
+    /// Every grant on one target, newest first — the target's share page. The
+    /// caller must own the live target: another owner's target is
+    /// [`StoreError::CrossOwner`], a missing or trashed one
+    /// [`StoreError::NotFound`], the same rule as [`Store::add_share_user`].
+    async fn shares_for_target(
+        &self,
+        caller_id: &str,
+        kind: ShareKind,
+        target_id: &str,
+    ) -> Result<Vec<ShareUser>>;
+
     /// Everything shared with the person that is still live: untrashed
     /// targets, newest grant first. The person's own library never appears
     /// here.

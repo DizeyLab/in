@@ -1365,6 +1365,69 @@ async fn view_only_link_download_is_dead_card() {
     );
 }
 
+/// An unchecked `can_download` box posts nothing at all, and nothing posted
+/// must never mint a download: the absent flag reads view-only, the way an
+/// explicitly refused one does — while the checked box still opens the bytes.
+#[tokio::test]
+async fn link_create_without_the_flag_is_view_only() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "plain.txt", b"plain bytes").await;
+    // No can_download pair — what an unchecked checkbox posts.
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[("kind", "file"), ("target_id", &file)],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+    let page = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("plain.txt"), "{}", page.text());
+    let blocked = app.get(&format!("/s/{token}?dl=1"), None).await;
+    assert_eq!(blocked.status, StatusCode::OK, "{}", blocked.text());
+    assert!(
+        blocked.text().contains("no longer works"),
+        "absent-flag download showed: {}",
+        blocked.text()
+    );
+    // Both share surfaces print the target's name, never its raw id.
+    let named = app.get(&format!("/share/file/{file}"), Some(&admin)).await;
+    assert_eq!(named.status, StatusCode::OK, "{}", named.text());
+    assert!(
+        named.text().contains("file · plain.txt"),
+        "share page showed no name: {}",
+        named.text()
+    );
+    let settings = app.get("/settings", Some(&admin)).await;
+    assert_eq!(settings.status, StatusCode::OK, "{}", settings.text());
+    assert!(
+        settings.text().contains("file · plain.txt"),
+        "settings panel showed no name: {}",
+        settings.text()
+    );
+    // The checked box still opens the bytes.
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+    let bytes = app.get(&format!("/s/{token}?dl=1"), None).await;
+    assert_eq!(bytes.status, StatusCode::OK);
+    assert_eq!(bytes.bytes, b"plain bytes");
+}
+
 #[tokio::test]
 async fn folder_link_lists_and_serves_children() {
     let app = TestApp::build().await;
@@ -2520,7 +2583,7 @@ async fn settings_panels_nest_inside_the_stage() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let body = page.text();
     let stage = body
-        .find("<main class=\"settings-stage\">")
+        .find("<main class=\"settings-stage")
         .expect("no settings-stage");
     let close = body.find("</main>").expect("no main close");
     for marker in ["panel-head", "member-table", "name=\"ui\""] {

@@ -4,13 +4,15 @@
 //! quota usage bar beside it, and the reader's own live share links with
 //! their revoke buttons — including the copy-once banner after a creation
 //! (`?created=<token>` on the query, rendered once and never stored).
-//! Admins additionally see every account with its quota and disabled flag.
-//! `POST /api/settings/quota|disable` are admin-only: the first sets a
-//! user's byte quota, the second disables or re-enables them (a disabled
+//! Admins additionally see every account with its quota and disabled flag,
+//! plus the instance-wide per-file upload limit in the same Everyone panel.
+//! `POST /api/settings/quota|disable|upload-limit` are admin-only: the first
+//! sets a user's byte quota, the second disables or re-enables them (a disabled
 //! account reads as signed-out everywhere, the im session untouched, and
-//! disabling yourself is refused).
+//! disabling yourself is refused), and the third sets the per-file ceiling
+//! for the whole install.
 
-use in_core::store::User;
+use in_core::store::{ShareKind, User};
 use serde::Deserialize;
 use topcoat::Result;
 use topcoat::context::Cx;
@@ -280,12 +282,26 @@ async fn settings(cx: &Cx) -> Result {
         .iter()
         .filter(|link| link.revoked_at.is_none())
         .collect();
+    // The display name per live link's target: the row carries only the id.
+    // A missing or trashed target keeps its id — the grant row outlives the
+    // trash, and the panel still revokes it. Enrichment never fails the
+    // page: an unreadable target reads as its id, the way the shared list
+    // degrades per row.
+    let mut link_names: Vec<(&in_core::store::ShareLink, String)> = Vec::new();
+    for link in &live_links {
+        let name = match link.kind {
+            ShareKind::File => store.file(&link.target_id).await.ok().flatten().map(|file| file.name),
+            ShareKind::Folder => store.folder(&link.target_id).await.ok().flatten().map(|folder| folder.name),
+        }
+        .unwrap_or_else(|| link.target_id.clone());
+        link_names.push((*link, name));
+    }
     let users = if fresh.admin {
         store.users().await?
     } else {
         Vec::new()
     };
-    // The live per-file ceiling, read once for the admin panel below. Only
+    // The live per-file ceiling, read once for the Everyone panel below. Only
     // admins see it, so only they pay the extra setting read.
     let upload_limit = if fresh.admin {
         Some(crate::server::effective_upload_limit(cx).await)
@@ -368,9 +384,9 @@ async fn settings(cx: &Cx) -> Result {
                         if live_links.is_empty() {
                             <p class="field-note">(t(language, Key::NoLinks))</p>
                         }
-                        for link in live_links {
+                        for (link, target_name) in &link_names {
                             <div class="member-row">
-                                <span class="member-name">(format!("{} · {}", link.kind.as_str(), link.target_id.clone()))</span>
+                                <span class="member-name">(format!("{} · {}", link.kind.as_str(), target_name.clone()))</span>
                                 <span class="field-note">(expiry_line(language, link.expires_at))</span>
                                 <span class="field-note">(if link.can_download { t(language, Key::CanDownload) } else { t(language, Key::ViewOnly) })</span>
                                 <form class="pop-row-form" method="post" action="/api/share/link/revoke">
@@ -382,30 +398,12 @@ async fn settings(cx: &Cx) -> Result {
                     </div>
                 </section>
                 if fresh.admin {
-                    if let Some(limit) = upload_limit {
-                        <section class="panel">
-                            <div class="panel-head">
-                                <h2 class="panel-title">(t(language, Key::UploadLimits))</h2>
-                            </div>
-                            <div class="panel-body">
-                                <p class="field-note">(t(language, Key::UploadLimitHelp))</p>
-                                <form class="pop-row-form" method="post" action="/api/settings/upload-limit">
-                                    <span class="field-note">(format!("{}: {}", t(language, Key::CurrentUploadLimit), human_bytes(limit)))</span>
-                                    <input class="field-input" type="number" name="max_upload" min="0" step="any" value=(bytes_as_unit(limit).0) aria-label=(t(language, Key::MaxUploadBytes))>
-                                    <select class="field-input" name="max_upload_unit" aria-label=(t(language, Key::MaxUploadBytes))>
-                                        <option value="MiB" selected=(bytes_as_unit(limit).1 == "MiB")>"MiB"</option>
-                                        <option value="GiB" selected=(bytes_as_unit(limit).1 == "GiB")>"GiB"</option>
-                                    </select>
-                                    <button class="quiet" type="submit">(t(language, Key::Save))</button>
-                                </form>
-                            </div>
-                        </section>
-                    }
                     <section class="panel">
                         <div class="panel-head">
                             <h2 class="panel-title">(t(language, Key::AdminPanel))</h2>
                         </div>
                         <div class="panel-body">
+                            <p class="field-note">(t(language, Key::EveryoneSubtitle))</p>
                             <div class="table-pan">
                                 <table class="member-table">
                                     <thead>
@@ -460,6 +458,19 @@ async fn settings(cx: &Cx) -> Result {
                                     </tbody>
                                 </table>
                             </div>
+                            if let Some(limit) = upload_limit {
+                                <p class="field-note">(t(language, Key::UploadLimitSection))</p>
+                                <p class="field-note">(t(language, Key::UploadLimitHelp))</p>
+                                <form class="pop-row-form" method="post" action="/api/settings/upload-limit">
+                                    <span class="field-note">(format!("{}: {}", t(language, Key::CurrentUploadLimit), human_bytes(limit)))</span>
+                                    <input class="field-input" type="number" name="max_upload" min="0" step="any" value=(bytes_as_unit(limit).0) aria-label=(t(language, Key::MaxUploadBytes))>
+                                    <select class="field-input" name="max_upload_unit" aria-label=(t(language, Key::MaxUploadBytes))>
+                                        <option value="MiB" selected=(bytes_as_unit(limit).1 == "MiB")>"MiB"</option>
+                                        <option value="GiB" selected=(bytes_as_unit(limit).1 == "GiB")>"GiB"</option>
+                                    </select>
+                                    <button class="quiet" type="submit">(t(language, Key::Save))</button>
+                                </form>
+                            }
                         </div>
                     </section>
                 }

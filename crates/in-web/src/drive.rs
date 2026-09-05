@@ -441,7 +441,7 @@ async fn drive(cx: &Cx) -> Result {
                     }
                 }
                 <form class="field-box field-box-search" method="get" action="/drive">
-                    <span class="field-text">(t(language, Key::SearchPlaceholder))</span>
+                    <span class="field-text">(t(language, Key::NavSearch))</span>
                     <input
                         class="dd-search"
                         type="search"
@@ -535,7 +535,9 @@ async fn drive(cx: &Cx) -> Result {
             <form id="upload-form" class="file-upload" method="post" action="/files"
                 enctype="multipart/form-data" data-hard=""
                 data-failed-label=(t(language, Key::UploadFailed))
-                data-complete-label=(t(language, Key::UploadComplete))>
+                data-complete-label=(t(language, Key::UploadComplete))
+                data-cancel-label=(t(language, Key::CancelUpload))
+                data-canceled-label=(t(language, Key::UploadCanceled))>
                 <input type="hidden" name="folder_id" value=(current_id.clone())>
                 <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
             </form>
@@ -593,6 +595,8 @@ async fn drive(cx: &Cx) -> Result {
                                 <div class="user-menu-panel">
                                     <a class="user-menu-item"
                                         href=(format!("{here}{edit_sep}edit={}", folder.id))>(t(language, Key::Rename))</a>
+                                    <a class="user-menu-item"
+                                        href=(format!("/share/folder/{}", folder.id))>(t(language, Key::Share))</a>
                                     <form class="user-menu-item-form" method="post" action="/api/folder/move">
                                         <input type="hidden" name="id" value=(folder.id.clone())>
                                         <div class="user-menu-item-move">
@@ -642,6 +646,8 @@ async fn drive(cx: &Cx) -> Result {
                                 <div class="user-menu-panel">
                                     <a class="user-menu-item"
                                         href=(format!("{here}{edit_sep}edit={}", file.id))>(t(language, Key::Rename))</a>
+                                    <a class="user-menu-item"
+                                        href=(format!("/share/file/{}", file.id))>(t(language, Key::Share))</a>
                                     <form class="user-menu-item-form" method="post" action="/api/file/move">
                                         <input type="hidden" name="id" value=(file.id.clone())>
                                         <div class="user-menu-item-move">
@@ -669,6 +675,7 @@ async fn drive(cx: &Cx) -> Result {
         </main>
         (crate::dropdown::dropdown_script(cx).await?)
         (upload_script(cx).await?)
+        (options_menu_script(cx).await?)
     }
 }
 
@@ -703,8 +710,12 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 /// The upload control's client half: files under 8 MiB ride one multipart
 /// post, files at or over it are split into the chunked protocol's calls —
 /// and every upload, small or big, draws the same live progress row (name,
-/// bar, percent) into the persistent `#in-status` corner stack, which the
-/// document shell renders on every page.
+/// bar, percent, cancel) into the persistent `#in-status` corner stack,
+/// which the document shell renders on every page. Cancel aborts the small
+/// path's XHR, or stops the chunked loop and posts the session's abort
+/// endpoint — the abort handle rides the `window.__inUploads` mirror entry,
+/// so the row's ✕ keeps working across soft navigations — then the row
+/// drops and the canceled card announces through `window.__inNotify`.
 ///
 /// The form wears `data-hard` so the soft-nav's multipart replay leaves it
 /// alone — two uploaders racing the same bytes would double-insert, and the
@@ -781,9 +792,19 @@ async fn upload_script(cx: &Cx) -> Result {
                         track.appendChild(fill); \
                         var pct = document.createElement('span'); \
                         pct.className = 'upload-progress-pct'; \
+                        var shut = document.createElement('button'); \
+                        shut.type = 'button'; \
+                        shut.className = 'upload-progress-cancel'; \
+                        shut.textContent = '✕'; \
+                        if (u.cancelLabel) { shut.setAttribute('aria-label', u.cancelLabel); } \
+                        shut.addEventListener('click', function () { \
+                            shut.disabled = true; \
+                            if (u.cancel) { u.cancel(); } \
+                        }); \
                         row.appendChild(name); \
                         row.appendChild(track); \
                         row.appendChild(pct); \
+                        row.appendChild(shut); \
                         box.appendChild(window.__inAdded(row)); \
                     } \
                     var text = Math.min(100, Math.round(u.frac * 100)) + '%'; \
@@ -798,7 +819,14 @@ async fn upload_script(cx: &Cx) -> Result {
             } \
             function bar(label) { \
                 if (!window.__inUploads) { window.__inUploads = []; } \
-                var u = { id: upSeq(), name: label || '', frac: 0 }; \
+                var form = document.getElementById('upload-form'); \
+                var cancelLabel = (form && form.getAttribute('data-cancel-label')) || ''; \
+                var u = { id: upSeq(), name: label || '', frac: 0, cancelLabel: cancelLabel }; \
+                /* A cancel landing before the transport arms itself (the \
+                   start round-trip) still counts: the flag below stops the \
+                   loop at the next boundary, and sendBig aborts a session \
+                   minted after the click. */ \
+                u.cancel = function () { u.cancelled = true; }; \
                 window.__inUploads.push(u); \
                 renderUploads(); \
                 return u; \
@@ -827,6 +855,10 @@ async fn upload_script(cx: &Cx) -> Result {
             function notify(kind, message) { \
                 if (window.__inNotify) { window.__inNotify(kind, message); } \
             } \
+            /* Cancel is not a failure: the rejection below carries a flag the \
+               submit handler reads, so a deliberate cancel announces the \
+               canceled card instead of the failed one. */ \
+            function canceledErr() { var e = new Error('canceled'); e.canceled = true; return e; } \
             async function startChunked(folder, name, size) { \
                 var r = await fetch('/api/upload/start', { \
                     method: 'POST', \
@@ -837,31 +869,68 @@ async fn upload_script(cx: &Cx) -> Result {
                 if (!answer.ok) { throw new Error(answer.err || 'start'); } \
                 return answer.ok; \
             } \
-            async function sendBig(file, folder, onProgress) { \
+            async function sendBig(file, folder, onProgress, u) { \
                 var session = await startChunked(folder, file.name, file.size); \
+                /* The session id lives on the mirror entry, so the row's \
+                   cancel control still reaches the abort endpoint after a \
+                   soft navigation rebuilt the page around it. A cancel that \
+                   landed during the start flight aborts the fresh session \
+                   straight away instead of leaking it. */ \
+                if (u) { \
+                    if (u.cancelled) { \
+                        fetch('/api/upload/' + session.id + '/abort', { method: 'POST' }); \
+                        throw canceledErr(); \
+                    } \
+                    u.sessionId = session.id; \
+                    u.cancel = function () { \
+                        u.cancelled = true; \
+                        try { u.abortChunk(); } catch (err) {} \
+                        fetch('/api/upload/' + session.id + '/abort', { method: 'POST' }); \
+                    }; \
+                } \
                 var total = Math.max(1, file.size); \
                 var index = 0; \
+                var flight = null; \
+                if (u) { \
+                    u.abortChunk = function () { if (flight) { try { flight.abort(); } catch (err) {} } }; \
+                } \
                 for (var off = 0; off < file.size; off += LIMIT, index++) { \
+                    if (u && u.cancelled) { throw canceledErr(); } \
                     var piece = file.slice(off, Math.min(file.size, off + LIMIT)); \
-                    var r = await fetch('/api/upload/' + session.id + '/' + index, { \
-                        method: 'PUT', \
-                        headers: { 'content-type': 'application/octet-stream' }, \
-                        body: piece \
-                    }); \
+                    flight = new AbortController(); \
+                    var r; \
+                    try { \
+                        r = await fetch('/api/upload/' + session.id + '/' + index, { \
+                            method: 'PUT', \
+                            headers: { 'content-type': 'application/octet-stream' }, \
+                            body: piece, \
+                            signal: flight.signal \
+                        }); \
+                    } catch (err) { \
+                        if (u && u.cancelled) { throw canceledErr(); } \
+                        throw err; \
+                    } \
                     if (!r.ok) { throw new Error('chunk'); } \
                     onProgress((off + piece.size) / total); \
                 } \
+                if (u && u.cancelled) { throw canceledErr(); } \
                 var done = await fetch('/api/upload/' + session.id + '/finish', { method: 'POST' }); \
                 var fin = await done.json(); \
                 if (!fin.ok) { throw new Error((fin.err) || 'finish'); } \
                 onProgress(1); \
             } \
-            function sendSmall(action, folder, files, onProgress) { \
+            function sendSmall(action, folder, files, onProgress, u) { \
                 return new Promise(function (resolve, reject) { \
                     var data = new FormData(); \
                     data.append('folder_id', folder); \
                     files.forEach(function (f) { data.append('file', f, f.name); }); \
                     var x = new XMLHttpRequest(); \
+                    if (u) { \
+                        u.cancel = function () { \
+                            u.cancelled = true; \
+                            try { x.abort(); } catch (err) {} \
+                        }; \
+                    } \
                     x.open('POST', action); \
                     x.setRequestHeader('accept', 'text/html'); \
                     x.upload.onprogress = function (ev) { \
@@ -873,6 +942,7 @@ async fn upload_script(cx: &Cx) -> Result {
                         else { reject(new Error('small')); } \
                     }; \
                     x.onerror = function () { reject(new Error('small')); }; \
+                    x.onabort = function () { reject(canceledErr()); }; \
                     x.send(data); \
                 }); \
             } \
@@ -891,6 +961,7 @@ async fn upload_script(cx: &Cx) -> Result {
                 var big = files.filter(function (f) { return f.size >= LIMIT; }); \
                 var failLabel = form.getAttribute('data-failed-label') || 'upload failed'; \
                 var doneLabel = form.getAttribute('data-complete-label') || ''; \
+                var canceledLabel = form.getAttribute('data-canceled-label') || ''; \
                 var landing = window.location.href; \
                 function settle() { \
                     input.value = ''; \
@@ -904,24 +975,27 @@ async fn upload_script(cx: &Cx) -> Result {
                             var title = small.length === 1 ? small[0].name : (small.length + ' files'); \
                             var ui = bar(title); \
                             rows.push(ui); \
-                            var url = await sendSmall(form.getAttribute('action'), folder, small, function (frac) { setProgress(ui, frac); }); \
+                            var url = await sendSmall(form.getAttribute('action'), folder, small, function (frac) { setProgress(ui, frac); }, ui); \
                             if (url) { landing = url; } \
                         } \
                         for (var i = 0; i < big.length; i++) { \
                             await (function (file) { \
                                 var ui2 = bar(file.name); \
                                 rows.push(ui2); \
-                                return sendBig(file, folder, function (frac) { setProgress(ui2, frac); }); \
+                                return sendBig(file, folder, function (frac) { setProgress(ui2, frac); }, ui2); \
                             })(big[i]); \
                         } \
                     } catch (err) { \
                         rows.forEach(dropRow); \
-                        var why = err && err.message ? err.message : String(err); \
-                        notify('error', failLabel + ' (' + why + ')'); \
+                        if (err && err.canceled) { \
+                            if (canceledLabel) { notify('ok', canceledLabel); } \
+                        } else { \
+                            var why = err && err.message ? err.message : String(err); \
+                            notify('error', failLabel + ' (' + why + ')'); \
+                        } \
                         settle(); \
                         return; \
                     } \
-                    rows.forEach(dropRow); \
                     /* A refused upload answers 303 into a refusal banner page, which the XHR follows to a 200: the banner carries the message, so only trumpet success when no refusal rode the redirect. */ \
                     if (doneLabel && !/[?&]refusal=/.test(landing)) { notify('ok', doneLabel); } \
                     settle(); \
@@ -978,6 +1052,65 @@ async fn upload_script(cx: &Cx) -> Result {
                     input.dispatchEvent(new Event('change', { bubbles: true })); \
                 }); \
             })(); \
+        })();";
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+}
+
+/// The row Options menus' client half: a `<details class="entry-options">`
+/// panel opens downward by house CSS, which runs a single bottom row's menu
+/// past the viewport so Delete hides below the fold. On toggle open the
+/// panel is measured one frame later — the toggle fires before the open
+/// layout settles, so a synchronous read scrolls menus that fit — and only
+/// lifted via the `menu-up` variant class when it spills past the viewport
+/// bottom *and* fits better above (the same drop-up idea as `dropdown.rs`'s
+/// `place`; `iz` has no details-menu variant to port, only that panel one).
+/// The scroll fallback fires only when the menu spills in both directions;
+/// a menu that fits as-is never moves the page. Trash rows carry plain
+/// restore/purge forms, no menus — nothing to mirror there.
+///
+/// The Rust `\`-continuations strip newlines, so the emitted script is one
+/// long line: only `/* */` comments survive inside it.
+async fn options_menu_script(cx: &Cx) -> Result {
+    use topcoat::view::Unescaped;
+    const JS: &str = "\
+        (function () { \
+            if (window.__inEntryOptions) { return; } \
+            window.__inEntryOptions = true; \
+            /* `toggle` does not bubble, but a capture listener still sees it \
+               on the way down; per-details listeners would need rewiring \
+               after every soft swap, this one survives them. */ \
+            document.addEventListener('toggle', function (e) { \
+                var details = e.target; \
+                if (!details || !details.classList || !details.classList.contains('entry-options')) { return; } \
+                if (!details.hasAttribute('open')) { details.classList.remove('menu-up'); return; } \
+                var panel = details.querySelector('.user-menu-panel'); \
+                if (!panel) { return; } \
+                /* The toggle fires before the open layout settles (panel \
+                   transition, the `:has` overflow lift), so a synchronously \
+                   read rect is stale and the scroll fallback fired on menus \
+                   that fit — measure one frame later, post-layout. */ \
+                window.requestAnimationFrame(function () { \
+                    if (!details.hasAttribute('open')) { return; } \
+                    details.classList.remove('menu-up'); \
+                    /* The clipper is the nearest scrollport (the stage is a \
+                       scroll container whose height is content-height on a \
+                       tall window), not the viewport: an abs-positioned panel \
+                       past the scrollport's visible bottom is trapped as \
+                       scrollable overflow — unreadable without scrolling. */ \
+                    var sc = details.closest('.settings-stage'); \
+                    var roomBottom = sc ? sc.getBoundingClientRect().bottom : window.innerHeight; \
+                    var roomTop = sc ? sc.getBoundingClientRect().top : 0; \
+                    var down = panel.getBoundingClientRect(); \
+                    if (down.bottom <= roomBottom - 8) { return; } \
+                    var trigger = details.querySelector('summary'); \
+                    var anchor = trigger ? trigger.getBoundingClientRect() : details.getBoundingClientRect(); \
+                    var above = anchor.top - roomTop - 4; \
+                    var below = roomBottom - anchor.bottom - 4; \
+                    if (above >= down.height || above > below) { details.classList.add('menu-up'); } \
+                    var r = panel.getBoundingClientRect(); \
+                    if (r.top < roomTop && r.bottom > roomBottom) { panel.scrollIntoView({ block: 'nearest' }); } \
+                }); \
+            }, true); \
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }

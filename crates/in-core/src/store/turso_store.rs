@@ -15,8 +15,8 @@ use ulid::Ulid;
 
 use super::secret;
 use super::{
-    CHUNK_SIZE, CreatedLink, File, Folder, Listing, Result, ShareKind, ShareLink, SharedItem,
-    Store, StoreError, ThumbState, UPLOAD_TTL_HOURS, UploadSession, UploadState, User,
+    CHUNK_SIZE, CreatedLink, File, Folder, Listing, Result, ShareKind, ShareLink, ShareUser,
+    SharedItem, Store, StoreError, ThumbState, UPLOAD_TTL_HOURS, UploadSession, UploadState, User,
 };
 use super::{ReconcileOptions, reconcile, schema, sniff};
 use crate::live::{Change, Topic};
@@ -2062,6 +2062,42 @@ impl Store for TursoStore {
             Topic::Shares(user_id.to_string()),
         ]);
         Ok(())
+    }
+
+    async fn shares_for_target(
+        &self,
+        caller_id: &str,
+        kind: ShareKind,
+        target_id: &str,
+    ) -> Result<Vec<ShareUser>> {
+        // The caller must own a live target — the same rule as the sibling
+        // share writes: a stranger's target is cross-owner, a missing or
+        // trashed one not-found.
+        match target_owner(&self.conn, kind, target_id).await? {
+            Some(owner) if owner == caller_id => {}
+            Some(_) => return Err(StoreError::CrossOwner),
+            None => return Err(StoreError::NotFound),
+        }
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT kind, target_id, user_id, can_download, created_at FROM share_user \
+                 WHERE kind = ?1 AND target_id = ?2 ORDER BY created_at DESC, user_id",
+                params![kind.as_str(), target_id],
+            )
+            .await
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(backend)? {
+            out.push(ShareUser {
+                kind: ShareKind::parse(&text(&row, 0)?)?,
+                target_id: text(&row, 1)?,
+                user_id: text(&row, 2)?,
+                can_download: row.get::<i64>(3).map_err(backend)? != 0,
+                created_at: parse_stamp(&text(&row, 4)?)?,
+            });
+        }
+        Ok(out)
     }
 
     async fn shares_for_user(&self, user_id: &str) -> Result<Vec<SharedItem>> {

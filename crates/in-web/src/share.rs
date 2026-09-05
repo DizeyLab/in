@@ -17,15 +17,16 @@
 //! render the copy-once banner off that pair.
 
 use in_core::hash_share_token;
-use in_core::store::{ShareKind, Store, StoreError, ThumbState, User};
+use in_core::store::{File, ShareKind, Store, StoreError, ThumbState, User};
 use serde::Deserialize;
 use time::OffsetDateTime;
 use topcoat::Result;
 use topcoat::context::Cx;
+use topcoat::router::error::not_found as page_not_found;
 use topcoat::router::content::Form;
 use topcoat::router::request::{headers as request_headers, uri};
 use topcoat::router::response::IntoResponse;
-use topcoat::router::{HeaderName, StatusCode, header, page, path_param, query_params, route};
+use topcoat::router::{HeaderName, HeaderValue, StatusCode, header, page, path_param, query_params, route};
 use topcoat::view::view;
 
 use crate::i18n::{Key, Lang, lang, t};
@@ -34,6 +35,8 @@ use crate::layout::{NavPage, topbar, wordmark};
 use crate::server::{Refusal, app, back_to, require_user};
 
 path_param!(token);
+path_param!(kind);
+path_param!(id);
 
 /// A refusal surfaced as a banner: the `?refusal=<code>&on=<call>` pair the
 /// mutation redirects carry, rendered only when `on` names one of `calls` —
@@ -214,7 +217,9 @@ async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
             &user.id,
             kind,
             &input.target_id,
-            parse_flag(input.can_download.as_deref(), true),
+            // Absent means the checkbox came unchecked: view-only. A checked
+            // box posts `1`; nothing posted must never mint a download.
+            parse_flag(input.can_download.as_deref(), false),
             expires_at,
         )
         .await;
@@ -322,7 +327,9 @@ async fn add_share(cx: &Cx, Form(input): Form<ShareUserForm>) -> Redirect {
             kind,
             &input.target_id,
             &grantee.id,
-            parse_flag(input.can_download.as_deref(), true),
+            // Absent means the checkbox came unchecked: view-only, like the
+            // sibling link creator above.
+            parse_flag(input.can_download.as_deref(), false),
         )
         .await
     {
@@ -1039,5 +1046,206 @@ fn access_chip(language: Lang, can_download: bool) -> &'static str {
         t(language, Key::CanDownload)
     } else {
         t(language, Key::ViewOnly)
+    }
+}
+
+/// `GET /share/{kind}/{id}`: one entry's share surface — the page the drive
+/// row's Share item links to. Owner only: a signed-out reader goes back to
+/// the landing, and anyone else — a stranger, or a missing or trashed target
+/// — answers not-found, the way the other owner surfaces do.
+///
+/// The public-link panel twins the settings page's shape: the live links for
+/// this target with their expiry line, access chip and revoke form — or, when
+/// none is live, the create form. The token's copy-once banner renders off
+/// the create redirect's `?created=` pair, which lands back here through the
+/// posting form's `Referer`, so no handler change was needed. The people
+/// panel lists this target's grants with remove forms, plus the add form.
+#[page("/share/{kind}/{id}")]
+async fn share_entry(cx: &Cx) -> Result {
+    let kind_raw: &str = path_param::<Kind>(cx);
+    let target_id: &str = path_param::<Id>(cx);
+    let Some(kind) = parse_kind(kind_raw) else {
+        return Err(page_not_found().into());
+    };
+    let user = match require_user(cx).await {
+        Ok(user) => user,
+        Err(_) => {
+            let location = (header::LOCATION, HeaderValue::from_static("/"));
+            return view! {
+                cx =>
+                (StatusCode::SEE_OTHER)
+                (location)
+            };
+        }
+    };
+    let language = lang(cx).await;
+    let store = app(cx).store.clone();
+    // The owned, live target: present, untrashed, and theirs. Anything else
+    // is not-found — a stranger learns nothing about whose it is.
+    let (name, file): (String, Option<File>) = match kind {
+        ShareKind::File => {
+            let Some(file) = store.file(target_id).await? else {
+                return Err(page_not_found().into());
+            };
+            if file.owner_id != user.id || file.deleted_at.is_some() {
+                return Err(page_not_found().into());
+            }
+            (file.name.clone(), Some(file))
+        }
+        ShareKind::Folder => {
+            let Some(folder) = store.folder(target_id).await? else {
+                return Err(page_not_found().into());
+            };
+            if folder.owner_id != user.id || folder.deleted_at.is_some() {
+                return Err(page_not_found().into());
+            }
+            (folder.name.clone(), None)
+        }
+    };
+    // The live links for this target alone, newest first — the settings page
+    // lists every link; this page owns just its entry's.
+    let links = store.share_links(&user.id).await?;
+    let live: Vec<_> = links
+        .iter()
+        .filter(|link| link.kind == kind && link.target_id == target_id && link.revoked_at.is_none())
+        .collect();
+    // The grants on this target. The ownership read above already vetted the
+    // caller, so a refusal here is only ever the target going missing
+    // mid-page — still not-found, never a leak.
+    let grants = match store.shares_for_target(&user.id, kind, target_id).await {
+        Ok(grants) => grants,
+        Err(StoreError::NotFound) | Err(StoreError::CrossOwner) => {
+            return Err(page_not_found().into());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut people: Vec<(String, String, bool)> = Vec::new();
+    for grant in &grants {
+        if let Some(grantee) = store.user(&grant.user_id).await? {
+            people.push((grantee.display_name, grantee.email, grant.can_download));
+        }
+    }
+    let created = created_token(uri(cx).query().unwrap_or(""));
+    let origin = app(cx).config.listen_url();
+    view! {
+        cx =>
+        (topbar(cx, NavPage::Drive, &user, language).await?)
+        <main class="settings-stage stage-wide">
+            <div class="viewer-head">
+                <a class="quiet" href="/drive">(t(language, Key::BackToDrive))</a>
+            </div>
+            <h1 class="settings-title viewer-title">
+                if kind == ShareKind::Folder {
+                    <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                }
+                if let Some(file) = file.as_ref() {
+                    (entry_chip(cx, file).await?)
+                }
+                (name.clone())
+            </h1>
+            <p class="field-note">(kind.as_str())</p>
+            (refusal_banner(cx, language, &["create", "revoke", "add", "remove"]).await?)
+            if let Some(token) = created {
+                <section class="panel">
+                    <div class="panel-head">
+                        <h2 class="panel-title">(t(language, Key::LinkCreated))</h2>
+                    </div>
+                    <div class="panel-body">
+                        <p class="field-note">(t(language, Key::CopyLinkOnce))</p>
+                        <p class="member-link-value">(format!("{origin}/s/{token}"))</p>
+                    </div>
+                </section>
+            }
+            <section class="panel">
+                <div class="panel-head">
+                    <h2 class="panel-title">(t(language, Key::ShareLink))</h2>
+                </div>
+                <div class="panel-body">
+                    if live.is_empty() {
+                        <form class="pop-row-form" method="post" action="/api/share/link/create">
+                            <input type="hidden" name="kind" value=(kind.as_str())>
+                            <input type="hidden" name="target_id" value=(target_id.to_string())>
+                            <label class="field">
+                                <input type="checkbox" name="can_download" value="1" checked="">
+                                <span class="field-label">(t(language, Key::CanDownload))</span>
+                            </label>
+                            <label class="field">
+                                <span class="field-label">(t(language, Key::ExpiresInDays))</span>
+                                <input class="field-input" type="number" name="expires_in_days" min="1" step="1">
+                            </label>
+                            <button type="submit">(t(language, Key::CreateLink))</button>
+                        </form>
+                    }
+                    for link in live {
+                        <div class="member-row">
+                            <span class="member-name">(format!("{} · {}", link.kind.as_str(), name.clone()))</span>
+                            <span class="field-note">(expiry_line(language, link.expires_at))</span>
+                            <span class="field-note">(access_chip(language, link.can_download))</span>
+                            <form class="pop-row-form" method="post" action="/api/share/link/revoke">
+                                <input type="hidden" name="id" value=(link.id.clone())>
+                                <button type="submit">(t(language, Key::RevokeLink))</button>
+                            </form>
+                        </div>
+                    }
+                </div>
+            </section>
+            <section class="panel">
+                <div class="panel-head">
+                    <h2 class="panel-title">(t(language, Key::SharedWith))</h2>
+                </div>
+                <div class="panel-body">
+                    if people.is_empty() {
+                        <p class="field-note">(t(language, Key::NoShares))</p>
+                    }
+                    for person in &people {
+                        <div class="member-row">
+                            <span class="member-name">(person.0.clone())</span>
+                            <span class="field-note">(person.1.clone())</span>
+                            <span class="field-note">(access_chip(language, person.2))</span>
+                            <form class="pop-row-form" method="post" action="/api/share/user/remove">
+                                <input type="hidden" name="kind" value=(kind.as_str())>
+                                <input type="hidden" name="target_id" value=(target_id.to_string())>
+                                <input type="hidden" name="email" value=(person.1.clone())>
+                                <button type="submit">(t(language, Key::RemoveAccess))</button>
+                            </form>
+                        </div>
+                    }
+                    <form class="pop-row-form" method="post" action="/api/share/user/add">
+                        <input type="hidden" name="kind" value=(kind.as_str())>
+                        <input type="hidden" name="target_id" value=(target_id.to_string())>
+                        <input class="field-input" type="email" name="email" required="" placeholder=(t(language, Key::SharePlaceholder)) aria-label=(t(language, Key::EmailAddress))>
+                        <label class="field">
+                            <input type="checkbox" name="can_download" value="1" checked="">
+                            <span class="field-label">(t(language, Key::CanDownload))</span>
+                        </label>
+                        <button type="submit">(t(language, Key::Share))</button>
+                    </form>
+                </div>
+            </section>
+        </main>
+    }
+}
+
+/// The just-minted token off the redirect's `?created=` pair, if present.
+/// Twins the drive and settings pages' helper; all three render the same
+/// copy-once banner off the same pair.
+fn created_token(query: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name == "created" && !value.is_empty()).then(|| value.to_string())
+    })
+}
+
+/// When the link stops opening, or never on its own. Twins the settings
+/// page's helper; the share page renders the same expiry line.
+fn expiry_line(language: Lang, expires_at: Option<OffsetDateTime>) -> String {
+    match expires_at {
+        Some(at) => format!(
+            "{} {}",
+            t(language, Key::ExpiresLabel),
+            at.format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "?".to_string())
+        ),
+        None => t(language, Key::NeverExpires).to_string(),
     }
 }

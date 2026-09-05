@@ -1128,6 +1128,40 @@ async fn add_share_user_needs_the_owner() {
 }
 
 #[tokio::test]
+async fn shares_for_target_lists_grants_for_the_owner() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let friend = bob(&scratch.store).await;
+    let stranger = scratch.store.provision_user("sub-caro", "caro@example.com", "Caro", 1024).await.unwrap();
+    let file = scratch.store.insert_file(&user.id, None, "mine", b"data").await.unwrap();
+    // No grants yet.
+    assert!(scratch.store.shares_for_target(&user.id, ShareKind::File, &file.id).await.unwrap().is_empty());
+    // A stranger may not list another owner's grants; a missing target is
+    // not-found, like the sibling share writes answer.
+    assert!(matches!(
+        scratch.store.shares_for_target(&stranger.id, ShareKind::File, &file.id).await,
+        Err(StoreError::CrossOwner)
+    ));
+    assert!(matches!(
+        scratch.store.shares_for_target(&user.id, ShareKind::File, "missing").await,
+        Err(StoreError::NotFound)
+    ));
+    scratch.store.add_share_user(&user.id, ShareKind::File, &file.id, &friend.id, true).await.unwrap();
+    scratch.store.add_share_user(&user.id, ShareKind::File, &file.id, &stranger.id, false).await.unwrap();
+    let grants = scratch.store.shares_for_target(&user.id, ShareKind::File, &file.id).await.unwrap();
+    assert_eq!(grants.len(), 2);
+    let flag_of = |id: &str| grants.iter().find(|grant| grant.user_id == id).map(|grant| grant.can_download);
+    assert_eq!(flag_of(&friend.id), Some(true));
+    assert_eq!(flag_of(&stranger.id), Some(false));
+    // A trashed target lists as not-found, like the sibling share writes.
+    scratch.store.delete_file(&file.id).await.unwrap();
+    assert!(matches!(
+        scratch.store.shares_for_target(&user.id, ShareKind::File, &file.id).await,
+        Err(StoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
 async fn a_provisioned_user_wears_the_default_preferences() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;

@@ -4661,22 +4661,19 @@ input[type="radio"] {
 // the house panel, chip, quiet and user-menu rules above do the rest.
 
 // A row never wraps: the name takes the slack as an ellipsis, every detail
-// token and action holds its column. The name span in trash and public rows
-// is `.member-name`, which carries no geometry of its own — inside a row it
-// borrows the dep-title shape (flex, ellipsis, and the old-house `.dep-title`
-// geometry it also wears in markup, so the ellipsis does not depend on this
-// block alone); the shared page wraps its linked names in `.dep-title`
-// directly.
-.dep-row { flex-wrap: nowrap; }
-
+// token and action holds its column. Trash and public names wear
+// `.member-name dep-title`; shared and drive names nest `.dep-title` inside
+// the link — the descendant selector covers both shapes, and the old-house
+// `.dep-title` geometry in markup holds the ellipsis even on its own.
 .dep-row > .member-name,
-.dep-row > .dep-title {
+.dep-row .dep-title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.dep-row { flex-wrap: nowrap; }
 
 // Detail tokens never break mid-value ('6.1 KiB' stays whole): the name's
 // ellipsis absorbs the pressure instead.
@@ -4745,4 +4742,95 @@ input[type="radio"] {
 // exceed the panel again, scroll the register rather than stacking a column.
 .table-pan {
   overflow-x: auto;
+}
+
+// -- drive round-3: single-border toolbar, menu drop-up, upload cancel -----
+//
+// The Sort/Kind/dir filterbar forms nest their controls inside the bordered
+// `.field-box`: the dd-enhanced trigger, the native select beside it, and
+// the →/↑ submit buttons. Each nested box of its own reads as a doubled or
+// overlapping control, so nested chrome is stripped and the box stays the
+// one border. Shared rules, so /trash and /shared (the identical
+// `.field-box-sort` pattern) inherit the fix with no per-page markup.
+//
+// A nested submit never draws its own box: borderless, transparent, and
+// stretched to the box height so its label sits where the box's text sits.
+.field-box .quiet {
+  border: none;
+  background: transparent;
+  height: auto;
+  align-self: stretch;
+  padding: 0 2px;
+}
+// A search submit keeps its label whole: exempt from the collapsed nested
+// padding above, never shrunk, never wrapped — the box stays its only
+// border, the button only its text width back.
+.field-box-search .quiet {
+  flex: none;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+// The enhanced trigger is already chromeless through the class it clones
+// off its select (`.status-select` carries no border or background); this
+// pins that for any skin that buttons up a bare trigger, so the trigger
+// sits flush inside the field box instead of framing itself twice.
+.field-box .dd-trigger {
+  border: none;
+  background: transparent;
+}
+
+// The native select behind an enhanced trigger never takes space: the
+// element-qualified selector outranks any skin's bare `select` chrome
+// without resorting to `!important`.
+select.dd-native { display: none; }
+
+// A row Options menu near the viewport bottom opens upward instead of
+// spilling past it: the toggle-time script in `drive.rs` adds `menu-up`
+// when the downward panel would overflow, and this bottom-anchors the
+// house panel to its trigger. The qualified open selector outranks the
+// downward `[open]` rule above by specificity, not source order.
+.entry-options.menu-up[open] > .user-menu-panel {
+  top: auto;
+  bottom: 100%;
+  margin-bottom: 4px;
+}
+
+// The in-flight upload row's cancel control: the corner stack's dismiss
+// voice (24px ✕, danger on hover) as a row-local class, so progress rows
+// need no notice-card markup to borrow it.
+.upload-progress-cancel {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-soft);
+  cursor: pointer;
+
+  &:hover { color: var(--danger); }
+}
+
+// -- share rows (ShareBuild) ------------------------------------------------------------
+// The share/people rows are `div.member-row` outside any table — the only
+// `.member-row` rule in the house lives under `.member-table` (the Everyone
+// register's own row borders), so these rows rendered as bare inline spans
+// and the name, address, expiry and access chip ran together ('NeverMay
+// download'). They get the row treatment without the card chrome: flex with
+// the house gap, wrapping under narrow pressure. `div` qualified so the
+// table's `tr.member-row` rows never match.
+div.member-row {
+  display: flex;
+  align-items: center;
+  gap: 4px 10px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+}
+div.member-row + div.member-row {
+  border-top: 1px solid var(--border);
 }

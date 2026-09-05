@@ -119,6 +119,7 @@ pub enum Key {
     Uploading,
     UploadComplete,
     UploadFailed,
+    UploadCanceled,
     CancelUpload,
     RetryUpload,
     // File view.
@@ -202,6 +203,12 @@ pub enum Key {
     SortOwner,
     // Settings limits redesign (SettingsBuild owns this block).
     UploadLimitHelp,
+    EveryoneSubtitle,
+    UploadLimitSection,
+    // Per-entry share page (ShareBuild owns this block).
+    CreateLink,
+    ExpiresInDays,
+    NoShares,
 }
 
 pub fn t(lang: Lang, key: Key) -> &'static str {
@@ -254,6 +261,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             Uploading => "Uploading…",
             UploadComplete => "Upload complete.",
             UploadFailed => "The upload failed.",
+            UploadCanceled => "Upload canceled.",
             CancelUpload => "Cancel the upload",
             RetryUpload => "Try again",
             FileDetails => "File",
@@ -326,7 +334,12 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             KindFiles => "Files",
             SortDeleted => "Deleted",
             SortOwner => "Owner",
-            UploadLimitHelp => "The most one uploaded file may be. Applies to everyone.",
+            UploadLimitHelp => "The most one uploaded file may be.",
+            EveryoneSubtitle => "Per-person storage quotas below; the single-file upload limit follows.",
+            UploadLimitSection => "Upload limit — applies to everyone.",
+            CreateLink => "Create link",
+            ExpiresInDays => "Expires in days",
+            NoShares => "Not shared with anyone yet.",
         },
         Lang::Tr => match key {
             Cancel => "Vazgeç",
@@ -375,6 +388,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             Uploading => "Yükleniyor…",
             UploadComplete => "Yükleme tamamlandı.",
             UploadFailed => "Yükleme başarısız oldu.",
+            UploadCanceled => "Yükleme iptal edildi.",
             CancelUpload => "Yüklemeyi iptal et",
             RetryUpload => "Yeniden dene",
             FileDetails => "Dosya",
@@ -447,7 +461,12 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             KindFiles => "Dosyalar",
             SortDeleted => "Silindi",
             SortOwner => "Sahibi",
-            UploadLimitHelp => "Tek bir dosyanın alabileceği en büyük boyut. Herkes için geçerlidir.",
+            UploadLimitHelp => "Tek bir dosyanın alabileceği en büyük boyut.",
+            EveryoneSubtitle => "Aşağıda kişi başına depolama kotaları; ardından herkes için geçerli tek dosyalık yükleme sınırı.",
+            UploadLimitSection => "Yükleme sınırı — herkes için geçerlidir.",
+            CreateLink => "Bağlantı oluştur",
+            ExpiresInDays => "Bitiş (gün)",
+            NoShares => "Henüz kimseyle paylaşılmadı.",
         },
     }
 }
