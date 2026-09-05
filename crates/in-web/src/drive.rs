@@ -1056,16 +1056,25 @@ async fn upload_script(cx: &Cx) -> Result {
 }
 
 /// The row Options menus' client half: a `<details class="entry-options">`
-/// panel opens downward by house CSS, which runs a single bottom row's menu
-/// past the viewport so Delete hides below the fold. On toggle open the
-/// panel is measured one frame later — the toggle fires before the open
-/// layout settles, so a synchronous read scrolls menus that fit — and only
-/// lifted via the `menu-up` variant class when it spills past the viewport
-/// bottom *and* fits better above (the same drop-up idea as `dropdown.rs`'s
-/// `place`; `iz` has no details-menu variant to port, only that panel one).
-/// The scroll fallback fires only when the menu spills in both directions;
-/// a menu that fits as-is never moves the page. Trash rows carry plain
-/// restore/purge forms, no menus — nothing to mirror there.
+/// panel opens downward by house CSS. The flip decision is viewport-relative
+/// — the same drop-up idea as `dropdown.rs`'s `place`, which `iz` shares:
+/// the menu lifts via the `menu-up` variant class only when it spills past
+/// the viewport bottom *and* fits better above. The stage is not a clipper:
+/// on this page `.settings-stage` is content-height (the window scrolls), so
+/// measuring against it lifted every menu near the list bottom and the
+/// max-height clamp then gave the panel its own scrollbar; the stylesheet's
+/// `:has` lift lets the open panel escape the stage's `overflow` instead.
+/// On toggle open the panel is measured one frame later — the toggle fires
+/// before the open layout settles, so a synchronous read scrolls menus that
+/// fit. The scroll fallback fires only when the menu spills in both
+/// directions; a menu that fits as-is never moves the page.
+///
+/// Open menus close the way the house dropdowns do: a second row's menu
+/// opening closes the first (two stacked panels once read as one menu with
+/// doubled items), and a click anywhere outside closes whichever is open —
+/// except clicks on the Move picker's `.dd-panel`, which `dropdown.rs`
+/// portals to `<body>` and which belongs to the open menu. Closing also
+/// clears the inline clamp, so a reopened menu measures fresh.
 ///
 /// The Rust `\`-continuations strip newlines, so the emitted script is one
 /// long line: only `/* */` comments survive inside it.
@@ -1075,15 +1084,25 @@ async fn options_menu_script(cx: &Cx) -> Result {
         (function () { \
             if (window.__inEntryOptions) { return; } \
             window.__inEntryOptions = true; \
+            function closeOthers(except) { \
+                document.querySelectorAll('details.entry-options[open]').forEach(function (d) { \
+                    if (d !== except) { d.removeAttribute('open'); } \
+                }); \
+            } \
             /* `toggle` does not bubble, but a capture listener still sees it \
                on the way down; per-details listeners would need rewiring \
                after every soft swap, this one survives them. */ \
             document.addEventListener('toggle', function (e) { \
                 var details = e.target; \
                 if (!details || !details.classList || !details.classList.contains('entry-options')) { return; } \
-                if (!details.hasAttribute('open')) { details.classList.remove('menu-up'); return; } \
                 var panel = details.querySelector('.user-menu-panel'); \
+                if (!details.hasAttribute('open')) { \
+                    details.classList.remove('menu-up'); \
+                    if (panel) { panel.style.maxHeight = ''; panel.style.overflowY = ''; } \
+                    return; \
+                } \
                 if (!panel) { return; } \
+                closeOthers(details); \
                 /* The toggle fires before the open layout settles (panel \
                    transition, the `:has` overflow lift), so a synchronously \
                    read rect is stale and the scroll fallback fired on menus \
@@ -1091,20 +1110,12 @@ async fn options_menu_script(cx: &Cx) -> Result {
                 window.requestAnimationFrame(function () { \
                     if (!details.hasAttribute('open')) { return; } \
                     details.classList.remove('menu-up'); \
-                    /* The clipper is the nearest scrollport (the stage is a \
-                       scroll container whose height is content-height on a \
-                       tall window), not the viewport: an abs-positioned panel \
-                       past the scrollport's visible bottom is trapped as \
-                       scrollable overflow — unreadable without scrolling. */ \
-                    var sc = details.closest('.settings-stage'); \
-                    var roomBottom = sc ? sc.getBoundingClientRect().bottom : window.innerHeight; \
-                    var roomTop = sc ? sc.getBoundingClientRect().top : 0; \
                     var down = panel.getBoundingClientRect(); \
-                    if (down.bottom <= roomBottom - 8) { return; } \
+                    if (down.bottom <= window.innerHeight - 8) { return; } \
                     var trigger = details.querySelector('summary'); \
                     var anchor = trigger ? trigger.getBoundingClientRect() : details.getBoundingClientRect(); \
-                    var above = anchor.top - roomTop - 4; \
-                    var below = roomBottom - anchor.bottom - 4; \
+                    var above = anchor.top - 4; \
+                    var below = window.innerHeight - anchor.bottom - 4; \
                     if (above >= down.height || above > below) { details.classList.add('menu-up'); } \
                     /* Never taller than the room on the chosen side: without \
                        the cap a drop-up reaches over the topbar. */ \
@@ -1112,8 +1123,16 @@ async fn options_menu_script(cx: &Cx) -> Result {
                     panel.style.maxHeight = Math.max(96, (up ? above : below) - 4) + 'px'; \
                     panel.style.overflowY = 'auto'; \
                     var r = panel.getBoundingClientRect(); \
-                    if (r.top < roomTop && r.bottom > roomBottom) { panel.scrollIntoView({ block: 'nearest' }); } \
+                    if (r.top < 0 && r.bottom > window.innerHeight) { panel.scrollIntoView({ block: 'nearest' }); } \
                 }); \
+            }, true); \
+            document.addEventListener('click', function (e) { \
+                var el = e.target; \
+                /* The Move picker's panel is portaled to <body> by \
+                   dropdown.rs — outside the details box but inside the \
+                   menu's logic, so it must not close the menu it serves. */ \
+                if (el && el.closest && (el.closest('details.entry-options') || el.closest('.dd-panel'))) { return; } \
+                closeOthers(null); \
             }, true); \
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }

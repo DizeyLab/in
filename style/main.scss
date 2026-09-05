@@ -4713,6 +4713,13 @@ input[type="radio"] {
 // behaviour — no upward variant to learn.
 .panel:has(.entry-options[open]) { overflow: visible; }
 
+// The same clip lives one level up: `.settings-stage` is `overflow-y: auto`,
+// and on the drive it is content-height (the window scrolls, the stage never
+// pans), so an open menu past the last row's edge became scrollable overflow
+// — unreadable without scrolling a box that has nothing to scroll. While a
+// menu is open the stage's clip lifts too; closed, it keeps its behavior.
+.settings-stage:has(.entry-options[open]) { overflow: visible; }
+
 // Progress rows stretch the stack's width so the bar has room to flex; the
 // stack's own max-width still caps them.
 .in-status-stack .upload-progress-row { width: 100%; }

@@ -2,9 +2,9 @@
 //! the topbar, the client scripts, and the root layout with its 404 catch.
 //!
 //! The one document-level contract with the client lives in the scripts at
-//! the bottom — `soft_nav_script`, `live_script` and the escape manager —
-//! and the morph ownership flags they define (`__inOwn`, `__inAdded`,
-//! `__inNav`).
+//! the bottom — `soft_nav_script`, `search_script`, `live_script` and the
+//! escape manager — and the morph ownership flags they define (`__inOwn`,
+//! `__inAdded`, `__inNav`).
 
 use topcoat::{
     Result,
@@ -670,6 +670,41 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
+/// Live search: the filterbar's `q` box fetches its page as the user types —
+/// debounced, morphed in place through `__inQuery`, the URL replaced rather
+/// than pushed so a keystroke never becomes a history entry. The listener is
+/// delegated on `document`, so the morph cannot orphan it; the value is
+/// deduped against the last one fetched, so an unchanged box never refetches;
+/// and `__inKeep` carries the box's value, focus and caret across the swap,
+/// so typing never stutters. Every page gets it from `root_layout` — the
+/// drive, shared and trash filterbars share the one `.field-box-search`
+/// shape, and a page without it never raises an `input` the listener wants.
+/// Enter still submits through `soft_nav_script`'s GET handler (a real
+/// navigation, history entry and all); an emptied box asks for the plain
+/// listing, which the server already answers.
+pub async fn search_script(cx: &Cx) -> Result {
+    const JS: &str = "\
+        (function () { \
+        if (window.__inSearch) { return; } \
+        window.__inSearch = true; \
+        var timer = null; \
+        var last = (document.querySelector('.field-box-search input[name=q]') || {}).value || ''; \
+        function fire() { \
+            var el = document.querySelector('.field-box-search input[name=q]'); \
+            if (!el || !el.form || !window.__inQuery || el.value === last) { return; } \
+            last = el.value; \
+            window.__inKeep = true; \
+            window.__inQuery((el.form.getAttribute('action') || window.location.pathname) + '?' + new URLSearchParams(new FormData(el.form)).toString()); \
+        } \
+        document.addEventListener('input', function (e) { \
+            var el = e.target; \
+            if (!el || el.name !== 'q' || !el.closest || !el.closest('.field-box-search')) { return; } \
+            if (timer) { clearTimeout(timer); } \
+            timer = setTimeout(function () { timer = null; fire(); }, 200); \
+        }); \
+        })();";
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+}
 
 /// The one document-level capture `keydown` listener for `Escape`, emitted
 /// once from `root_layout` before every page's own scripts. Owners install
@@ -1001,6 +1036,7 @@ async fn root_layout(cx: &Cx, slot: Result) -> Result {
             <body>
                 (escape_manager_script(cx).await?)
                 (soft_nav_script(cx).await?)
+                (search_script(cx).await?)
                 // Only for a signed-in page: `/api/live` answers 401 to
                 // everybody else, and an auth screen that opened a stream
                 // would just reconnect against that refusal forever.
