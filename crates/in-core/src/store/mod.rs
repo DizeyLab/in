@@ -24,9 +24,9 @@ pub mod sniff;
 pub mod turso_store;
 
 #[cfg(feature = "server")]
-pub use turso_store::{TursoStore, hash_share_token};
-#[cfg(feature = "server")]
 pub use reconcile::{ReconcileOptions, reconcile};
+#[cfg(feature = "server")]
+pub use turso_store::{TursoStore, hash_share_token};
 
 /// What the store can fail with. A caller that needs to distinguish "no such
 /// row" from "someone else's row" gets [`StoreError::NotFound`] for the
@@ -131,9 +131,10 @@ pub struct File {
     /// What the server decided the bytes are, never what the upload claimed.
     pub mime: String,
     pub size_bytes: u64,
-    /// How many times the bytes went to a reader: the download route and the
-    /// public-link bytes bump it through [`Store::record_download`], and
-    /// nothing internal — thumbnails, sniffing, the boot sweep — ever does.
+    /// How many times the bytes went to a downloader: the download route's
+    /// `?dl=1` serves and the public-link bytes bump it through
+    /// [`Store::record_download`], and nothing internal — previews,
+    /// thumbnails, sniffing, the boot sweep — ever does.
     pub download_count: u64,
     pub thumb_state: ThumbState,
     pub created_at: OffsetDateTime,
@@ -410,11 +411,7 @@ pub trait Store: 'static + Send + Sync {
 
     /// One directory's live contents: the folders and files whose parent is
     /// `parent_id` (`None` is the root) and whose trash timestamp is empty.
-    async fn list_children(
-        &self,
-        owner_id: &str,
-        parent_id: Option<&str>,
-    ) -> Result<Listing>;
+    async fn list_children(&self, owner_id: &str, parent_id: Option<&str>) -> Result<Listing>;
 
     /// Stores small bytes straight through: sanitises the name, checks the
     /// quota, sniffs the mime (never trusting the uploader), writes the
@@ -454,11 +451,11 @@ pub trait Store: 'static + Send + Sync {
     /// when no thumbnail was made, or its file went missing.
     async fn thumb_bytes(&self, id: &str) -> Result<Option<Vec<u8>>>;
 
-    /// Counts one user-facing serve of a file's bytes. Byte routes call this
-    /// once per download they complete — not per range chunk, not per
-    /// thumbnail, never from internal reads (sniffing, the boot sweep).
-    /// [`Store::file_bytes`] is a pure read and does not call it. Unknown
-    /// ids are [`StoreError::NotFound`].
+    /// Counts one user-facing download of a file's bytes. Byte routes call
+    /// this once per download they complete — on `?dl=1` serves, not per
+    /// range chunk, never for inline previews, thumbnails, or internal reads
+    /// (sniffing, the boot sweep). [`Store::file_bytes`] is a pure read and
+    /// does not call it. Unknown ids are [`StoreError::NotFound`].
     async fn record_download(&self, id: &str) -> Result<()>;
 
     // -- trash -------------------------------------------------------------
@@ -581,8 +578,7 @@ pub trait Store: 'static + Send + Sync {
     /// it — may. A grant on a folder covers everything under it. Nobody else
     /// may — and the answer never says which of "no such target" and "not
     /// shared" it was.
-    async fn can_see(&self, kind: ShareKind, target_id: &str, user_id: &str)
-    -> Result<bool>;
+    async fn can_see(&self, kind: ShareKind, target_id: &str, user_id: &str) -> Result<bool>;
 
     /// Whether `user_id` may download the target: its owner always may, and
     /// anyone may who sees it through a grant whose `can_download` is set —
@@ -590,12 +586,7 @@ pub trait Store: 'static + Send + Sync {
     /// permissive grant on the chain wins: a download grant above the target
     /// opens the bytes even under a view-only grant on the target itself.
     /// A view-only grant alone opens the page but not the bytes.
-    async fn can_download(
-        &self,
-        kind: ShareKind,
-        target_id: &str,
-        user_id: &str,
-    ) -> Result<bool>;
+    async fn can_download(&self, kind: ShareKind, target_id: &str, user_id: &str) -> Result<bool>;
 
     // -- chunked uploads ---------------------------------------------------
 
@@ -619,12 +610,7 @@ pub trait Store: 'static + Send + Sync {
     /// re-sending an index replaces its bytes rather than counting them
     /// twice. Anything past the declared total, or on a session that is not
     /// active and unexpired, is refused.
-    async fn record_chunk(
-        &self,
-        id: &str,
-        index: u64,
-        bytes: &[u8],
-    ) -> Result<UploadSession>;
+    async fn record_chunk(&self, id: &str, index: u64, bytes: &[u8]) -> Result<UploadSession>;
 
     /// Assembles a session's chunks in order, rechecks the quota, sniffs the
     /// mime (never trusting anything the uploader said), writes the file,
@@ -658,10 +644,5 @@ pub trait Store: 'static + Send + Sync {
 
     /// Owner-scoped substring search over live file and folder names, files
     /// and folders in their own lists. At most `limit` of each.
-    async fn search(
-        &self,
-        owner_id: &str,
-        query: &str,
-        limit: u32,
-    ) -> Result<Listing>;
+    async fn search(&self, owner_id: &str, query: &str, limit: u32) -> Result<Listing>;
 }

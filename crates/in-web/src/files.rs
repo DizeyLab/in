@@ -201,7 +201,8 @@ async fn visible_file(
 
 /// Serves one file's bytes, or the same not-found a stranger would see for
 /// a file that does not exist — never a `403`, which would confirm the id
-/// belongs to somebody else's drive.
+/// belongs to somebody else's drive. Only `?dl=1` counts a download: the
+/// viewer reads the same bytes inline, and looking is not downloading.
 #[route(GET "/file/{id}")]
 async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     let id: &str = path_param::<Id>(cx);
@@ -267,9 +268,10 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> 
         .and_then(|value| value.to_str().ok());
     match range.and_then(|range| parse_range(range, total)) {
         Some(Ok((start, end))) => {
-            // A play counts once, on its first chunk; later seeks are the
-            // same view going on, not a new one.
-            if start == 0 {
+            // Only a real download counts — `?dl=1` — never the viewer's
+            // inline bytes. A resumed download counts once, on its first
+            // chunk; later chunks are the same download going on.
+            if forced && start == 0 {
                 let _ = store.record_download(id).await;
             }
             let slice = bytes[start as usize..=end as usize].to_vec();
@@ -287,7 +289,9 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> 
             Ok((StatusCode::RANGE_NOT_SATISFIABLE, headers, Vec::new()))
         }
         None => {
-            let _ = store.record_download(id).await;
+            if forced {
+                let _ = store.record_download(id).await;
+            }
             Ok((StatusCode::OK, headers, bytes))
         }
     }

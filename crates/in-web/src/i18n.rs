@@ -102,7 +102,6 @@ pub enum Key {
     FolderName,
     CreateFolder,
     RenameFolder,
-    MoveFolder,
     DeleteFolder,
     EmptyFolder,
     FoldersHeading,
@@ -126,7 +125,6 @@ pub enum Key {
     FileDetails,
     PreviewUnavailable,
     RenameFile,
-    MoveFile,
     DeleteFile,
     // Share.
     Share,
@@ -255,7 +253,6 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             FolderName => "Folder name",
             CreateFolder => "Create folder",
             RenameFolder => "Rename folder",
-            MoveFolder => "Move folder",
             DeleteFolder => "Delete folder",
             EmptyFolder => {
                 "This folder is empty. Press + to create or upload, or drop files on this page."
@@ -279,7 +276,6 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             FileDetails => "File",
             PreviewUnavailable => "No preview for this kind of file.",
             RenameFile => "Rename file",
-            MoveFile => "Move file",
             DeleteFile => "Delete file",
             Share => "Share",
             ShareLink => "Share link",
@@ -394,7 +390,6 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             FolderName => "Klasör adı",
             CreateFolder => "Klasörü oluştur",
             RenameFolder => "Klasörü yeniden adlandır",
-            MoveFolder => "Klasörü taşı",
             DeleteFolder => "Klasörü sil",
             EmptyFolder => {
                 "Bu klasör boş. + ile oluştur ya da yükle, ya da dosyaları bu sayfaya bırak."
@@ -418,7 +413,6 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             FileDetails => "Dosya",
             PreviewUnavailable => "Bu tür dosyanın önizlemesi yok.",
             RenameFile => "Dosyayı yeniden adlandır",
-            MoveFile => "Dosyayı taşı",
             DeleteFile => "Dosyayı sil",
             Share => "Paylaş",
             ShareLink => "Paylaşım bağlantısı",

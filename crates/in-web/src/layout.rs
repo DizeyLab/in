@@ -535,7 +535,7 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
                 scrims.forEach(function (el) { el.remove(); }); \
                 sweepPanels(); \
                 var u = new URL(window.location.href); \
-                ['task', 'file', 'confirm', 'new', 'refusal', 'on', 'share', 'created'].forEach(function (k) { u.searchParams.delete(k); }); \
+                ['task', 'file', 'confirm', 'new', 'refusal', 'on', 'share', 'created', 'move'].forEach(function (k) { u.searchParams.delete(k); }); \
                 var q = u.searchParams.toString(); \
                 history.replaceState(null, '', u.pathname + (q ? '?' + q : '')); \
                 return true; \

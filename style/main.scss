@@ -4432,19 +4432,6 @@ input[type="radio"] {
   &::marker, &::-webkit-details-marker { display: none; }
 }
 
-// The move form inside the menu: picker and submit side by side, padded like
-// the link items around them.
-.user-menu-item-move {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 14px;
-
-  .field-input {
-    flex: 1;
-    min-width: 0;
-  }
-}
 
 // The rename row: the form itself fills the row so the input takes the
 // middle and Rename/Cancel sit at the right edge, exactly where the Options
@@ -4851,9 +4838,8 @@ div.member-row + div.member-row {
 // -- entry Options menu: flat rows, no boxed buttons -------------------------
 //
 // Inside the menu, `.quiet`'s border box reads as a second frame (his round-4
-// screenshot): the Delete and Move submits become flat menu rows like the
-// Rename/Share links — Delete keeps only its danger ink, Move only the
-// accent. The Move row's select trigger keeps the house chevron.
+// screenshot): the Delete submit becomes a flat menu row like the
+// Rename/Share/Move links around it, keeping only its danger ink.
 .entry-options .user-menu-panel .quiet {
   border: none;
   background: none;
@@ -4872,15 +4858,40 @@ div.member-row + div.member-row {
 
   &:hover { background: var(--row-hover); color: var(--danger); border: none; }
 }
-// The Move submit sits beside its select, not under it: compact, accent-ink,
-// no full-width row there.
-.entry-options .user-menu-panel .user-menu-item-move .quiet {
-  width: auto;
-  flex: none;
-  padding: 0 2px;
-  color: var(--accent);
+// -- the move destination picker ---------------------------------------------
+//
+// The explorer-style list the Options menu's Move item opens: one full-width
+// row per destination, padded and hovered like the menu items it replaced.
+.move-modal {
+  width: 480px;
+  padding: 18px 20px 20px;
+}
+.move-modal .viewer-head {
+  margin: 0 0 12px;
+}
+.move-list {
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+}
+.move-dest { display: block; }
+.move-dest + .move-dest { margin-top: 2px; }
+.move-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink-soft);
+  text-align: left;
+  cursor: pointer;
 
-  &:hover { background: none; color: var(--accent-ink); }
+  &:hover { background: var(--row-hover); color: var(--ink); }
 }
 
 // -- the share modal ---------------------------------------------------------

@@ -396,7 +396,8 @@ pub fn refusal_of(cx: &Cx, call: &str) -> Option<Refusal> {
 /// came with the request.
 ///
 /// The feedback pairs — `refusal=`, `on=`, `why=`, `saved=` — are how a page
-/// renders what the last post did. Sending the browser back with them still
+/// renders what the last post did, and `move=` opens the drive's one-shot
+/// destination picker, which no post should return to. Sending the browser
 /// on the query re-renders that old answer under the new post's own: a change
 /// that succeeded right after one that was refused announces the refusal
 /// again, and reads as having failed. The answer this redirect carries — the
@@ -413,7 +414,7 @@ pub fn back_to(cx: &Cx, nowhere: &str) -> String {
         .split('&')
         .filter(|pair| {
             !pair.is_empty()
-                && !["refusal", "on", "why", "saved"].iter().any(|key| {
+                && !["refusal", "on", "why", "saved", "move"].iter().any(|key| {
                     pair.strip_prefix(*key)
                         .is_some_and(|rest| rest.starts_with('='))
                 })

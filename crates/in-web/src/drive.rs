@@ -63,6 +63,7 @@ struct DriveQuery {
     sort: Option<String>,
     share: Option<String>,
     kind: Option<String>,
+    r#move: Option<String>,
 }
 
 /// The folder the query names, if it names one this account may open: owned,
@@ -135,6 +136,124 @@ async fn folder_tree(store: &dyn Store, user_id: &str) -> Vec<(String, String)> 
     }
     out.sort_by(|a, b| a.1.cmp(&b.1));
     out
+}
+
+/// The move picker's modal: `?move=kind:id` renders the drive root and every
+/// live folder as one clickable row each over the page — the file-manager
+/// idiom, replacing the select that used to sit inside the Options menu.
+/// A folder's own subtree is left out: a move into itself or a descendant is
+/// the store's refusal, and a row that can never be picked is noise. Sibling
+/// names cannot collide (the store postfixes them), so the display path
+/// identifies a subtree exactly. A pair naming nothing owned and live opens
+/// nothing.
+async fn move_modal(
+    cx: &Cx,
+    kind_raw: &str,
+    target_id: &str,
+    close_href: &str,
+    destinations: &[(String, String)],
+) -> Result<Option<topcoat::view::View>> {
+    let user = match require_user(cx).await {
+        Ok(user) => user,
+        Err(_) => return Ok(None),
+    };
+    let language = lang(cx).await;
+    let store = app(cx).store.clone();
+    // The owned, live target, the endpoint its rows post to, and — for a
+    // folder — the path prefix that marks its own subtree off the list.
+    let (name, file, action, field, own_path): (
+        String,
+        Option<in_core::store::File>,
+        &str,
+        &str,
+        Option<String>,
+    ) = match kind_raw {
+        "file" => {
+            let Some(file) = store.file(target_id).await? else {
+                return Ok(None);
+            };
+            if file.owner_id != user.id || file.deleted_at.is_some() {
+                return Ok(None);
+            }
+            (
+                file.name.clone(),
+                Some(file),
+                "/api/file/move",
+                "folder_id",
+                None,
+            )
+        }
+        "folder" => {
+            let Some(folder) = store.folder(target_id).await? else {
+                return Ok(None);
+            };
+            if folder.owner_id != user.id || folder.deleted_at.is_some() {
+                return Ok(None);
+            }
+            let own = destinations
+                .iter()
+                .find(|dest| dest.0 == target_id)
+                .map(|dest| dest.1.clone());
+            (
+                folder.name.clone(),
+                None,
+                "/api/folder/move",
+                "parent_id",
+                own,
+            )
+        }
+        _ => return Ok(None),
+    };
+    let subtree = own_path.map(|path| format!("{path} / "));
+    let rows: Vec<&(String, String)> = destinations
+        .iter()
+        .filter(|dest| match &subtree {
+            Some(prefix) => {
+                !dest.1.starts_with(prefix.as_str()) && dest.1 != prefix.trim_end_matches(" / ")
+            }
+            None => true,
+        })
+        .collect();
+    Ok(Some(view! {
+        cx =>
+        <div class="modal-scrim">
+            <div class="modal move-modal">
+                <div class="viewer-head">
+                    <h2 class="settings-title share-modal-title">
+                        if kind_raw == "folder" {
+                            <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                        }
+                        if let Some(file) = file.as_ref() {
+                            (crate::files::entry_chip(cx, file).await?)
+                        }
+                        (format!("{} “{}”", t(language, Key::Move), name.clone()))
+                    </h2>
+                    <div class="spacer"></div>
+                    <a class="quiet" href=(close_href.to_string()) aria-label=(t(language, Key::Close))>(t(language, Key::Close))</a>
+                </div>
+                <div class="move-list">
+                    <form class="move-dest" method="post" action=(action)>
+                        <input type="hidden" name="id" value=(target_id.to_string())>
+                        <input type="hidden" name=(field) value="">
+                        <button class="move-pick" type="submit">
+                            <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                            (t(language, Key::Drive))
+                        </button>
+                    </form>
+                    for dest in rows {
+                        <form class="move-dest" method="post" action=(action)>
+                            <input type="hidden" name="id" value=(target_id.to_string())>
+                            <input type="hidden" name=(field) value=(dest.0.clone())>
+                            <button class="move-pick" type="submit">
+                                <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                                (dest.1.clone())
+                            </button>
+                        </form>
+                    }
+                </div>
+            </div>
+        </div>
+    }?))
 }
 
 fn human_size(bytes: u64) -> String {
@@ -366,7 +485,13 @@ async fn drive(cx: &Cx) -> Result {
             KindFilter::Files => found.folders.clear(),
         }
     }
-    let destinations = folder_tree(store.as_ref(), &user.id).await;
+    // The destination tree only pays when the move picker is open.
+    let move_pair = params.as_ref().and_then(|query| query.r#move.as_deref());
+    let destinations = if move_pair.is_some() {
+        folder_tree(store.as_ref(), &user.id).await
+    } else {
+        Vec::new()
+    };
     let refusal = page_refusal(cx);
     // Which folder row (if any) renders as its rename form: iz's `?edit=`
     // idiom — a server-side row swap, no client state to hold.
@@ -420,6 +545,14 @@ async fn drive(cx: &Cx) -> Result {
         Some((kind, id)) => {
             crate::share::share_modal(cx, kind, id, &here, created.clone(), &origin).await?
         }
+        None => None,
+    };
+    // The move picker: `?move=kind:id` renders the destination modal over
+    // the page — one shot, unlike the share dialog: a posted move comes back
+    // through `back_to`, which strips the pair, so the modal closes on both
+    // success and refusal (the refusal then wears the page banner).
+    let move_dialog = match move_pair.and_then(|pair| pair.split_once(':')) {
+        Some((move_kind, id)) => move_modal(cx, move_kind, id, &here, &destinations).await?,
         None => None,
     };
     // The copy-once banner belongs to the modal when it is open.
@@ -593,20 +726,8 @@ async fn drive(cx: &Cx) -> Result {
                                         href=(format!("{here}{edit_sep}edit={}", folder.id))>(t(language, Key::Rename))</a>
                                     <a class="user-menu-item"
                                         href=(format!("{here}{edit_sep}share=folder:{}", folder.id))>(t(language, Key::Share))</a>
-                                    <form class="user-menu-item-form" method="post" action="/api/folder/move">
-                                        <input type="hidden" name="id" value=(folder.id.clone())>
-                                        <div class="user-menu-item-move">
-                                            <select class="field-input" name="parent_id" aria-label=(t(language, Key::MoveFolder))>
-                                                <option value="">(t(language, Key::Drive))</option>
-                                                for dest in destinations.iter() {
-                                                    if dest.0 != folder.id {
-                                                        <option value=(dest.0.clone())>(dest.1.clone())</option>
-                                                    }
-                                                }
-                                            </select>
-                                            <button class="quiet" type="submit">(t(language, Key::Move))</button>
-                                        </div>
-                                    </form>
+                                    <a class="user-menu-item"
+                                        href=(format!("{here}{edit_sep}move=folder:{}", folder.id))>(t(language, Key::Move))</a>
                                     <form class="user-menu-item-form" method="post" action="/api/folder/delete">
                                         <input type="hidden" name="id" value=(folder.id.clone())>
                                         <button class="user-menu-item quiet quiet-danger" type="submit">(t(language, Key::Delete))</button>
@@ -644,18 +765,13 @@ async fn drive(cx: &Cx) -> Result {
                                         href=(format!("{here}{edit_sep}edit={}", file.id))>(t(language, Key::Rename))</a>
                                     <a class="user-menu-item"
                                         href=(format!("{here}{edit_sep}share=file:{}", file.id))>(t(language, Key::Share))</a>
-                                    <form class="user-menu-item-form" method="post" action="/api/file/move">
-                                        <input type="hidden" name="id" value=(file.id.clone())>
-                                        <div class="user-menu-item-move">
-                                            <select class="field-input" name="folder_id" aria-label=(t(language, Key::MoveFile))>
-                                                <option value="">(t(language, Key::Drive))</option>
-                                                for dest in destinations.iter() {
-                                                    <option value=(dest.0.clone())>(dest.1.clone())</option>
-                                                }
-                                            </select>
-                                            <button class="quiet" type="submit">(t(language, Key::Move))</button>
-                                        </div>
-                                    </form>
+                                    // The `download` attribute keeps the
+                                    // soft-nav handler off the click, so the
+                                    // bytes land as a file, not a page swap.
+                                    <a class="user-menu-item"
+                                        href=(format!("/file/{}?dl=1", file.id)) download="">(t(language, Key::Download))</a>
+                                    <a class="user-menu-item"
+                                        href=(format!("{here}{edit_sep}move=file:{}", file.id))>(t(language, Key::Move))</a>
                                     <form class="user-menu-item-form" method="post" action="/api/file/delete">
                                         <input type="hidden" name="id" value=(file.id.clone())>
                                         <button class="user-menu-item quiet quiet-danger" type="submit">(t(language, Key::Delete))</button>
@@ -669,6 +785,9 @@ async fn drive(cx: &Cx) -> Result {
             </section>
             }
         </main>
+        if let Some(dialog) = move_dialog {
+            (dialog)
+        }
         if let Some(dialog) = share_dialog {
             (dialog)
         }

@@ -1262,6 +1262,74 @@ async fn forced_download_is_attachment() {
     assert_eq!(forced.bytes, b"read me");
 }
 
+/// Looking is not downloading: the viewer's inline serves — the plain GET
+/// and a media element's range probe from byte 0 — never move the counter;
+/// only the `?dl=1` disposition does, once per download.
+#[tokio::test]
+async fn previews_do_not_count_as_downloads() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-prev", "prev@in.test", "Prev").await;
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-prev")
+        .await
+        .unwrap()
+        .unwrap();
+
+    app.post_multipart(
+        "/files",
+        Some(&cookie),
+        &[("folder_id", "")],
+        &[("clip.txt", "text/plain", b"counted only when taken")],
+    )
+    .await;
+    let file = app
+        .store
+        .list_children(&user.id, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+    let count = || async {
+        app.store
+            .file(&file.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .download_count
+    };
+
+    let inline = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
+    assert_eq!(inline.status, StatusCode::OK);
+    let probe = app
+        .get_with_range(&format!("/file/{}", file.id), Some(&cookie), "bytes=0-3")
+        .await;
+    assert_eq!(probe.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        count().await,
+        0,
+        "previews counted: inline and range serves"
+    );
+
+    let taken = app
+        .get(&format!("/file/{}?dl=1", file.id), Some(&cookie))
+        .await;
+    assert_eq!(taken.status, StatusCode::OK);
+    assert_eq!(count().await, 1, "a forced download did not count");
+    // A mid-file chunk of a download is the same download going on.
+    let resumed = app
+        .get_with_range(
+            &format!("/file/{}?dl=1", file.id),
+            Some(&cookie),
+            "bytes=4-",
+        )
+        .await;
+    assert_eq!(resumed.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(count().await, 1, "a resumed chunk counted again");
+}
+
 // -- public links (merged from http_d2.rs; one binary per crate) ------------
 
 #[tokio::test]
@@ -3152,7 +3220,37 @@ async fn drive_lists_folders_before_files_in_one_panel() {
     let folder_at = body.find("mmm folder").expect("no folder row");
     let file_at = body.find("aaa file.txt").expect("no file row");
     assert!(folder_at < file_at, "file row precedes folder row: {body}");
-    assert!(body.contains("action=\"/api/folder/move\""), "{body}");
+    // Move is a picker modal now: the row's menu links to it, and the modal
+    // carries the destination rows that post the move.
+    let folder_id = {
+        let at = body.find("/drive?folder=").expect("no folder link");
+        let rest = &body[at + "/drive?folder=".len()..];
+        let end = rest.find('"').expect("unterminated folder link");
+        rest[..end].to_string()
+    };
+    assert!(
+        body.contains(&format!("move=folder:{folder_id}")),
+        "folder row has no move entry: {body}"
+    );
+    assert!(
+        body.contains(&format!("move=file:{file_id}")),
+        "file row has no move entry: {body}"
+    );
+    let picker = app
+        .get(&format!("/drive?move=folder:{folder_id}"), Some(&cookie))
+        .await;
+    let picker_body = picker.text();
+    assert!(
+        picker_body.contains("action=\"/api/folder/move\""),
+        "{picker_body}"
+    );
+    // A folder never offers its own subtree as a destination: with only the
+    // target folder in the tree, the drive root is the one row left.
+    assert_eq!(
+        picker_body.matches("class=\"move-pick\"").count(),
+        1,
+        "{picker_body}"
+    );
     // File rename follows the folder pattern: an edit link on the plain
     // view, the form only on the edit view.
     assert!(
