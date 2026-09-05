@@ -187,6 +187,16 @@ pub async fn dropdown_script(cx: &Cx) -> Result {
                 window.__inAdded(trigger);\
                 select.parentNode.insertBefore(trigger, select);\
                 window.__inOwn(select, ['dd-native'], []);\
+                /* The form's own submit only serves the no-script path; once \
+                   the select is enhanced it duplicates the autosubmit, so it \
+                   bows out — directly, not via a stylesheet the skin or a \
+                   morph might out-race. */ \
+                var go = null; \
+                var sibs = select.parentNode.children; \
+                for (var si = 0; si < sibs.length; si++) { \
+                    if (sibs[si].tagName === 'BUTTON' && sibs[si].type === 'submit' && !sibs[si].classList.contains('dd-trigger')) { go = sibs[si]; break; } \
+                } \
+                if (go) { window.__inOwn(go, [], ['style']); go.style.display = 'none'; } \
                 var panel = document.createElement('div');\
                 panel.className = 'dd-panel';\
                 panel.setAttribute('role', 'listbox');\
