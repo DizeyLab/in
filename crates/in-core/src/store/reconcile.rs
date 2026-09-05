@@ -204,10 +204,18 @@ struct TableMap {
 
 /// Builds the explicit column map. Unchanged tables map every column to its
 /// old self; the user table carries the migration-specific expressions for
-/// `ui`, `theme` and `language`: a database old enough to predate a column
-/// starts on the schema's own default rather than on an empty string, which
-/// no writer would ever store and no reader would ever honour.
-fn build_maps(old_has_ui: bool, old_has_theme: bool, old_has_language: bool) -> Vec<TableMap> {
+/// `ui`, `theme` and `language`, and the file table one for
+/// `download_count`: a database old enough to predate a column starts on the
+/// schema's own default rather than on an empty string, which no writer
+/// would ever store and no reader would ever honour. Tables the old database
+/// predates entirely (today: `setting`) map column-for-column and are
+/// skipped at copy time, starting empty.
+fn build_maps(
+    old_has_ui: bool,
+    old_has_theme: bool,
+    old_has_language: bool,
+    old_has_download_count: bool,
+) -> Vec<TableMap> {
     vec![
         TableMap {
             name: "user",
@@ -254,18 +262,26 @@ fn build_maps(old_has_ui: bool, old_has_theme: bool, old_has_language: bool) -> 
         },
         TableMap {
             name: "file",
-            columns: old_cols(&[
-                "id",
-                "owner_id",
-                "folder_id",
-                "name",
-                "mime",
-                "size_bytes",
-                "thumb_state",
-                "created_at",
-                "updated_at",
-                "deleted_at",
-            ]),
+            columns: {
+                let mut columns = old_cols(&[
+                    "id",
+                    "owner_id",
+                    "folder_id",
+                    "name",
+                    "mime",
+                    "size_bytes",
+                    "thumb_state",
+                    "created_at",
+                    "updated_at",
+                    "deleted_at",
+                ]);
+                columns.push(if old_has_download_count {
+                    ("download_count", "old.download_count".into())
+                } else {
+                    ("download_count", "0".into())
+                });
+                columns
+            },
         },
         TableMap {
             name: "share_link",
@@ -299,6 +315,10 @@ fn build_maps(old_has_ui: bool, old_has_theme: bool, old_has_language: bool) -> 
                 "created_at",
                 "expires_at",
             ]),
+        },
+        TableMap {
+            name: "setting",
+            columns: old_cols(&["key", "value"]),
         },
     ]
 }
@@ -391,7 +411,13 @@ async fn copy_data(old_conn: &Connection, new_conn: &Connection, path: &str) -> 
     let old_has_ui = old_has_column(old_conn, "user", "ui").await?;
     let old_has_theme = old_has_column(old_conn, "user", "theme").await?;
     let old_has_language = old_has_column(old_conn, "user", "language").await?;
-    let maps = build_maps(old_has_ui, old_has_theme, old_has_language);
+    let old_has_download_count = old_has_column(old_conn, "file", "download_count").await?;
+    let maps = build_maps(
+        old_has_ui,
+        old_has_theme,
+        old_has_language,
+        old_has_download_count,
+    );
     validate_maps(new_conn, &maps).await?;
 
     // Foreign keys stay off during the copy and are checked by `verify`
@@ -403,6 +429,11 @@ async fn copy_data(old_conn: &Connection, new_conn: &Connection, path: &str) -> 
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))?;
     for map in maps {
+        // A table the old database predates entirely (today: `setting`)
+        // has no rows to copy; it starts empty in the rebuilt file.
+        if !old_has_table(old_conn, map.name).await? {
+            continue;
+        }
         let cols = map
             .columns
             .iter()
@@ -496,9 +527,16 @@ async fn verify(old_conn: &Connection, new_conn: &Connection) -> Result<()> {
         "share_link",
         "share_user",
         "upload_session",
+        "setting",
     ];
     for table in tables {
-        let old_count = count_rows(old_conn, table).await?;
+        // A table the old database predates starts empty: 0 old rows is
+        // the count a missing table would have kept.
+        let old_count = if old_has_table(old_conn, table).await? {
+            count_rows(old_conn, table).await?
+        } else {
+            0
+        };
         let new_count = count_rows(new_conn, table).await?;
         if old_count != new_count {
             return Err(StoreError::Backend(format!(
@@ -596,4 +634,22 @@ async fn old_has_column(conn: &Connection, table: &str, column: &str) -> Result<
         }
     }
     Ok(false)
+}
+
+/// A probe the copy plan asks: whether the old database carries `table` at
+/// all. A table a later migration added is absent on a database old enough
+/// to predate it; its copy is skipped and its verify count starts at 0.
+async fn old_has_table(conn: &Connection, table: &str) -> Result<bool> {
+    let mut rows = conn
+        .query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            turso::params![table],
+        )
+        .await
+        .map_err(|e| StoreError::Backend(e.to_string()))?;
+    Ok(rows
+        .next()
+        .await
+        .map_err(|e| StoreError::Backend(e.to_string()))?
+        .is_some())
 }

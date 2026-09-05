@@ -17,6 +17,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0001_init.sql"),
     include_str!("../../migrations/0002_ui.sql"),
     include_str!("../../migrations/0003_preferences.sql"),
+    include_str!("../../migrations/0004_downloads_settings.sql"),
 ];
 
 /// The whole declared schema — every migration applied in order — as one

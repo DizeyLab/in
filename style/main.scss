@@ -4354,3 +4354,248 @@ input[type="radio"] {
 
   .auth-stage { padding: 0 16px 24px; }
 }
+
+// -- file viewer page ------------------------------------------------------------
+// GET /view/{id}: the preview on its own page. The media elements reuse the
+// in-app viewer classes (.viewer-media, .viewer-pdf); the stage centers
+// them, the audio element takes a readable width, and the text frame wears
+// the pdf box's shape.
+.viewer-stage {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+}
+
+.viewer-audio { width: min(480px, 100%); }
+
+.viewer-text {
+  width: 100%;
+  height: 70vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.viewer-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0;
+}
+
+// -- file chips ------------------------------------------------------------------
+// entry_chip's mime-class marks: one glyph each, decorative beside the name.
+// The shared rule keeps every glyph chip the same footprint next to a
+// thumbnail; the tints reuse the semantic tokens, quiet enough to sit in a
+// row.
+.file-chip-image,
+.file-chip-video,
+.file-chip-audio,
+.file-chip-pdf,
+.file-chip-text,
+.file-chip-archive,
+.file-chip-generic {
+  justify-content: center;
+  min-width: 40px;
+  font-size: 13px;
+}
+
+.file-chip-video { color: var(--accent-ink); }
+.file-chip-audio { color: var(--violet-ink); }
+.file-chip-pdf { color: var(--danger); }
+.file-chip-text { color: var(--positive-ink); }
+.file-chip-archive { color: var(--warn-ink); }
+
+// -- trash/share unified rows (TrashShareBuild) --------------------------------------
+// The folder chip beside trashed, shared and publicly-shared names: the same
+// footprint as entry_chip's mime glyphs, the accent tint because folders are
+// the rows' way in.
+.file-chip-folder {
+  justify-content: center;
+  min-width: 40px;
+  font-size: 13px;
+  color: var(--accent-ink);
+}
+
+// -- drive wave-2 (DriveBuild) -------------------------------------------------------
+// Options menus, rename rows, progress rows, the drop overlay and the
+// persistent notice stack. One contiguous section; the house panel, chip and
+// quiet rules above do the rest.
+
+// The row's Options menu wears the house user-menu panel; the summary hides
+// its disclosure marker the way the drive-add trigger does.
+.entry-options-trigger {
+  list-style: none;
+  white-space: nowrap;
+
+  &::marker, &::-webkit-details-marker { display: none; }
+}
+
+// The move form inside the menu: picker and submit side by side, padded like
+// the link items around them.
+.user-menu-item-move {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px;
+
+  .field-input {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+// The rename row: the form itself fills the row so the input takes the
+// middle and Rename/Cancel sit at the right edge, exactly where the Options
+// trigger sits in the plain row.
+.dep-edit-form {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+
+  .field-input {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+// Row details keep the chip-note voice: muted, small, single line. The
+// dep-note never wraps mid-row; the name's ellipsis absorbs the pressure.
+.dep-row > .dep-note {
+  white-space: nowrap;
+}
+
+// Upload progress rows under the filterbar: name, bar, percent. The track is
+// the house upload-progress rule freed of its upload-box geometry (it was
+// absolutely positioned into a box the drive form never renders) — here it
+// flexes beside the name it belongs to.
+.upload-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+
+  &:empty { display: none; }
+}
+
+.upload-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.upload-progress-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.upload-progress-list .upload-progress {
+  position: relative;
+  flex: 1;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  min-width: 80px;
+  height: 4px;
+}
+
+.upload-progress-pct {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+
+// The full-page drop affordance: a fixed veil with the invitation centred,
+// pointer-transparent so it never blocks the drop it announces.
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-tint, rgba(70, 85, 123, 0.12));
+  border: 2px dashed var(--accent);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease), visibility var(--dur-fast) var(--ease);
+}
+
+.drop-overlay-show {
+  opacity: 1;
+  visibility: visible;
+}
+
+.drop-overlay-text {
+  padding: 12px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+// The persistent notice stack: fixed corner cards for upload errors and
+// completions, dismissed only by their ✕ — never by a swap, never by time.
+.in-status-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, 90vw);
+
+  &:empty { display: none; }
+}
+
+.in-status-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.in-status-error {
+  border-color: var(--danger-border);
+}
+
+.in-status-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.in-status-dismiss {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-soft);
+  cursor: pointer;
+
+  &:hover { color: var(--danger); }
+}

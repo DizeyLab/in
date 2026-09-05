@@ -13,7 +13,7 @@
 //! plain GET form. The old `GET /search?q=` address 303s here, so old links
 //! keep working.
 
-use in_core::store::{Folder, Store, StoreError, ThumbState};
+use in_core::store::{Folder, Store, StoreError};
 use topcoat::router::request::uri;
 use topcoat::router::{HeaderName, HeaderValue, StatusCode, header, page, query_params, route};
 
@@ -61,6 +61,9 @@ struct DriveQuery {
     folder: Option<String>,
     q: Option<String>,
     edit: Option<String>,
+    sort: Option<String>,
+    dir: Option<String>,
+    kind: Option<String>,
 }
 
 /// The folder the query names, if it names one this account may open: owned,
@@ -161,6 +164,129 @@ fn created_token(query: &str) -> Option<String> {
         (name == "created" && !value.is_empty()).then(|| value.to_string())
     })
 }
+/// The drive listing's sort key: `None` is the standing order —
+/// folders-then-files as the store listed them — anything else re-orders
+/// each group in place. Unknown values fall back to the standing order,
+/// never to a refusal: a hand-edited query names nothing fancy, not an
+/// error.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortKey {
+    Name,
+    Uploaded,
+    Size,
+    Downloads,
+}
+
+impl SortKey {
+    fn as_str(self) -> &'static str {
+        match self {
+            SortKey::Name => "name",
+            SortKey::Uploaded => "uploaded",
+            SortKey::Size => "size",
+            SortKey::Downloads => "downloads",
+        }
+    }
+}
+
+/// The sort direction. Absent or unknown falls back per key — ascending
+/// for names, descending for the recency/count keys — the way iz reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortDir {
+    Asc,
+    Desc,
+}
+
+impl SortDir {
+    fn as_str(self) -> &'static str {
+        match self {
+            SortDir::Asc => "asc",
+            SortDir::Desc => "desc",
+        }
+    }
+}
+
+/// The kind filter: everything, folders only, files only.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KindFilter {
+    All,
+    Folders,
+    Files,
+}
+
+impl KindFilter {
+    fn as_str(self) -> &'static str {
+        match self {
+            KindFilter::All => "all",
+            KindFilter::Folders => "folders",
+            KindFilter::Files => "files",
+        }
+    }
+}
+
+fn parse_sort(raw: Option<&str>) -> Option<SortKey> {
+    match raw.unwrap_or("") {
+        "name" => Some(SortKey::Name),
+        "uploaded" => Some(SortKey::Uploaded),
+        "size" => Some(SortKey::Size),
+        "downloads" => Some(SortKey::Downloads),
+        _ => None,
+    }
+}
+
+fn parse_dir(raw: Option<&str>, key: Option<SortKey>) -> SortDir {
+    match raw.unwrap_or("") {
+        "asc" => SortDir::Asc,
+        "desc" => SortDir::Desc,
+        _ => match key {
+            Some(SortKey::Name) | None => SortDir::Asc,
+            _ => SortDir::Desc,
+        },
+    }
+}
+
+fn parse_kind(raw: Option<&str>) -> KindFilter {
+    match raw.unwrap_or("") {
+        "folders" => KindFilter::Folders,
+        "files" => KindFilter::Files,
+        _ => KindFilter::All,
+    }
+}
+
+/// Order one folder group in place. Folders carry no size or download
+/// count, so those keys fall back to the name order rather than inventing
+/// one; the direction still applies.
+fn sort_folders(folders: &mut [Folder], key: SortKey, dir: SortDir) {
+    folders.sort_by(|a, b| {
+        let order = match key {
+            SortKey::Name | SortKey::Size | SortKey::Downloads => {
+                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+            }
+            SortKey::Uploaded => a.created_at.cmp(&b.created_at),
+        }
+        .then_with(|| a.id.cmp(&b.id));
+        match dir {
+            SortDir::Asc => order,
+            SortDir::Desc => order.reverse(),
+        }
+    });
+}
+
+/// Order one file group in place.
+fn sort_files(files: &mut [in_core::store::File], key: SortKey, dir: SortDir) {
+    files.sort_by(|a, b| {
+        let order = match key {
+            SortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortKey::Uploaded => a.created_at.cmp(&b.created_at),
+            SortKey::Size => a.size_bytes.cmp(&b.size_bytes),
+            SortKey::Downloads => a.download_count.cmp(&b.download_count),
+        }
+        .then_with(|| a.id.cmp(&b.id));
+        match dir {
+            SortDir::Asc => order,
+            SortDir::Desc => order.reverse(),
+        }
+    });
+}
 
 /// `GET /drive?folder=<id>`: one directory.
 #[page("/drive")]
@@ -189,20 +315,57 @@ async fn drive(cx: &Cx) -> Result {
         .and_then(|query| query.q.clone())
         .map(|query| query.trim().to_string())
         .filter(|query| !query.is_empty());
-    let hits = match asked.as_deref() {
+    // The toolbar's listing controls: unknown values fall back to the
+    // standing order (folders-then-files as listed), ascending names, and
+    // the unfiltered kind — a hand-edited query re-orders nothing, it
+    // never refuses.
+    let sort_key = params
+        .as_ref()
+        .and_then(|query| parse_sort(query.sort.as_deref()));
+    let sort_dir = parse_dir(
+        params.as_ref().and_then(|query| query.dir.as_deref()),
+        sort_key,
+    );
+    let kind = params
+        .as_ref()
+        .map(|query| parse_kind(query.kind.as_deref()))
+        .unwrap_or(KindFilter::All);
+    let mut hits = match asked.as_deref() {
         Some(query) => Some(store.search(&user.id, query, LIMIT).await?),
         None => None,
     };
     let box_text = asked.clone().unwrap_or_default();
     let current = current_folder(store.as_ref(), &user.id, wanted.as_deref()).await?;
     let crumbs = breadcrumbs(store.as_ref(), current.as_ref()).await;
-    let listing = match store
+    let mut listing = match store
         .list_children(&user.id, current.as_ref().map(|folder| folder.id.as_str()))
         .await
     {
         Ok(listing) => listing,
         Err(_) => return Err(not_found().into()),
     };
+    // Sort and filter in the page layer, after the fetch — no store API
+    // change. Each group keeps its own order; folders-then-files stands.
+    if let Some(key) = sort_key {
+        sort_folders(&mut listing.folders, key, sort_dir);
+        sort_files(&mut listing.files, key, sort_dir);
+    }
+    match kind {
+        KindFilter::All => {}
+        KindFilter::Folders => listing.files.clear(),
+        KindFilter::Files => listing.folders.clear(),
+    }
+    if let Some(found) = hits.as_mut() {
+        if let Some(key) = sort_key {
+            sort_folders(&mut found.folders, key, sort_dir);
+            sort_files(&mut found.files, key, sort_dir);
+        }
+        match kind {
+            KindFilter::All => {}
+            KindFilter::Folders => found.files.clear(),
+            KindFilter::Files => found.folders.clear(),
+        }
+    }
     let destinations = folder_tree(store.as_ref(), &user.id).await;
     let refusal = page_refusal(cx);
     // Which folder row (if any) renders as its rename form: iz's `?edit=`
@@ -222,15 +385,43 @@ async fn drive(cx: &Cx) -> Result {
         .map(|folder| folder.name.clone())
         .unwrap_or_else(|| t(language, Key::Drive).to_string());
     // The folder view without `?edit=`: the rename form's cancel target and
-    // the base the edit links extend.
-    let here = if current_id.is_empty() {
+    // the base the edit links extend. The listing controls ride along so a
+    // rename round-trip keeps the order and filter the reader chose; every
+    // value here is an id or a fixed vocabulary word, so no encoding is
+    // owed.
+    let mut here_bits: Vec<String> = Vec::new();
+    if !current_id.is_empty() {
+        here_bits.push(format!("folder={current_id}"));
+    }
+    if let Some(key) = sort_key {
+        here_bits.push(format!("sort={}", key.as_str()));
+    }
+    if params
+        .as_ref()
+        .and_then(|query| query.dir.clone())
+        .is_some_and(|dir| dir == "asc" || dir == "desc")
+    {
+        here_bits.push(format!("dir={}", sort_dir.as_str()));
+    }
+    if kind != KindFilter::All {
+        here_bits.push(format!("kind={}", kind.as_str()));
+    }
+    let here = if here_bits.is_empty() {
         "/drive".to_string()
     } else {
-        format!("/drive?folder={current_id}")
+        format!("/drive?{}", here_bits.join("&"))
     };
-    // `here` carries no query at the root, one under a folder — the edit
-    // links extend it with the matching separator.
-    let edit_sep = if current_id.is_empty() { "?" } else { "&" };
+    // The edit links extend `here` with the matching separator.
+    let edit_sep = if here.contains('?') { "&" } else { "?" };
+    // The direction the toggle offers: the opposite of what is showing.
+    let dir_flip = match sort_dir {
+        SortDir::Asc => "desc",
+        SortDir::Desc => "asc",
+    };
+    let dir_glyph = match sort_dir {
+        SortDir::Asc => "↑",
+        SortDir::Desc => "↓",
+    };
 
     view! {
         cx =>
@@ -250,17 +441,69 @@ async fn drive(cx: &Cx) -> Result {
                         </nav>
                     }
                 }
-                <form class="field-box-search" method="get" action="/drive">
+                <form class="field-box field-box-search" method="get" action="/drive">
+                    <span class="field-text">(t(language, Key::SearchPlaceholder))</span>
                     <input
-                        class="field-input"
+                        class="dd-search"
                         type="search"
                         name="q"
-                        value=(box_text)
+                        value=(box_text.clone())
                         placeholder=(t(language, Key::SearchPlaceholder))
                         aria-label=(t(language, Key::SearchPlaceholder))
                     >
+                    <input type="hidden" name="folder" value=(current_id.clone())>
+                    if sort_key.is_some() {
+                        <input type="hidden" name="sort" value=(sort_key.map(|key| key.as_str()).unwrap_or(""))>
+                    }
+                    <input type="hidden" name="dir" value=(sort_dir.as_str())>
+                    if kind != KindFilter::All {
+                        <input type="hidden" name="kind" value=(kind.as_str())>
+                    }
                 </form>
                 <div class="spacer"></div>
+                <form class="field-box field-box-sort" method="get" action="/drive">
+                    <span class="field-text">(t(language, Key::Sort))</span>
+                    <select class="status-select" name="sort" data-autosubmit="" aria-label=(t(language, Key::Sort))>
+                        <option value="name" selected=(sort_key.is_none() || sort_key == Some(SortKey::Name))>(t(language, Key::SortName))</option>
+                        <option value="uploaded" selected=(sort_key == Some(SortKey::Uploaded))>(t(language, Key::SortUploaded))</option>
+                        <option value="size" selected=(sort_key == Some(SortKey::Size))>(t(language, Key::SortSize))</option>
+                        <option value="downloads" selected=(sort_key == Some(SortKey::Downloads))>(t(language, Key::SortDownloads))</option>
+                    </select>
+                    <input type="hidden" name="folder" value=(current_id.clone())>
+                    <input type="hidden" name="q" value=(box_text.clone())>
+                    <input type="hidden" name="dir" value=(sort_dir.as_str())>
+                    if kind != KindFilter::All {
+                        <input type="hidden" name="kind" value=(kind.as_str())>
+                    }
+                    <button class="quiet" type="submit" aria-label=(t(language, Key::Sort))>"→"</button>
+                </form>
+                <form class="field-box field-box-sort" method="get" action="/drive">
+                    <input type="hidden" name="folder" value=(current_id.clone())>
+                    <input type="hidden" name="q" value=(box_text.clone())>
+                    if sort_key.is_some() {
+                        <input type="hidden" name="sort" value=(sort_key.map(|key| key.as_str()).unwrap_or(""))>
+                    }
+                    <input type="hidden" name="dir" value=(dir_flip)>
+                    if kind != KindFilter::All {
+                        <input type="hidden" name="kind" value=(kind.as_str())>
+                    }
+                    <button class="quiet" type="submit" aria-label=(t(language, Key::Sort))>(dir_glyph)</button>
+                </form>
+                <form class="field-box field-box-sort" method="get" action="/drive">
+                    <span class="field-text">(t(language, Key::Kind))</span>
+                    <select class="status-select" name="kind" data-autosubmit="" aria-label=(t(language, Key::Kind))>
+                        <option value="all" selected=(kind == KindFilter::All)>(t(language, Key::KindAll))</option>
+                        <option value="folders" selected=(kind == KindFilter::Folders)>(t(language, Key::KindFolders))</option>
+                        <option value="files" selected=(kind == KindFilter::Files)>(t(language, Key::KindFiles))</option>
+                    </select>
+                    <input type="hidden" name="folder" value=(current_id.clone())>
+                    <input type="hidden" name="q" value=(box_text.clone())>
+                    if sort_key.is_some() {
+                        <input type="hidden" name="sort" value=(sort_key.map(|key| key.as_str()).unwrap_or(""))>
+                    }
+                    <input type="hidden" name="dir" value=(sort_dir.as_str())>
+                    <button class="quiet" type="submit" aria-label=(t(language, Key::Kind))>"→"</button>
+                </form>
                 <details class="user-menu drive-add">
                     <summary class="quiet drive-add-trigger" aria-label=(t(language, Key::NewFolder))>"+ "</summary>
                     <div class="user-menu-panel">
@@ -271,7 +514,17 @@ async fn drive(cx: &Cx) -> Result {
                         <label class="user-menu-item" for="drive-upload-input">(t(language, Key::UploadFiles))</label>
                     </div>
                 </details>
-            </div>
+                </div>
+            // The persistent notice stack: client-side upload errors and
+            // completions render here and stay until dismissed. The region
+            // itself is server HTML, but every card is client-made
+            // (`__inAdded`) and mirrored in `window.__inNotices`, which the
+            // status script re-renders on every `in:wire` — so the cards
+            // survive both swap paths (the live morph keeps client-made
+            // nodes; the full replace rebuilds them from the array, which
+            // lives on `window` and outlives the body).
+            <div id="in-status" class="in-status-stack" aria-live="polite"
+                data-dismiss-label=(t(language, Key::Dismiss))></div>
             if let Some(refusal) = refusal {
                 <p class="field-error">(refusal.message_in(language))</p>
             }
@@ -287,12 +540,22 @@ async fn drive(cx: &Cx) -> Result {
             // The upload control sits outside the list so the + menu's
             // "Upload files" label and the page-wide drop handler find it on
             // every drive view, folder or search. The input stays hidden via
-            // the file-upload-input rule.
+            // the file-upload-input rule; the progress list below it carries
+            // the per-upload bars the script builds.
             <form id="upload-form" class="file-upload" method="post" action="/files"
-                enctype="multipart/form-data" data-hard="" data-failed-label=(t(language, Key::UploadFailed))>
+                enctype="multipart/form-data" data-hard=""
+                data-failed-label=(t(language, Key::UploadFailed))
+                data-complete-label=(t(language, Key::UploadComplete))>
                 <input type="hidden" name="folder_id" value=(current_id.clone())>
                 <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
             </form>
+            <div id="upload-progress-list" class="upload-progress-list" aria-live="polite"></div>
+            // The full-page drop affordance: hidden until a file drag is
+            // over the window, pointer-transparent so it never blocks the
+            // drop itself.
+            <div id="drop-overlay" class="drop-overlay" aria-hidden="true">
+                <span class="drop-overlay-text">(t(language, Key::DropFilesToUpload))</span>
+            </div>
             if let Some(hits) = hits {
                 if hits.folders.is_empty() && hits.files.is_empty() {
                     <p class="detail-quiet">(t(language, Key::NoResults))</p>
@@ -306,7 +569,7 @@ async fn drive(cx: &Cx) -> Result {
                         }
                         for file in &hits.files {
                             <div class="dep-row">
-                                <a class="dep-link" href=(format!("/file/{}", file.id))>(file.name.clone())</a>
+                                <a class="dep-link" href=(format!("/view/{}", file.id))>(file.name.clone())</a>
                             </div>
                         }
                     </div>
@@ -321,76 +584,93 @@ async fn drive(cx: &Cx) -> Result {
                     for folder in listing.folders.iter() {
                         <div class="dep-row">
                             if edit_id.as_deref() == Some(folder.id.as_str()) {
-                                <form class="pop-row-form" method="post" action="/api/folder/rename">
+                                <form class="dep-edit-form" method="post" action="/api/folder/rename">
                                     <input type="hidden" name="id" value=(folder.id.clone())>
                                     <input class="field-input" type="text" name="name" maxlength="255"
                                         value=(folder.name.clone()) required="" data-edit-focus=""
                                         aria-label=(t(language, Key::RenameFolder))>
+                                    <div class="spacer"></div>
                                     <button class="quiet" type="submit">(t(language, Key::Rename))</button>
                                     <a class="quiet" href=(here.clone())>(t(language, Key::Cancel))</a>
                                 </form>
                             } else {
-                            <a class="dep-link" href=(format!("/drive?folder={}", folder.id))>(folder.name.clone())</a>
+                            <a class="dep-link" href=(format!("/drive?folder={}", folder.id))>
+                                <span class="dep-title">(folder.name.clone())</span>
+                            </a>
+                            <span class="dep-note">(t(language, Key::UploadedLabel))" "(folder.created_at.date().to_string())</span>
                             <div class="spacer"></div>
-                            <a class="quiet" href=(format!("{here}{edit_sep}edit={}", folder.id))
-                                aria-label=(t(language, Key::RenameFolder))>(t(language, Key::Rename))</a>
-                            <form class="pop-row-form" method="post" action="/api/folder/move">
-                                <input type="hidden" name="id" value=(folder.id.clone())>
-                                <select class="field-input" name="parent_id" aria-label=(t(language, Key::MoveFolder))>
-                                    <option value="">(t(language, Key::Drive))</option>
-                                    for dest in destinations.iter() {
-                                        if dest.0 != folder.id {
-                                            <option value=(dest.0.clone())>(dest.1.clone())</option>
-                                        }
-                                    }
-                                </select>
-                                <button class="quiet" type="submit">(t(language, Key::Move))</button>
-                            </form>
-                            <form class="detail-delete-form" method="post" action="/api/folder/delete">
-                                <input type="hidden" name="id" value=(folder.id.clone())>
-                                <button class="quiet" type="submit">(t(language, Key::Delete))</button>
-                            </form>
+                            <details class="user-menu entry-options">
+                                <summary class="quiet entry-options-trigger">(t(language, Key::Options))" ▾"</summary>
+                                <div class="user-menu-panel">
+                                    <a class="user-menu-item"
+                                        href=(format!("{here}{edit_sep}edit={}", folder.id))>(t(language, Key::Rename))</a>
+                                    <form class="user-menu-item-form" method="post" action="/api/folder/move">
+                                        <input type="hidden" name="id" value=(folder.id.clone())>
+                                        <div class="user-menu-item-move">
+                                            <select class="field-input" name="parent_id" aria-label=(t(language, Key::MoveFolder))>
+                                                <option value="">(t(language, Key::Drive))</option>
+                                                for dest in destinations.iter() {
+                                                    if dest.0 != folder.id {
+                                                        <option value=(dest.0.clone())>(dest.1.clone())</option>
+                                                    }
+                                                }
+                                            </select>
+                                            <button class="quiet" type="submit">(t(language, Key::Move))</button>
+                                        </div>
+                                    </form>
+                                    <form class="user-menu-item-form" method="post" action="/api/folder/delete">
+                                        <input type="hidden" name="id" value=(folder.id.clone())>
+                                        <button class="user-menu-item quiet quiet-danger" type="submit">(t(language, Key::Delete))</button>
+                                    </form>
+                                </div>
+                            </details>
                             }
                         </div>
                     }
                     for file in listing.files.iter() {
                         <div class="dep-row">
-                            if file.thumb_state == ThumbState::Ready {
-                                <img class="file-chip" src=(format!("/thumb/{}", file.id)) alt="">
-                            } else {
-                                <span class="file-chip" aria-hidden="true">"▦"</span>
-                            }
+                            (crate::files::entry_chip(cx, file).await?)
                             if edit_id.as_deref() == Some(file.id.as_str()) {
-                                <form class="pop-row-form" method="post" action="/api/file/rename">
+                                <form class="dep-edit-form" method="post" action="/api/file/rename">
                                     <input type="hidden" name="id" value=(file.id.clone())>
                                     <input class="field-input" type="text" name="name" maxlength="255"
                                         value=(file.name.clone()) required="" data-edit-focus=""
                                         aria-label=(t(language, Key::RenameFile))>
+                                    <div class="spacer"></div>
                                     <button class="quiet" type="submit">(t(language, Key::Rename))</button>
                                     <a class="quiet" href=(here.clone())>(t(language, Key::Cancel))</a>
                                 </form>
                             } else {
-                            <a class="dep-link" href=(format!("/file/{}", file.id))>(file.name.clone())</a>
-                            }
+                            <a class="dep-link" href=(format!("/view/{}", file.id))>
+                                <span class="dep-title">(file.name.clone())</span>
+                            </a>
                             <span class="file-chip-size">(human_size(file.size_bytes))</span>
+                            <span class="file-chip-note">(t(language, Key::UploadedLabel))" "(file.created_at.date().to_string())</span>
+                            <span class="file-chip-note">(t(language, Key::DownloadsLabel))" "(file.download_count.to_string())</span>
                             <div class="spacer"></div>
-                            if edit_id.as_deref() != Some(file.id.as_str()) {
-                            <a class="quiet" href=(format!("{here}{edit_sep}edit={}", file.id))
-                                aria-label=(t(language, Key::RenameFile))>(t(language, Key::Rename))</a>
-                            <form class="pop-row-form" method="post" action="/api/file/move">
-                                <input type="hidden" name="id" value=(file.id.clone())>
-                                <select class="field-input" name="folder_id" aria-label=(t(language, Key::MoveFile))>
-                                    <option value="">(t(language, Key::Drive))</option>
-                                    for dest in destinations.iter() {
-                                        <option value=(dest.0.clone())>(dest.1.clone())</option>
-                                    }
-                                </select>
-                                <button class="quiet" type="submit">(t(language, Key::Move))</button>
-                            </form>
-                            <form class="detail-delete-form" method="post" action="/api/file/delete">
-                                <input type="hidden" name="id" value=(file.id.clone())>
-                                <button class="quiet" type="submit">(t(language, Key::Delete))</button>
-                            </form>
+                            <details class="user-menu entry-options">
+                                <summary class="quiet entry-options-trigger">(t(language, Key::Options))" ▾"</summary>
+                                <div class="user-menu-panel">
+                                    <a class="user-menu-item"
+                                        href=(format!("{here}{edit_sep}edit={}", file.id))>(t(language, Key::Rename))</a>
+                                    <form class="user-menu-item-form" method="post" action="/api/file/move">
+                                        <input type="hidden" name="id" value=(file.id.clone())>
+                                        <div class="user-menu-item-move">
+                                            <select class="field-input" name="folder_id" aria-label=(t(language, Key::MoveFile))>
+                                                <option value="">(t(language, Key::Drive))</option>
+                                                for dest in destinations.iter() {
+                                                    <option value=(dest.0.clone())>(dest.1.clone())</option>
+                                                }
+                                            </select>
+                                            <button class="quiet" type="submit">(t(language, Key::Move))</button>
+                                        </div>
+                                    </form>
+                                    <form class="user-menu-item-form" method="post" action="/api/file/delete">
+                                        <input type="hidden" name="id" value=(file.id.clone())>
+                                        <button class="user-menu-item quiet quiet-danger" type="submit">(t(language, Key::Delete))</button>
+                                    </form>
+                                </div>
+                            </details>
                             }
                         </div>
                     }
@@ -400,6 +680,7 @@ async fn drive(cx: &Cx) -> Result {
         </main>
         (crate::dropdown::dropdown_script(cx).await?)
         (upload_script(cx).await?)
+        (status_script(cx).await?)
     }
 }
 
@@ -431,19 +712,35 @@ fn query_value(query: &str, key: &str) -> Option<String> {
     })
 }
 
-/// The upload control's client half: files under 8 MiB ride the form's own
-/// multipart post; files at or over it are split into the chunked protocol's
-/// calls with a progress bar.
+/// The upload control's client half: files under 8 MiB ride one multipart
+/// post, files at or over it are split into the chunked protocol's calls —
+/// and every upload, small or big, draws the same live progress row (name,
+/// bar, percent) into `#upload-progress-list`.
 ///
 /// The form wears `data-hard` so the soft-nav's multipart replay leaves it
 /// alone — two uploaders racing the same bytes would double-insert, and the
 /// progress the soft-nav draws knows nothing of chunks. Without script the
 /// form posts plainly and the 303 lands back on the folder.
 ///
+/// Failures never append inline notes anymore: they go through
+/// `window.__inNotify` into the persistent stack ([`status_script`]), which
+/// survives the swaps that used to wipe them. Completions announce there
+/// too, then the page navigates to the landing the post answered.
+///
 /// The same block carries the `?edit=` row's focus: the rename input the
 /// server renders open gets focused with its name selected on arrival, so a
 /// quick-created folder is ready to name. Guarded lookups — most visits
 /// render no such input.
+///
+/// And the page-wide drop: dragging files anywhere over a drive view raises
+/// the `#drop-overlay` affordance (a dragenter/dragleave counter, hidden on
+/// drop or on leaving), and dropping feeds the upload input, whose change
+/// the soft-nav's listener turns into the submit below. The overlay wears
+/// `pointer-events: none` so it never blocks the drop itself.
+///
+/// The Rust `\`-continuations strip newlines, so the emitted script is one
+/// long line: only `/* */` comments survive inside it — a `//` would eat
+/// the rest of the script and kill every handler silently.
 async fn upload_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
@@ -451,21 +748,39 @@ async fn upload_script(cx: &Cx) -> Result {
             if (window.__inUpload) { return; } \
             window.__inUpload = true; \
             var LIMIT = 8388608; \
-            function bar(box, label) { \
-                var wrap = document.createElement('div'); \
-                wrap.className = 'upload-progress'; \
+            function progressList() { return document.getElementById('upload-progress-list'); } \
+            function bar(label) { \
+                var row = document.createElement('div'); \
+                row.className = 'upload-progress-row'; \
+                var name = document.createElement('span'); \
+                name.className = 'upload-progress-name'; \
+                name.textContent = label || ''; \
+                var track = document.createElement('div'); \
+                track.className = 'upload-progress'; \
                 var fill = document.createElement('div'); \
                 fill.className = 'upload-progress-fill'; \
-                wrap.appendChild(fill); \
-                box.appendChild(window.__inAdded(wrap)); \
-                if (label) { wrap.setAttribute('aria-label', label); } \
-                return fill; \
+                track.appendChild(fill); \
+                var pct = document.createElement('span'); \
+                pct.className = 'upload-progress-pct'; \
+                pct.textContent = '0%'; \
+                row.appendChild(name); \
+                row.appendChild(track); \
+                row.appendChild(pct); \
+                if (label) { row.setAttribute('aria-label', label); } \
+                var list = progressList(); \
+                if (list) { list.appendChild(window.__inAdded(row)); } \
+                return { row: row, fill: fill, pct: pct }; \
             } \
-            function fail(box, message) { \
-                var note = document.createElement('p'); \
-                note.className = 'field-error'; \
-                note.textContent = message; \
-                box.appendChild(window.__inAdded(note)); \
+            function setProgress(ui, frac) { \
+                var text = Math.min(100, Math.round(frac * 100)) + '%'; \
+                ui.fill.style.width = text; \
+                ui.pct.textContent = text; \
+            } \
+            function dropRow(ui) { \
+                if (ui.row.parentNode) { ui.row.parentNode.removeChild(ui.row); } \
+            } \
+            function notify(kind, message) { \
+                if (window.__inNotify) { window.__inNotify(kind, message); } \
             } \
             async function startChunked(folder, name, size) { \
                 var r = await fetch('/api/upload/start', { \
@@ -477,8 +792,9 @@ async fn upload_script(cx: &Cx) -> Result {
                 if (!answer.ok) { throw new Error(answer.err || 'start'); } \
                 return answer.ok; \
             } \
-            async function sendBig(file, folder, fill) { \
+            async function sendBig(file, folder, onProgress) { \
                 var session = await startChunked(folder, file.name, file.size); \
+                var total = Math.max(1, file.size); \
                 var index = 0; \
                 for (var off = 0; off < file.size; off += LIMIT, index++) { \
                     var piece = file.slice(off, Math.min(file.size, off + LIMIT)); \
@@ -488,18 +804,38 @@ async fn upload_script(cx: &Cx) -> Result {
                         body: piece \
                     }); \
                     if (!r.ok) { throw new Error('chunk'); } \
-                    fill.style.width = Math.round(((off + piece.size) / file.size) * 100) + '%'; \
+                    onProgress((off + piece.size) / total); \
                 } \
                 var done = await fetch('/api/upload/' + session.id + '/finish', { method: 'POST' }); \
                 var fin = await done.json(); \
                 if (!fin.ok) { throw new Error((fin.err) || 'finish'); } \
+                onProgress(1); \
+            } \
+            function sendSmall(action, folder, files, onProgress) { \
+                return new Promise(function (resolve, reject) { \
+                    var data = new FormData(); \
+                    data.append('folder_id', folder); \
+                    files.forEach(function (f) { data.append('file', f, f.name); }); \
+                    var x = new XMLHttpRequest(); \
+                    x.open('POST', action); \
+                    x.setRequestHeader('accept', 'text/html'); \
+                    x.upload.onprogress = function (ev) { \
+                        if (ev.lengthComputable && ev.total > 0) { onProgress(ev.loaded / ev.total); } \
+                    }; \
+                    x.onload = function () { \
+                        onProgress(1); \
+                        if (x.status >= 200 && x.status < 300) { resolve(x.responseURL || ''); } \
+                        else { reject(new Error('small')); } \
+                    }; \
+                    x.onerror = function () { reject(new Error('small')); }; \
+                    x.send(data); \
+                }); \
             } \
             document.addEventListener('submit', function (e) { \
                 var form = e.target; \
                 if (!form || form.id !== 'upload-form') { return; } \
                 e.preventDefault(); \
                 var input = form.querySelector('.file-upload-input'); \
-                var box = form.querySelector('.file-upload-box') || form; \
                 var folder = form.querySelector('input[name=folder_id]').value; \
                 var files = input && input.files ? Array.prototype.slice.call(input.files) : []; \
                 if (!files.length) { return; } \
@@ -509,29 +845,41 @@ async fn upload_script(cx: &Cx) -> Result {
                 var small = files.filter(function (f) { return f.size < LIMIT; }); \
                 var big = files.filter(function (f) { return f.size >= LIMIT; }); \
                 var failLabel = form.getAttribute('data-failed-label') || 'upload failed'; \
+                var doneLabel = form.getAttribute('data-complete-label') || ''; \
                 var landing = window.location.href; \
-                (async function () { \
-                    try { \
-                        if (small.length) { \
-                            var data = new FormData(); \
-                            data.append('folder_id', folder); \
-                            small.forEach(function (f) { data.append('file', f, f.name); }); \
-                            var fill = bar(box); \
-                            var r = await fetch(form.getAttribute('action'), { \
-                                method: 'POST', headers: { accept: 'text/html' }, body: data \
-                            }); \
-                            fill.style.width = '100%'; \
-                            landing = r.url || landing; \
-                            if (!r.ok) { fail(box, failLabel); } \
-                        } \
-                        for (var i = 0; i < big.length; i++) { \
-                            var fill2 = bar(box, big[i].name); \
-                            await sendBig(big[i], folder, fill2); \
-                        } \
-                    } catch (err) { fail(box, failLabel); } \
+                function settle() { \
                     input.value = ''; \
                     form.__inBusy = false; \
                     if (input) { input.disabled = false; } \
+                } \
+                (async function () { \
+                    var rows = []; \
+                    try { \
+                        if (small.length) { \
+                            var title = small.length === 1 ? small[0].name : (small.length + ' files'); \
+                            var ui = bar(title); \
+                            rows.push(ui); \
+                            var url = await sendSmall(form.getAttribute('action'), folder, small, function (frac) { setProgress(ui, frac); }); \
+                            if (url) { landing = url; } \
+                        } \
+                        for (var i = 0; i < big.length; i++) { \
+                            await (function (file) { \
+                                var ui2 = bar(file.name); \
+                                rows.push(ui2); \
+                                return sendBig(file, folder, function (frac) { setProgress(ui2, frac); }); \
+                            })(big[i]); \
+                        } \
+                    } catch (err) { \
+                        rows.forEach(dropRow); \
+                        var why = err && err.message ? err.message : String(err); \
+                        notify('error', failLabel + ' (' + why + ')'); \
+                        settle(); \
+                        return; \
+                    } \
+                    rows.forEach(dropRow); \
+                    /* A refused upload answers 303 into a refusal banner page, which the XHR follows to a 200: the banner carries the message, so only trumpet success when no refusal rode the redirect. */ \
+                    if (doneLabel && !/[?&]refusal=/.test(landing)) { notify('ok', doneLabel); } \
+                    settle(); \
                     if (window.__inGo) { window.__inGo(landing); } \
                     else { window.location.href = landing; } \
                 })(); \
@@ -549,11 +897,33 @@ async fn upload_script(cx: &Cx) -> Result {
             (function () { \
                 if (window.__inDrop) { return; } \
                 window.__inDrop = true; \
+                var depth = 0; \
                 function uploadForm() { return document.getElementById('upload-form'); } \
+                function overlay() { return document.getElementById('drop-overlay'); } \
+                function hasFiles(e) { \
+                    return !!(e.dataTransfer && e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1); \
+                } \
+                function show(on) { \
+                    var ov = overlay(); \
+                    if (ov) { ov.classList.toggle('drop-overlay-show', !!on); } \
+                } \
+                document.addEventListener('dragenter', function (e) { \
+                    if (!uploadForm() || !hasFiles(e)) { return; } \
+                    e.preventDefault(); \
+                    depth++; \
+                    show(true); \
+                }); \
                 document.addEventListener('dragover', function (e) { \
-                    if (uploadForm() && e.dataTransfer && e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1) { e.preventDefault(); } \
+                    if (uploadForm() && hasFiles(e)) { e.preventDefault(); } \
+                }); \
+                document.addEventListener('dragleave', function (e) { \
+                    if (!uploadForm()) { return; } \
+                    depth = Math.max(0, depth - 1); \
+                    if (depth === 0) { show(false); } \
                 }); \
                 document.addEventListener('drop', function (e) { \
+                    depth = 0; \
+                    show(false); \
                     var form = uploadForm(); \
                     if (!form || !e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) { return; } \
                     e.preventDefault(); \
@@ -563,6 +933,73 @@ async fn upload_script(cx: &Cx) -> Result {
                     input.dispatchEvent(new Event('change', { bubbles: true })); \
                 }); \
             })(); \
+        })();";
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+}
+
+/// The persistent notice stack's client half: upload errors and completions
+/// that must stay until dismissed.
+///
+/// How the cards survive the swaps: every card is registered through
+/// `__inAdded`, so the live path's morph — which pairs only server-rendered
+/// nodes and leaves client-made ones alone — keeps them where they are. The
+/// full-replace path (navigations, form posts) rebuilds the body and would
+/// drop them, so every notice is also mirrored in `window.__inNotices`,
+/// which lives on the document's `window` and outlives any one body; the
+/// `in:wire` pass `swap()` runs after every paint re-renders the stack from
+/// that array. Dismissing (the ✕, labelled from the stack's
+/// `data-dismiss-label`) drops the notice from both. Nothing here
+/// auto-times out.
+///
+/// The server-rendered `?refusal` banner needs no such route: it rides the
+/// redirect URL the swap just painted, so both paths re-render it from the
+/// server's own bytes.
+async fn status_script(cx: &Cx) -> Result {
+    use topcoat::view::Unescaped;
+    const JS: &str = "\
+        (function () { \
+            if (window.__inStatus) { return; } \
+            window.__inStatus = true; \
+            if (!window.__inNotices) { window.__inNotices = []; } \
+            var seq = 0; \
+            window.__inNotices.forEach(function (n) { if (n.id > seq) { seq = n.id; } }); \
+            function box() { return document.getElementById('in-status'); } \
+            function dismissLabel() { \
+                var b = box(); \
+                return (b && b.getAttribute('data-dismiss-label')) || 'dismiss'; \
+            } \
+            window.__inNotify = function (kind, text) { \
+                seq++; \
+                window.__inNotices.push({ id: seq, kind: kind, text: text }); \
+                render(); \
+            }; \
+            function render() { \
+                var target = box(); \
+                if (!target) { return; } \
+                target.querySelectorAll('[data-notice]').forEach(function (old) { old.remove(); }); \
+                window.__inNotices.forEach(function (n) { \
+                    var card = document.createElement('div'); \
+                    card.className = 'in-status-card in-status-' + n.kind; \
+                    card.setAttribute('data-notice', String(n.id)); \
+                    var text = document.createElement('span'); \
+                    text.className = 'in-status-text'; \
+                    text.textContent = n.text; \
+                    var shut = document.createElement('button'); \
+                    shut.type = 'button'; \
+                    shut.className = 'in-status-dismiss'; \
+                    shut.textContent = '✕'; \
+                    shut.setAttribute('aria-label', dismissLabel()); \
+                    shut.addEventListener('click', function () { \
+                        window.__inNotices = window.__inNotices.filter(function (x) { return x.id !== n.id; }); \
+                        card.remove(); \
+                    }); \
+                    card.appendChild(text); \
+                    card.appendChild(shut); \
+                    target.appendChild(window.__inAdded(card)); \
+                }); \
+            } \
+            document.addEventListener('in:wire', render); \
+            render(); \
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }

@@ -60,6 +60,10 @@ live_seconds = 300
 purge_after_days = 30
 # The quota a newly provisioned account starts on, in bytes. 10 GiB.
 default_quota_bytes = 10737418240
+# The default per-file upload ceiling, in bytes. 1 GiB. An admin can move it
+# from the settings page without touching this file; this key is only the
+# default the stored setting falls back to.
+max_upload_bytes = 1073741824
 # Where drive files, thumbnails and staged upload chunks live as files,
 # created on boot. Not written here: it defaults to beside the database file,
 # and the boot completes this file with the value it resolved.
@@ -101,6 +105,10 @@ const DEFAULT_PURGE_AFTER_DAYS: u32 = 30;
 /// The quota a newly provisioned account starts on: 10 GiB.
 const DEFAULT_QUOTA_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
+/// The per-file upload ceiling when neither the stored setting nor the config
+/// key names one: 1 GiB.
+const DEFAULT_MAX_UPLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// Every completable top-level key, with the comment and default a file
 /// missing it is completed with. `database` is not here: it has no default
 /// worth guessing, so its absence stops the boot instead. `storage` is
@@ -140,6 +148,15 @@ const OPTIONAL_KEYS: &[(&str, &str)] = &[
             "default_quota_bytes = 10737418240\n"
         ),
     ),
+    (
+        "max_upload_bytes",
+        concat!(
+            "# The default per-file upload ceiling, in bytes. 1 GiB. The settings\n",
+            "# page stores the live value in the database; this key is only the\n",
+            "# default it falls back to.\n",
+            "max_upload_bytes = 1073741824\n"
+        ),
+    ),
 ];
 
 /// The `[oidc]` table of `config/in.toml`, before the values are checked.
@@ -166,6 +183,7 @@ struct Toml {
     live_seconds: Option<u64>,
     purge_after_days: Option<u32>,
     default_quota_bytes: Option<u64>,
+    max_upload_bytes: Option<u64>,
     oidc: Option<OidcToml>,
     #[serde(flatten)]
     other: std::collections::BTreeMap<String, toml::Value>,
@@ -206,6 +224,9 @@ pub struct Config {
     pub purge_after_days: u32,
     /// The quota a newly provisioned account starts on, in bytes.
     pub default_quota_bytes: u64,
+    /// The default per-file upload ceiling, in bytes. The settings page's
+    /// live value wins over this; this is only what an unset install enforces.
+    pub max_upload_bytes: u64,
     /// The OIDC provider In trusts.
     pub oidc: OidcConfig,
     /// Keys the file sets that nothing here reads, in the order the file
@@ -334,6 +355,12 @@ impl Config {
 
         let purge_after_days = toml.purge_after_days.unwrap_or(DEFAULT_PURGE_AFTER_DAYS);
         let default_quota_bytes = toml.default_quota_bytes.unwrap_or(DEFAULT_QUOTA_BYTES);
+        // Zero names no usable ceiling — it would refuse every upload — so it
+        // reads as unset and falls through to the 1 GiB default.
+        let max_upload_bytes = toml
+            .max_upload_bytes
+            .filter(|limit| *limit > 0)
+            .unwrap_or(DEFAULT_MAX_UPLOAD_BYTES);
 
         let oidc_toml = toml.oidc.ok_or(ConfigError::Missing("[oidc]"))?;
         let issuer = value(oidc_toml.issuer).ok_or(ConfigError::Missing("oidc.issuer"))?;
@@ -355,6 +382,7 @@ impl Config {
             live_seconds,
             purge_after_days,
             default_quota_bytes,
+            max_upload_bytes,
             oidc: OidcConfig {
                 issuer,
                 client_id,
@@ -588,6 +616,7 @@ mod tests {
     const FULL: &str = r#"database = "in.db"
 listen = "127.0.0.1:7655"
 live_seconds = 300
+max_upload_bytes = 1073741824
 purge_after_days = 30
 default_quota_bytes = 10737418240
 [oidc]
@@ -628,6 +657,7 @@ client_secret = "s3cret"
         assert_eq!(config.live_seconds, 300);
         assert_eq!(config.purge_after_days, 30);
         assert_eq!(config.default_quota_bytes, 10 * 1024 * 1024 * 1024);
+        assert_eq!(config.max_upload_bytes, 1024 * 1024 * 1024);
         assert_eq!(config.oidc.issuer, "https://id.example.com");
         assert_eq!(
             config.oidc.redirect_uri,
@@ -741,6 +771,41 @@ client_secret = "s3cret"
                 .parent()
                 .unwrap()
                 .join("storage")
+        );
+    }
+
+    #[test]
+    fn an_explicit_max_upload_bytes_wins_and_absence_defaults_to_1gib() {
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace(
+            "max_upload_bytes = 1073741824",
+            "max_upload_bytes = 67108864",
+        ));
+        assert_eq!(scratch.load().unwrap().max_upload_bytes, 67108864);
+        // A file silent about the key still loads, at the 1 GiB default, and
+        // is completed with the key for the next boot to read.
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace("max_upload_bytes = 1073741824\n", ""));
+        assert_eq!(
+            scratch.load().unwrap().max_upload_bytes,
+            1024 * 1024 * 1024
+        );
+        let completed = std::fs::read_to_string(scratch.dir.join(FILE_NAME)).unwrap();
+        assert!(completed.contains("max_upload_bytes = 1073741824"));
+    }
+
+    #[test]
+    fn zero_max_upload_bytes_reads_as_unset() {
+        // Zero names no usable ceiling — it would refuse every upload — so it
+        // falls through to the 1 GiB default instead of becoming the limit.
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace(
+            "max_upload_bytes = 1073741824",
+            "max_upload_bytes = 0",
+        ));
+        assert_eq!(
+            scratch.load().unwrap().max_upload_bytes,
+            1024 * 1024 * 1024
         );
     }
 }

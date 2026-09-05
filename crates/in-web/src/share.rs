@@ -17,7 +17,7 @@
 //! render the copy-once banner off that pair.
 
 use in_core::hash_share_token;
-use in_core::store::{ShareKind, Store, StoreError, User};
+use in_core::store::{ShareKind, Store, StoreError, ThumbState, User};
 use serde::Deserialize;
 use time::OffsetDateTime;
 use topcoat::Result;
@@ -25,10 +25,11 @@ use topcoat::context::Cx;
 use topcoat::router::content::Form;
 use topcoat::router::request::{headers as request_headers, uri};
 use topcoat::router::response::IntoResponse;
-use topcoat::router::{HeaderName, StatusCode, header, page, path_param, route};
+use topcoat::router::{HeaderName, StatusCode, header, page, path_param, query_params, route};
 use topcoat::view::view;
 
 use crate::i18n::{Key, Lang, lang, t};
+use crate::files::entry_chip;
 use crate::layout::{NavPage, topbar, wordmark};
 use crate::server::{Refusal, app, back_to, require_user};
 
@@ -526,6 +527,19 @@ async fn download_bytes(
     let Ok(Some(bytes)) = bytes else {
         return dead_link(cx).await.into_response(cx);
     };
+    // A fetch counts once: a full fetch, or a range resuming from byte 0.
+    // A mid-file chunk is the same view going on, not a new one — the way
+    // the signed-in download route counts its first chunk only.
+    let range = request_headers(cx)
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    let counts = match range {
+        None => true,
+        Some(header) => range_starts_at_zero(header),
+    };
+    if counts {
+        let _ = store.record_download(file_id).await;
+    }
     let mut headers = HeaderMap::new();
     if let Ok(value) = HeaderValue::from_str(mime) {
         headers.insert(header::CONTENT_TYPE, value);
@@ -539,6 +553,22 @@ async fn download_bytes(
         HeaderValue::from_static("private, no-cache"),
     );
     Ok((StatusCode::OK, headers, bytes).into_response(cx)?)
+}
+
+/// Whether a `Range` header starts at byte 0: only those ranges (and the
+/// header's absence) count a download. Anything else — a mid-file resume,
+/// a suffix probe, several ranges, garbage — does not.
+fn range_starts_at_zero(header: &str) -> bool {
+    let Some(spec) = header.strip_prefix("bytes=") else {
+        return false;
+    };
+    if spec.contains(',') {
+        return false;
+    }
+    match spec.split_once('-') {
+        Some(("0", _)) => true,
+        _ => false,
+    }
 }
 
 /// The stored webp preview behind a public link. Unlike the bytes, the
@@ -623,8 +653,53 @@ async fn file_card(
     .into_response(cx)
 }
 
-/// A shared folder's listing: subfolders then files, downloads gated on the
-/// link's flag. Subfolders browse in place under the same token.
+/// One file's chip on the public card: the link's own thumbnail where one
+/// is ready, else the same mime-class glyph the signed-in lists wear.
+/// `/thumb/{id}` needs a session, so this points at the public `?thumb=1`
+/// route behind the same token instead.
+async fn public_chip(cx: &Cx, thumb_src: &str, file: &in_core::store::File) -> Result {
+    if file.thumb_state == ThumbState::Ready {
+        return view! {
+            cx =>
+            <img class="file-chip" src=(thumb_src.to_string()) alt="">
+        };
+    }
+    entry_chip(cx, file).await
+}
+
+/// One shared file's chip: the thumbnail image while the target is live,
+/// the mime-class glyph once it is trashed — `/thumb/{id}` 404s trashed
+/// rows, so a Ready image would render broken if the target went into the
+/// trash after the grant. The clone only clears the thumbnail flag for the
+/// render.
+async fn shared_chip(cx: &Cx, file: &in_core::store::File) -> Result {
+    if file.deleted_at.is_some() {
+        let mut unthumb = file.clone();
+        unthumb.thumb_state = ThumbState::None;
+        return entry_chip(cx, &unthumb).await;
+    }
+    entry_chip(cx, file).await
+}
+
+/// One row of the public folder listing, folder or file, for the unified
+/// list.
+enum PublicEntry<'a> {
+    Folder(&'a in_core::store::Folder),
+    File(&'a in_core::store::File),
+}
+
+impl PublicEntry<'_> {
+    fn name(&self) -> &str {
+        match self {
+            PublicEntry::Folder(folder) => &folder.name,
+            PublicEntry::File(file) => &file.name,
+        }
+    }
+}
+
+/// A shared folder's listing: folders and files in one list, downloads
+/// gated on the link's flag. Subfolders browse in place under the same
+/// token.
 async fn folder_card(
     cx: &Cx,
     store: &dyn Store,
@@ -644,44 +719,38 @@ async fn folder_card(
         .list_children(&root.owner_id, Some(at))
         .await?;
     let base = format!("/s/{token}");
+    let mut rows: Vec<PublicEntry> = Vec::new();
+    rows.extend(listing.folders.iter().map(PublicEntry::Folder));
+    rows.extend(listing.files.iter().map(PublicEntry::File));
+    rows.sort_by(|a, b| a.name().to_lowercase().cmp(&b.name().to_lowercase()));
     view! {
         cx =>
         (wordmark(cx).await?)
         <main class="settings-stage">
             <h1 class="settings-title">(here.name.clone())</h1>
             <section class="panel">
-                <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
-                    <span class="chip">(format!("{}", listing.folders.len()))</span>
-                </div>
                 <div class="panel-body">
-                    if listing.folders.is_empty() {
+                    if rows.is_empty() {
                         <p class="field-note">(t(language, Key::EmptyFolder))</p>
                     }
-                    for folder in &listing.folders {
-                        <p><a href=(format!("{base}?folder={}", folder.id))>(folder.name.clone())</a></p>
-                    }
-                </div>
-            </section>
-            <section class="panel">
-                <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
-                    <span class="chip">(format!("{}", listing.files.len()))</span>
-                </div>
-                <div class="panel-body">
-                    if listing.files.is_empty() {
-                        <p class="field-note">(t(language, Key::EmptyFolder))</p>
-                    }
-                    for file in &listing.files {
-                        <p>
-                            <span>(file.name.clone())</span>
-                            (format!(" · {}", crate::settings::human_bytes(file.size_bytes)))
-                            if link.can_download {
-                                <a href=(format!("{base}?folder={at}&file={}&dl=1", file.id))>(t(language, Key::Download))</a>
-                            } else {
-                                <span class="field-note">(t(language, Key::ViewOnly))</span>
-                            }
-                        </p>
+                    for row in &rows {
+                        match row {
+                            PublicEntry::Folder(folder) => <div class="dep-row">
+                                <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                                <a class="dep-link" href=(format!("{base}?folder={}", folder.id))>(folder.name.clone())</a>
+                            </div>,
+                            PublicEntry::File(file) => <div class="dep-row">
+                                (public_chip(cx, &format!("{base}?folder={at}&file={}&thumb=1", file.id), file).await?)
+                                <span class="member-name">(file.name.clone())</span>
+                                <span class="field-note">(crate::settings::human_bytes(file.size_bytes))</span>
+                                <div class="spacer"></div>
+                                if link.can_download {
+                                    <a class="quiet" href=(format!("{base}?folder={at}&file={}&dl=1", file.id))>(t(language, Key::Download))</a>
+                                } else {
+                                    <span class="field-note">(t(language, Key::ViewOnly))</span>
+                                }
+                            </div>,
+                        }
                     }
                 </div>
             </section>
@@ -697,8 +766,86 @@ fn current_path(cx: &Cx) -> String {
     if path.is_empty() { "/".to_string() } else { path.to_string() }
 }
 
-/// Everything others shared with the reader, files and folders in their own
-/// groups, newest grant first. The reader's own library never appears here.
+#[query_params]
+struct SharedPageQuery {
+    sort: Option<String>,
+    kind: Option<String>,
+    q: Option<String>,
+}
+
+/// The shared list's sort, off the query: name, uploaded, size or owner.
+/// Anything else is the default — by name.
+fn valid_shared_sort(raw: Option<&str>) -> &'static str {
+    match raw {
+        Some("name") => "name",
+        Some("uploaded") => "uploaded",
+        Some("size") => "size",
+        Some("owner") => "owner",
+        _ => "name",
+    }
+}
+
+/// The kind filter, off the query: all, folders or files. Anything else
+/// shows everything.
+fn valid_shared_kind(raw: Option<&str>) -> &'static str {
+    match raw {
+        Some("folders") => "folders",
+        Some("files") => "files",
+        _ => "all",
+    }
+}
+
+/// One grant with the target's own dates and counters, for the unified
+/// list. The file row stays aboard for the list chip; folders carry none.
+struct SharedRow {
+    item: in_core::store::SharedItem,
+    owner_name: String,
+    file: Option<in_core::store::File>,
+    uploaded: OffsetDateTime,
+}
+
+impl SharedRow {
+    fn size(&self) -> u64 {
+        self.file.as_ref().map(|file| file.size_bytes).unwrap_or(0)
+    }
+
+    fn downloads(&self) -> u64 {
+        self.file
+            .as_ref()
+            .map(|file| file.download_count)
+            .unwrap_or(0)
+    }
+}
+
+/// The muted line at each shared row's right edge: what the grant opens,
+/// who opened it, when the target went up — and the size and download
+/// count for files.
+fn shared_details(language: Lang, row: &SharedRow) -> String {
+    let owner = if row.owner_name.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", row.owner_name)
+    };
+    let mut out = format!(
+        "{}{} · {} {}",
+        access_chip(language, row.item.can_download),
+        owner,
+        t(language, Key::UploadedLabel),
+        row.uploaded.date()
+    );
+    if row.item.kind == ShareKind::File {
+        out.push_str(&format!(
+            " · {} · {} {}",
+            crate::settings::human_bytes(row.size()),
+            row.downloads(),
+            t(language, Key::DownloadsLabel)
+        ));
+    }
+    out
+}
+
+/// Everything others shared with the reader, folders and files in one
+/// list. The reader's own library never appears here.
 #[page("/shared")]
 async fn shared(cx: &Cx) -> Result {
     let user = match require_user(cx).await {
@@ -715,6 +862,15 @@ async fn shared(cx: &Cx) -> Result {
         }
     };
     let language = lang(cx).await;
+    let params = query_params::<SharedPageQuery>(cx).ok();
+    let sort = valid_shared_sort(params.as_ref().and_then(|query| query.sort.as_deref()));
+    let kind = valid_shared_kind(params.as_ref().and_then(|query| query.kind.as_deref()));
+    let asked = params
+        .as_ref()
+        .and_then(|query| query.q.clone())
+        .map(|query| query.trim().to_string())
+        .filter(|query| !query.is_empty());
+    let box_text = asked.clone().unwrap_or_default();
     let store = app(cx).store;
     let items = store
         .shares_for_user(&user.id)
@@ -732,58 +888,149 @@ async fn shared(cx: &Cx) -> Result {
             owners.insert(item.owner_id.clone(), name);
         }
     }
-    let folder_count = items.iter().filter(|item| item.kind == ShareKind::Folder).count();
-    let file_count = items.iter().filter(|item| item.kind == ShareKind::File).count();
+    let mut rows: Vec<SharedRow> = Vec::new();
+    for item in items {
+        if kind == "folders" && item.kind != ShareKind::Folder {
+            continue;
+        }
+        if kind == "files" && item.kind != ShareKind::File {
+            continue;
+        }
+        if let Some(needle) = asked.as_deref() {
+            if !item.name.to_lowercase().contains(&needle.to_lowercase()) {
+                continue;
+            }
+        }
+        let owner_name = owners.get(&item.owner_id).cloned().unwrap_or_default();
+        // The grant carries no dates or counters of its own: the file row
+        // brings the upload date, size and downloads, the folder row its
+        // upload date. A target that went missing since the grant keeps
+        // its row on the grant's own date.
+        let (file, uploaded) = match item.kind {
+            ShareKind::File => match store.file(&item.target_id).await.ok().flatten() {
+                Some(file) => {
+                    let uploaded = file.created_at;
+                    (Some(file), uploaded)
+                }
+                None => (None, item.created_at),
+            },
+            ShareKind::Folder => {
+                let uploaded = store
+                    .folder(&item.target_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|folder| folder.created_at)
+                    .unwrap_or(item.created_at);
+                (None, uploaded)
+            }
+        };
+        rows.push(SharedRow {
+            item,
+            owner_name,
+            file,
+            uploaded,
+        });
+    }
+    let nothing_shared = rows.is_empty() && asked.is_none() && kind == "all";
+    match sort {
+        "uploaded" => rows.sort_by(|a, b| {
+            b.uploaded
+                .cmp(&a.uploaded)
+                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase()))
+        }),
+        "size" => rows.sort_by(|a, b| {
+            b.size()
+                .cmp(&a.size())
+                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase()))
+        }),
+        "owner" => rows.sort_by(|a, b| {
+            a.owner_name
+                .to_lowercase()
+                .cmp(&b.owner_name.to_lowercase())
+                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase()))
+        }),
+        _ => rows.sort_by(|a, b| {
+            a.item
+                .name
+                .to_lowercase()
+                .cmp(&b.item.name.to_lowercase())
+                .then_with(|| a.item.target_id.cmp(&b.item.target_id))
+        }),
+    }
     view! {
         cx =>
         (topbar(cx, NavPage::Shared, &user, language).await?)
         <main class="settings-stage">
             <h1 class="settings-title">(t(language, Key::SharedWithMe))</h1>
-            if items.is_empty() {
-                <p class="field-note">(t(language, Key::NoSharedItems))</p>
-            }
+            <div class="filterbar">
+                <form class="field-box field-box-sort" method="get" action="/shared">
+                    <span class="field-text">(t(language, Key::Sort))</span>
+                    <select class="status-select" name="sort" data-autosubmit="" aria-label=(t(language, Key::Sort))>
+                        <option value="name" selected=(sort == "name")>(t(language, Key::SortName))</option>
+                        <option value="uploaded" selected=(sort == "uploaded")>(t(language, Key::SortUploaded))</option>
+                        <option value="size" selected=(sort == "size")>(t(language, Key::SortSize))</option>
+                        <option value="owner" selected=(sort == "owner")>(t(language, Key::SortOwner))</option>
+                    </select>
+                    <input type="hidden" name="kind" value=(kind.to_string())>
+                    <input type="hidden" name="q" value=(box_text.clone())>
+                </form>
+                <form class="field-box field-box-sort" method="get" action="/shared">
+                    <span class="field-text">(t(language, Key::Kind))</span>
+                    <select class="status-select" name="kind" data-autosubmit="" aria-label=(t(language, Key::Kind))>
+                        <option value="all" selected=(kind == "all")>(t(language, Key::KindAll))</option>
+                        <option value="folders" selected=(kind == "folders")>(t(language, Key::KindFolders))</option>
+                        <option value="files" selected=(kind == "files")>(t(language, Key::KindFiles))</option>
+                    </select>
+                    <input type="hidden" name="sort" value=(sort.to_string())>
+                    <input type="hidden" name="q" value=(box_text.clone())>
+                </form>
+                <form class="field-box field-box-search" method="get" action="/shared">
+                    <span class="field-text">(t(language, Key::NavSearch))</span>
+                    <input
+                        class="dd-search"
+                        type="search"
+                        name="q"
+                        value=(box_text.clone())
+                        placeholder=(t(language, Key::SearchPlaceholder))
+                        aria-label=(t(language, Key::SearchPlaceholder))
+                    >
+                    <input type="hidden" name="sort" value=(sort.to_string())>
+                    <input type="hidden" name="kind" value=(kind.to_string())>
+                </form>
+            </div>
             <section class="panel">
                 <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
-                    <span class="chip">(format!("{folder_count}"))</span>
+                    <h2 class="panel-title">(t(language, Key::SharedWithMe))</h2>
+                    <span class="chip">(rows.len().to_string())</span>
                 </div>
                 <div class="panel-body">
-                    for item in items.iter().filter(|item| item.kind == ShareKind::Folder) {
-                        <p>
-                            <a href=(format!("/drive?folder={}", item.target_id))>(item.name.clone())</a>
-                            (owner_chip(item, &owners))
-                            (access_chip(language, item.can_download))
-                        </p>
+                    if rows.is_empty() {
+                        if nothing_shared {
+                            <p class="field-note">(t(language, Key::NoSharedItems))</p>
+                        } else {
+                            <p class="field-note">(t(language, Key::NoResults))</p>
+                        }
                     }
-                </div>
-            </section>
-            <section class="panel">
-                <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
-                    <span class="chip">(format!("{file_count}"))</span>
-                </div>
-                <div class="panel-body">
-                    for item in items.iter().filter(|item| item.kind == ShareKind::File) {
-                        <p>
-                            <a href=(format!("/file/{}", item.target_id))>(item.name.clone())</a>
-                            (owner_chip(item, &owners))
-                            (access_chip(language, item.can_download))
-                        </p>
+                    for row in &rows {
+                        <div class="dep-row">
+                            if row.item.kind == ShareKind::Folder {
+                                <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                                <a class="dep-link" href=(format!("/drive?folder={}", row.item.target_id))>(row.item.name.clone())</a>
+                            } else {
+                                match &row.file {
+                                    Some(file) => (shared_chip(cx, file).await?),
+                                    None => <span class="file-chip file-chip-generic" aria-hidden="true">"▦"</span>,
+                                }
+                                <a class="dep-link" href=(format!("/view/{}", row.item.target_id))>(row.item.name.clone())</a>
+                            }
+                            <div class="spacer"></div>
+                            <span class="field-note">(shared_details(language, row))</span>
+                        </div>
                     }
                 </div>
             </section>
         </main>
-    }
-}
-
-/// `by <name>`, when the owner's name is known.
-fn owner_chip(
-    item: &in_core::store::SharedItem,
-    owners: &std::collections::HashMap<String, String>,
-) -> String {
-    match owners.get(&item.owner_id) {
-        Some(name) if !name.is_empty() => format!(" · {name}"),
-        _ => String::new(),
     }
 }
 

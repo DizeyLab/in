@@ -85,6 +85,37 @@ async fn set_quota(cx: &Cx, Form(input): Form<QuotaForm>) -> Redirect {
 }
 
 #[derive(Deserialize)]
+struct UploadLimitForm {
+    max_upload_bytes: u64,
+}
+
+/// Sets the instance-wide per-file upload ceiling, in bytes — the same unit
+/// the `max_upload_bytes` instance setting stores, so the round trip is
+/// exact: what the panel shows is what a save writes back. The bytes already
+/// held are untouched — a ceiling lowered under an existing file refuses new
+/// uploads past it, rather than deleting anything.
+#[route(POST "/api/settings/upload-limit")]
+async fn set_upload_limit(cx: &Cx, Form(input): Form<UploadLimitForm>) -> Redirect {
+    if let Err(refusal) = require_admin(cx).await {
+        return redirect_back(cx, "upload-limit", Some(refusal));
+    }
+    if input.max_upload_bytes == 0 {
+        return redirect_back(cx, "upload-limit", Some(Refusal::BadLimit));
+    }
+    match app(cx)
+        .store
+        .set_setting(
+            crate::server::MAX_UPLOAD_SETTING,
+            &input.max_upload_bytes.to_string(),
+        )
+        .await
+    {
+        Ok(()) => redirect_back(cx, "upload-limit", None),
+        Err(error) => redirect_back(cx, "upload-limit", Some(refusal_of(error))),
+    }
+}
+
+#[derive(Deserialize)]
 struct DisableForm {
     user_id: String,
     #[serde(default)]
@@ -200,6 +231,13 @@ async fn settings(cx: &Cx) -> Result {
     } else {
         Vec::new()
     };
+    // The live per-file ceiling, read once for the admin panel below. Only
+    // admins see it, so only they pay the extra setting read.
+    let upload_limit = if fresh.admin {
+        Some(crate::server::effective_upload_limit(cx).await)
+    } else {
+        None
+    };
     let created = created_token(uri(cx).query().unwrap_or(""));
     let origin = app(cx).config.listen_url();
     view! {
@@ -208,7 +246,7 @@ async fn settings(cx: &Cx) -> Result {
         <div class="settings-shell">
             <main class="settings-stage">
                 <h1 class="settings-title">(t(language, Key::Settings))</h1>
-                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences"]).await?)
+                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences", "upload-limit"]).await?)
                 if let Some(token) = created {
                     <section class="panel">
                         <div class="panel-head">
@@ -290,6 +328,20 @@ async fn settings(cx: &Cx) -> Result {
                     </div>
                 </section>
                 if fresh.admin {
+                    if let Some(limit) = upload_limit {
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2 class="panel-title">(t(language, Key::UploadLimits))</h2>
+                            </div>
+                            <div class="panel-body">
+                                <p class="field-note">(format!("{}: {}", t(language, Key::CurrentUploadLimit), human_bytes(limit)))</p>
+                                <form class="pop-row-form" method="post" action="/api/settings/upload-limit">
+                                    <input class="field-input" type="number" name="max_upload_bytes" min="1" value=(limit.to_string()) aria-label=(t(language, Key::MaxUploadBytes))>
+                                    <button class="quiet" type="submit">(t(language, Key::Save))</button>
+                                </form>
+                            </div>
+                        </section>
+                    }
                     <section class="panel">
                         <div class="panel-head">
                             <h2 class="panel-title">(t(language, Key::AdminPanel))</h2>

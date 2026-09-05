@@ -169,7 +169,7 @@ async fn quota_and_disablement_round_trip() {
 }
 
 #[tokio::test]
-async fn folders_nest_and_names_are_unique_among_live_siblings() {
+async fn folders_allow_duplicate_names_among_live_siblings() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
     let root = scratch
@@ -184,11 +184,10 @@ async fn folders_nest_and_names_are_unique_among_live_siblings() {
         .unwrap();
     assert_eq!(kid.parent_id.as_deref(), Some(root.id.as_str()));
 
-    assert!(matches!(
-        scratch.store.create_folder(&user.id, None, "root").await,
-        Err(StoreError::NameTaken)
-    ));
-    // Same name in a different directory is a different name.
+    // A live sibling wearing the name is no refusal: folders share names.
+    let twin = scratch.store.create_folder(&user.id, None, "root").await.unwrap();
+    assert_ne!(twin.id, root.id);
+    // Same name in a different directory is a different name, as before.
     scratch
         .store
         .create_folder(&user.id, Some(&root.id), "root")
@@ -196,7 +195,7 @@ async fn folders_nest_and_names_are_unique_among_live_siblings() {
         .unwrap();
 
     let listing = scratch.store.list_children(&user.id, None).await.unwrap();
-    assert_eq!(listing.folders.len(), 1);
+    assert_eq!(listing.folders.len(), 2);
     let listing = scratch
         .store
         .list_children(&user.id, Some(&root.id))
@@ -508,19 +507,18 @@ async fn trashing_a_folder_cascades_and_restore_needs_live_ancestors() {
 }
 
 #[tokio::test]
-async fn a_trashed_name_is_free_until_restored() {
+async fn a_trashed_folder_name_restores_beside_a_live_twin() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
     let first = scratch.store.create_folder(&user.id, None, "x").await.unwrap();
     scratch.store.delete_folder(&first.id).await.unwrap();
-    // Deleting frees the name; restoring onto a live squatter is refused.
+    // Deleting frees the name, and restoring beside the squatter is fine:
+    // folder names may repeat.
     scratch.store.create_folder(&user.id, None, "x").await.unwrap();
-    assert!(matches!(
-        scratch.store.restore_folder(&first.id).await,
-        Err(StoreError::NameTaken)
-    ));
+    scratch.store.restore_folder(&first.id).await.unwrap();
+    let listing = scratch.store.list_children(&user.id, None).await.unwrap();
+    assert_eq!(listing.folders.iter().filter(|folder| folder.name == "x").count(), 2);
 }
-
 #[tokio::test]
 async fn used_bytes_counts_trash_and_purge_frees_it() {
     let scratch = Scratch::open().await;
@@ -1214,4 +1212,105 @@ async fn a_second_migration_database_gains_the_preference_columns_on_open() {
     assert_eq!(back.ui, "ledger");
     drop(store);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn renaming_or_moving_a_folder_onto_a_live_sibling_name_succeeds() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let parent = scratch.store.create_folder(&user.id, None, "parent").await.unwrap();
+    let other = scratch.store.create_folder(&user.id, None, "other").await.unwrap();
+
+    // Renaming onto a live sibling's name lands.
+    scratch.store.rename_folder(&other.id, "parent").await.unwrap();
+    let back: Folder = scratch.store.folder(&other.id).await.unwrap().unwrap();
+    assert_eq!(back.name, "parent");
+
+    // Moving under a parent is refused for strangers and the trashed, but
+    // never for a name: a live child wearing the name is no obstacle.
+    let kid = scratch
+        .store
+        .create_folder(&user.id, Some(&parent.id), "kid")
+        .await
+        .unwrap();
+    scratch.store.create_folder(&user.id, None, "kid").await.unwrap();
+    scratch.store.move_folder(&kid.id, None).await.unwrap();
+    let back: Folder = scratch.store.folder(&kid.id).await.unwrap().unwrap();
+    assert_eq!(back.parent_id, None);
+    let listing = scratch.store.list_children(&user.id, None).await.unwrap();
+    assert_eq!(listing.folders.iter().filter(|folder| folder.name == "kid").count(), 2);
+}
+
+#[tokio::test]
+async fn file_names_stay_unique_among_live_siblings() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let first = scratch.store.insert_file(&user.id, None, "note", b"one").await.unwrap();
+    // A live sibling wearing the name still refuses: files, unlike folders,
+    // keep one name per directory.
+    assert!(matches!(
+        scratch.store.insert_file(&user.id, None, "note", b"two").await,
+        Err(StoreError::NameTaken)
+    ));
+    let other = scratch.store.insert_file(&user.id, None, "other", b"two").await.unwrap();
+    assert!(matches!(
+        scratch.store.rename_file(&other.id, "note").await,
+        Err(StoreError::NameTaken)
+    ));
+    // Trashing frees the name; restoring onto a squatter still refuses.
+    scratch.store.delete_file(&first.id).await.unwrap();
+    scratch.store.insert_file(&user.id, None, "note", b"three").await.unwrap();
+    assert!(matches!(
+        scratch.store.restore_file(&first.id).await,
+        Err(StoreError::NameTaken)
+    ));
+}
+
+#[tokio::test]
+async fn download_count_starts_at_zero_and_counts_serves() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let bytes = b"count me";
+    let file = scratch.store.insert_file(&user.id, None, "counted", bytes).await.unwrap();
+    assert_eq!(file.download_count, 0);
+
+    // The row agrees: a fresh insert was never served.
+    let back = scratch.store.file(&file.id).await.unwrap().unwrap();
+    assert_eq!(back.download_count, 0);
+
+    scratch.store.record_download(&file.id).await.unwrap();
+    scratch.store.record_download(&file.id).await.unwrap();
+    let back = scratch.store.file(&file.id).await.unwrap().unwrap();
+    assert_eq!(back.download_count, 2);
+
+    // A byte read is pure: it serves the bytes without counting, so range
+    // probes and chunks never inflate the count — only record_download does.
+    let served = scratch.store.file_bytes(&file.id).await.unwrap().unwrap();
+    assert_eq!(served, bytes);
+    let back = scratch.store.file(&file.id).await.unwrap().unwrap();
+    assert_eq!(back.download_count, 2);
+    assert!(scratch.store.file_bytes("no-such-file").await.unwrap().is_none());
+    assert!(matches!(
+        scratch.store.record_download("no-such-file").await,
+        Err(StoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn settings_round_trip_from_missing() {
+    let scratch = Scratch::open().await;
+    let store = &scratch.store;
+    assert_eq!(store.get_setting("ui.density").await.unwrap(), None);
+    store.set_setting("ui.density", "ledger").await.unwrap();
+    assert_eq!(
+        store.get_setting("ui.density").await.unwrap(),
+        Some("ledger".to_string())
+    );
+    // Replacing the value replaces the row, and other keys are untouched.
+    store.set_setting("ui.density", "instrument").await.unwrap();
+    assert_eq!(
+        store.get_setting("ui.density").await.unwrap(),
+        Some("instrument".to_string())
+    );
+    assert_eq!(store.get_setting("ui.other").await.unwrap(), None);
 }

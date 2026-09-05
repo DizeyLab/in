@@ -39,7 +39,7 @@ const USER_COLUMNS: &str =
     "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, ui, created_at, last_seen_at, theme, language";
 const FOLDER_COLUMNS: &str = "id, owner_id, parent_id, name, created_at, deleted_at";
 const FILE_COLUMNS: &str =
-    "id, owner_id, folder_id, name, mime, size_bytes, thumb_state, created_at, updated_at, deleted_at";
+    "id, owner_id, folder_id, name, mime, size_bytes, thumb_state, created_at, updated_at, deleted_at, download_count";
 const LINK_COLUMNS: &str =
     "id, token_hash, kind, target_id, created_by, can_download, created_at, expires_at, revoked_at";
 const SESSION_COLUMNS: &str =
@@ -743,6 +743,7 @@ fn file_from(row: &Row) -> Result<File> {
         name: text(row, 3)?,
         mime: text(row, 4)?,
         size_bytes: row.get::<i64>(5).map_err(backend)?.max(0) as u64,
+        download_count: row.get::<i64>(10).map_err(backend)?.max(0) as u64,
         thumb_state: ThumbState::parse(&text(row, 6)?)?,
         created_at: parse_stamp(&text(row, 7)?)?,
         updated_at: parse_stamp(&text(row, 8)?)?,
@@ -982,18 +983,15 @@ impl Store for TursoStore {
         name: &str,
     ) -> Result<Folder> {
         let name = label_of(name);
-        // IMMEDIATE: the name check is read-then-write. Two concurrent
-        // creates of one name each read no sibling, each pass, and the pair
-        // leaves two folders with one name.
+        // IMMEDIATE: the parent check and the insert are one write set, so a
+        // parent trashed mid-create still refuses. Names are not checked:
+        // two folders may wear one name in one place.
         let mut conn = self.tx_conn().await?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .await
             .map_err(backend)?;
         check_live_parent(&tx, owner_id, parent_id).await?;
-        if folder_name_taken(&tx, owner_id, parent_id, &name, None).await? {
-            return Err(StoreError::NameTaken);
-        }
         let id = Ulid::new().to_string();
         let now = now_text()?;
         tx.execute(
@@ -1037,11 +1035,6 @@ impl Store for TursoStore {
         if folder.deleted_at.is_some() {
             return Err(StoreError::NotFound);
         }
-        if folder_name_taken(&tx, &folder.owner_id, folder.parent_id.as_deref(), &name, Some(id))
-            .await?
-        {
-            return Err(StoreError::NameTaken);
-        }
         tx.execute("UPDATE folder SET name = ?1 WHERE id = ?2", params![name, id])
             .await
             .map_err(|e| map_constraint(e, StoreError::NameTaken))?;
@@ -1072,9 +1065,6 @@ impl Store for TursoStore {
                 return Err(StoreError::Cycle);
             }
             cursor = parent_of(&tx, &current).await?;
-        }
-        if folder_name_taken(&tx, &folder.owner_id, parent_id, &folder.name, Some(id)).await? {
-            return Err(StoreError::NameTaken);
         }
         tx.execute(
             "UPDATE folder SET parent_id = ?1 WHERE id = ?2",
@@ -1402,6 +1392,50 @@ impl Store for TursoStore {
         }
     }
 
+    async fn record_download(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query("SELECT owner_id FROM file WHERE id = ?1", params![id])
+            .await
+            .map_err(backend)?;
+        let owner = match rows.next().await.map_err(backend)? {
+            Some(row) => text(&row, 0)?,
+            None => return Err(StoreError::NotFound),
+        };
+        drop(rows);
+        conn.execute(
+            "UPDATE file SET download_count = download_count + 1 WHERE id = ?1",
+            params![id],
+        )
+        .await
+        .map_err(backend)?;
+        drop(conn);
+        self.announce([Topic::Library(owner)]);
+        Ok(())
+    }
+
+    async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        match self
+            .one_row("SELECT value FROM setting WHERE key = ?1", params![key])
+            .await?
+        {
+            Some(row) => Ok(Some(text(&row, 0)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2) \
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
     async fn thumb_bytes(&self, id: &str) -> Result<Option<Vec<u8>>> {
         let conn = self.conn.lock().await;
         let mut rows = conn
@@ -1518,17 +1552,6 @@ impl Store for TursoStore {
         // below comes back with it.
         if let Some(parent_id) = folder.parent_id.as_deref() {
             ancestor_trashed(&tx, parent_id).await?;
-        }
-        if folder_name_taken(
-            &tx,
-            &folder.owner_id,
-            folder.parent_id.as_deref(),
-            &folder.name,
-            Some(id),
-        )
-        .await?
-        {
-            return Err(StoreError::NameTaken);
         }
         let now = now_text()?;
         // Only the cascade comes back: descendants wear the folder's own
@@ -2532,43 +2555,10 @@ async fn check_live_parent_on(
     check_live_parent(conn, owner_id, parent_id).await
 }
 
-/// Whether a live sibling folder already wears `name`. Trashed rows do not
+/// Whether a live sibling file already wears `name`. Trashed rows do not
 /// count — deleting a name frees it — and `exclude` skips the row being
-/// renamed or moved.
-async fn folder_name_taken(
-    conn: &Connection,
-    owner_id: &str,
-    parent_id: Option<&str>,
-    name: &str,
-    exclude: Option<&str>,
-) -> Result<bool> {
-    let exclude = exclude.unwrap_or("");
-    let mut rows = match parent_id {
-        Some(parent) => {
-            conn.query(
-                "SELECT 1 FROM folder WHERE owner_id = ?1 AND parent_id = ?2 \
-                 AND name = ?3 AND deleted_at IS NULL AND id <> ?4",
-                params![owner_id, parent, name, exclude],
-            )
-            .await
-            .map_err(backend)?
-        }
-        None => {
-            conn.query(
-                "SELECT 1 FROM folder WHERE owner_id = ?1 AND parent_id IS NULL \
-                 AND name = ?2 AND deleted_at IS NULL AND id <> ?3",
-                params![owner_id, name, exclude],
-            )
-            .await
-            .map_err(backend)?
-        }
-    };
-    Ok(rows.next().await.map_err(backend)?.is_some())
-}
-
-/// Whether a live sibling file already wears `name`, same rules as
-/// [`folder_name_taken`]. Folders and files keep separate namespaces: a
-/// folder and a file may share a name in one directory.
+/// renamed or moved. Folders and files keep separate namespaces: a folder
+/// and a file may share a name in one directory.
 async fn file_name_taken(
     conn: &Connection,
     owner_id: &str,

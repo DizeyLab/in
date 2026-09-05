@@ -1,25 +1,32 @@
-//! File bytes and small uploads.
+//! File bytes, the viewer page, and small uploads.
 //!
 //! `GET /file/{id}` streams one file its owner may see — or a grantee may,
 //! when the grant says so — honoring `?dl=1` (download disposition) and
 //! `Range` (206 partial content), stamped `Cache-Control: private,
 //! immutable`. `GET /thumb/{id}` serves the webp thumbnail under the same
-//! visibility. `POST /files` (multipart, 64 MiB cap) takes files under 8
-//! MiB through the same pipeline the chunked protocol uses — the store
-//! sanitises the name, sniffs the mime, checks the quota and attempts the
-//! thumbnail — and `POST /api/file/rename|move|delete` mutate the row.
-//! Bytes for another owner's file answer 404, not 403.
+//! visibility. `GET /view/{id}` renders the viewer page: the inline viewer
+//! for the file's kind (`viewer_kind`), a download link while the reader
+//! may download, and its details. `POST /files` (multipart) takes files
+//! through the same pipeline the chunked protocol uses — each part capped
+//! at the instance upload ceiling first — the store sanitises the name,
+//! sniffs the mime, checks the quota
+//! and attempts the thumbnail — and `POST /api/file/rename|move|delete`
+//! mutate the row. Bytes for another owner's file answer 404, not 403.
 
-use in_core::store::{ShareKind, Store, StoreError};
+use in_core::store::{File, ShareKind, Store, StoreError, ThumbState};
 use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::content::multipart::Multipart;
 use topcoat::router::content::{Form, Json};
+use topcoat::router::error::not_found as page_not_found;
 use topcoat::router::request::headers as request_headers;
 use topcoat::router::{
-    HeaderMap, HeaderName, HeaderValue, StatusCode, header, path_param, query_params, route,
+    HeaderMap, HeaderName, HeaderValue, StatusCode, header, page, path_param, query_params, route,
 };
+use topcoat::view::view;
 
+use crate::i18n::{Key, lang, t};
+use crate::layout::{NavPage, topbar};
 use crate::server::{Refusal, app, back_to, require_user};
 
 path_param!(id);
@@ -261,6 +268,11 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> 
         .and_then(|value| value.to_str().ok());
     match range.and_then(|range| parse_range(range, total)) {
         Some(Ok((start, end))) => {
+            // A play counts once, on its first chunk; later seeks are the
+            // same view going on, not a new one.
+            if start == 0 {
+                let _ = store.record_download(id).await;
+            }
             let slice = bytes[start as usize..=end as usize].to_vec();
             headers.insert(
                 header::CONTENT_RANGE,
@@ -275,7 +287,10 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> 
             );
             Ok((StatusCode::RANGE_NOT_SATISFIABLE, headers, Vec::new()))
         }
-        None => Ok((StatusCode::OK, headers, bytes)),
+        None => {
+            let _ = store.record_download(id).await;
+            Ok((StatusCode::OK, headers, bytes))
+        }
     }
 }
 
@@ -324,10 +339,197 @@ async fn thumb(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     Ok((StatusCode::OK, headers, bytes))
 }
 
+/// What the viewer page shows inline: images, video and audio through their
+/// native elements, PDFs through the browser's reader, plain text through a
+/// sandboxed frame. Anything else — archives, office documents, unknown
+/// bytes — is download-only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ViewerKind {
+    Image,
+    Video,
+    Audio,
+    Pdf,
+    Text,
+}
+
+/// The inline viewer for one stored mime, if it has one. Trusts the stored
+/// mime alone, the way [`renders_inline`] does; `image/heic` stays
+/// download-only because no engine decodes it, and only `text/plain` opens
+/// as text — anything juicier stays a download, the way [`inline_ok`]
+/// keeps it off this origin.
+pub(crate) fn viewer_kind(mime: &str) -> Option<ViewerKind> {
+    if mime == "image/heic" {
+        None
+    } else if mime.starts_with("image/") {
+        Some(ViewerKind::Image)
+    } else if mime.starts_with("video/") {
+        Some(ViewerKind::Video)
+    } else if mime.starts_with("audio/") {
+        Some(ViewerKind::Audio)
+    } else if mime == "application/pdf" {
+        Some(ViewerKind::Pdf)
+    } else if mime == "text/plain" {
+        Some(ViewerKind::Text)
+    } else {
+        None
+    }
+}
+
+/// One file's list icon: the webp thumbnail where one is ready, else a
+/// mime-class glyph. The glyphs are decorative — the file's name beside
+/// them carries the meaning — so they hide from assistive technology.
+///
+/// Lists embed this beside the name: `(crate::files::entry_chip(cx,
+/// file).await?)`.
+pub(crate) async fn entry_chip(cx: &Cx, file: &File) -> Result {
+    if file.thumb_state == ThumbState::Ready {
+        return view! {
+            cx =>
+            <img class="file-chip" src=(format!("/thumb/{}", file.id)) alt="">
+        };
+    }
+    let (class, glyph) = chip_mark(&file.mime);
+    view! {
+        cx =>
+        <span class=(format!("file-chip file-chip-{class}")) aria-hidden="true">(glyph)</span>
+    }
+}
+
+/// The chip's modifier class and its glyph, by stored mime: one distinct
+/// mark per class — image, video, audio, pdf, text, archive, generic.
+fn chip_mark(mime: &str) -> (&'static str, &'static str) {
+    if mime.starts_with("image/") {
+        ("image", "◫")
+    } else if mime.starts_with("video/") {
+        ("video", "▶")
+    } else if mime.starts_with("audio/") {
+        ("audio", "♫")
+    } else if mime == "application/pdf" {
+        ("pdf", "☰")
+    } else if mime.starts_with("text/") {
+        ("text", "¶")
+    } else if is_archive_mime(mime) {
+        ("archive", "⊞")
+    } else {
+        ("generic", "▦")
+    }
+}
+
+/// The stored mimes that are bundles of other files: plain zips, the OOXML
+/// and OpenDocument documents (all zips underneath), gzip blobs and the
+/// legacy OLE container.
+fn is_archive_mime(mime: &str) -> bool {
+    mime == "application/zip"
+        || mime == "application/gzip"
+        || mime == "application/x-ole-storage"
+        || mime == "application/vnd.ms-excel"
+        || mime.contains("openxml")
+        || mime.contains("opendocument")
+}
+
+/// `GET /view/{id}`: one file's viewer page — its name, the inline viewer
+/// for its kind, a download link and its details. Authorization mirrors
+/// trashed files open for nobody. A view-only grant opens the page but not
+/// the bytes: the download link shows only while the reader may download,
+/// and the inline viewer gives way to the unavailable note, since every
+/// viewer element reads the same gated bytes. Bytes for another owner's
+/// file answer 404, not 403.
+#[page("/view/{id}")]
+async fn view_file(cx: &Cx) -> Result {
+    let id: &str = path_param::<Id>(cx);
+
+    let user = match require_user(cx).await {
+        Ok(user) => user,
+        Err(_) => {
+            let location = (header::LOCATION, HeaderValue::from_static("/"));
+            return view! {
+                cx =>
+                (StatusCode::SEE_OTHER)
+                (location)
+            };
+        }
+    };
+    let language = lang(cx).await;
+
+    let store = app(cx).store.clone();
+    let Some(file) = visible_file(store.as_ref(), &user.id, id).await else {
+        return Err(page_not_found().into());
+    };
+    let may_download = file.owner_id == user.id
+        || store
+            .can_download(ShareKind::File, &file.id, &user.id)
+            .await
+            .unwrap_or(false);
+
+    let src = format!("/file/{}", file.id);
+    let download_href = format!("/file/{}?dl=1", file.id);
+    let meta = format!(
+        "{} · {}",
+        file.mime,
+        crate::settings::human_bytes(file.size_bytes)
+    );
+    let uploaded = file.created_at.date().to_string();
+    view! {
+        cx =>
+        (topbar(cx, NavPage::Drive, &user, language).await?)
+        <main class="settings-stage">
+            <p><a class="quiet" href="/drive">(t(language, Key::BackToDrive))</a></p>
+            <h1 class="settings-title">(entry_chip(cx, &file).await?) (file.name.clone())</h1>
+            <p class="field-note">(meta)</p>
+            <div class="viewer-stage">
+                if may_download {
+                    match viewer_kind(&file.mime) {
+                        Some(ViewerKind::Image) => <img class="viewer-media" src=(src.clone()) alt=(file.name.clone())>,
+                        Some(ViewerKind::Video) => <video class="viewer-media" src=(src.clone()) controls="" preload="metadata"></video>,
+                        Some(ViewerKind::Audio) => <audio class="viewer-audio" src=(src.clone()) controls="" preload="metadata"></audio>,
+                        Some(ViewerKind::Pdf) => <object class="viewer-media viewer-pdf" data=(src.clone()) type="application/pdf">
+                            <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
+                        </object>,
+                        Some(ViewerKind::Text) => <iframe class="viewer-media viewer-text" src=(src.clone()) sandbox="" title=(file.name.clone())></iframe>,
+                        None => <div class="viewer-fallback">
+                            <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
+                        </div>
+                    }
+                } else {
+                    // A view-only grant opens the page but not the bytes, so
+                    // the viewer elements — every one reads /file/{id} —
+                    // would only frame a 404. The note instead.
+                    <div class="viewer-fallback">
+                        <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
+                    </div>
+                }
+            </div>
+            if may_download {
+                <p><a class="primary" href=(download_href)>(t(language, Key::Download))</a></p>
+            }
+            <section class="panel">
+                <div class="panel-head">
+                    <h2 class="panel-title">(t(language, Key::FileDetails))</h2>
+                </div>
+                <div class="panel-body">
+                    <div class="field">
+                        <span class="field-label">(t(language, Key::SizeColumn))</span>
+                        <span class="field-static">(crate::settings::human_bytes(file.size_bytes))</span>
+                    </div>
+                    <div class="field">
+                        <span class="field-label">(t(language, Key::UploadedLabel))</span>
+                        <span class="field-static">(uploaded)</span>
+                    </div>
+                    <div class="field">
+                        <span class="field-label">(t(language, Key::DownloadsLabel))</span>
+                        <span class="field-static">(file.download_count.to_string())</span>
+                    </div>
+                </div>
+            </section>
+        </main>
+    }
+}
+
 /// Takes the files the drive's upload form carries — one per `file` part,
-/// and a `multiple` picker posts several. The route already caps the whole
-/// request body at 64 MiB (`main.rs`); each part is buffered whole because
-/// the store writes it in one go. Fields arrive in request order:
+/// and a `multiple` picker posts several. The route's body guard sits at 2
+/// GiB (`main.rs`); each part is buffered whole because the store writes
+/// it in one go, capped at the instance upload ceiling before it gets
+/// there. Fields arrive in request order:
 /// `folder_id` before the `file` parts, so the destination is known before
 /// a byte of any file is kept.
 #[route(POST "/files")]
@@ -397,8 +599,16 @@ async fn upload(
         return Ok(back_to_folder(folder_id.as_deref(), None));
     }
 
+    let limit = crate::server::effective_upload_limit(cx).await;
+
     let mut refusal: Option<Refusal> = None;
     for (name, bytes) in files {
+        // One file may not pass the instance ceiling; oversize files never
+        // reach the store.
+        if bytes.len() as u64 > limit {
+            refusal = Some(Refusal::UploadTooLarge);
+            break;
+        }
         // The store sanitises the label, sniffs the mime off the bytes,
         // checks the quota, writes the file and attempts the thumbnail.
         if let Err(error) = store

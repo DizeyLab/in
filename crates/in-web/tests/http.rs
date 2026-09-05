@@ -97,20 +97,21 @@ impl FakeIm {
                         let len = content_length(&head);
                         let body: Vec<u8> = req[body_start..body_start + len].to_vec();
                         req.drain(..body_start + len);
-                        let (status, content_type, payload) = match photo_answer(&pmap, &head, &first) {
-                            Some(photo) => photo,
-                            None => match answer_for(&map, &first, &body) {
-                                Some(answer) => (
-                                    "200 OK",
-                                    "application/json".to_string(),
-                                    serde_json::to_vec(&answer).unwrap(),
-                                ),
-                                // Anything but the introspection route is
-                                // nothing at all, the way the real im 404s
-                                // unknown paths rather than answering them.
-                                None => ("404 Not Found", "text/plain".to_string(), Vec::new()),
-                            },
-                        };
+                        let (status, content_type, payload) =
+                            match photo_answer(&pmap, &head, &first) {
+                                Some(photo) => photo,
+                                None => match answer_for(&map, &first, &body) {
+                                    Some(answer) => (
+                                        "200 OK",
+                                        "application/json".to_string(),
+                                        serde_json::to_vec(&answer).unwrap(),
+                                    ),
+                                    // Anything but the introspection route is
+                                    // nothing at all, the way the real im 404s
+                                    // unknown paths rather than answering them.
+                                    None => ("404 Not Found", "text/plain".to_string(), Vec::new()),
+                                },
+                            };
                         let response = format!(
                             "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\n\r\n",
                             payload.len()
@@ -125,7 +126,11 @@ impl FakeIm {
                 });
             }
         });
-        Self { addr, tokens, photos }
+        Self {
+            addr,
+            tokens,
+            photos,
+        }
     }
 
     fn url(&self) -> String {
@@ -158,7 +163,10 @@ fn photo_answer(
         return None;
     }
     let target = parts.next().unwrap_or("");
-    let path = target.split_once('?').map(|(path, _)| path).unwrap_or(target);
+    let path = target
+        .split_once('?')
+        .map(|(path, _)| path)
+        .unwrap_or(target);
     let id = path.strip_prefix("/photo/")?;
     if id.is_empty() || id.contains('/') {
         return None;
@@ -218,7 +226,8 @@ fn answer_for(
     body: &[u8],
 ) -> Option<serde_json::Value> {
     let mut head = request_line.split_whitespace();
-    let is_introspect = head.next() == Some("POST") && head.next() == Some(in_client::introspect_path());
+    let is_introspect =
+        head.next() == Some("POST") && head.next() == Some(in_client::introspect_path());
     if !is_introspect {
         return None;
     }
@@ -273,6 +282,7 @@ impl TestApp {
             live_seconds: 300,
             purge_after_days: 30,
             default_quota_bytes: 10 * 1024 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
             oidc: OidcConfig {
                 issuer: fake.url(),
                 client_id: "in-test".to_string(),
@@ -286,8 +296,8 @@ impl TestApp {
         let router = in_client::mount(
             Router::builder()
                 .discover()
-                .layer(BodyLimit::max(16 * 1024 * 1024).at("/api/upload"))
-                .layer(BodyLimit::max(64 * 1024 * 1024).at("/files"))
+                .layer(BodyLimit::max(32 * 1024 * 1024).at("/api/upload"))
+                .layer(BodyLimit::max(2usize * 1024 * 1024 * 1024).at("/files"))
                 .cookies()
                 .assets(
                     AssetBundle::load_dir(asset_dir())
@@ -547,12 +557,10 @@ impl Answer {
 
     fn refused(&self, code: &str, call: &str) -> bool {
         self.status == StatusCode::SEE_OTHER
-            && self
-                .location
-                .as_deref()
-                .is_some_and(|location| {
-                    location.contains(&format!("refusal={code}")) && location.contains(&format!("on={call}"))
-                })
+            && self.location.as_deref().is_some_and(|location| {
+                location.contains(&format!("refusal={code}"))
+                    && location.contains(&format!("on={call}"))
+            })
     }
 
     fn accepted(&self) -> bool {
@@ -601,11 +609,11 @@ fn encode(raw: &str) -> String {
 /// The 1x1 transparent PNG: the smallest thing the thumbnailer must accept.
 fn tiny_png() -> Vec<u8> {
     vec![
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
-        0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
-        0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
-        0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-        0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
     ]
 }
 
@@ -625,7 +633,10 @@ async fn folder_id(app: &TestApp, owner: &str, parent: Option<&str>, name: &str)
 }
 /// The token off a creation redirect's `?created=` pair.
 fn created_token(location: &str) -> String {
-    let query = location.split_once('?').map(|(_, query)| query).unwrap_or("");
+    let query = location
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or("");
     query
         .split('&')
         .filter_map(|pair| pair.split_once('='))
@@ -670,7 +681,11 @@ async fn folder_crud_and_cycle_is_refused() {
         .unwrap();
 
     let answer = app
-        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "projects")])
+        .post(
+            "/api/folder/create",
+            Some(&cookie),
+            &[("parent_id", ""), ("name", "projects")],
+        )
         .await;
     assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.body);
     assert_eq!(answer.body, "null", "creating was refused");
@@ -703,7 +718,11 @@ async fn folder_crud_and_cycle_is_refused() {
 
     // A legal move, a rename and a delete all land clean.
     let answer = app
-        .post("/api/folder/move", Some(&cookie), &[("id", &sub), ("parent_id", "")])
+        .post(
+            "/api/folder/move",
+            Some(&cookie),
+            &[("id", &sub), ("parent_id", "")],
+        )
         .await;
     assert_eq!(answer.body, "null", "moving was refused: {}", answer.body);
     let answer = app
@@ -745,9 +764,18 @@ async fn small_upload_round_trip() {
             &[("hello.txt", "text/plain", bytes)],
         )
         .await;
-    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.location.unwrap_or_default());
+    assert_eq!(
+        answer.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        answer.location.unwrap_or_default()
+    );
     assert!(
-        !answer.location.as_deref().unwrap_or("").contains("refusal="),
+        !answer
+            .location
+            .as_deref()
+            .unwrap_or("")
+            .contains("refusal="),
         "upload was refused: {}",
         answer.location.unwrap_or_default()
     );
@@ -768,7 +796,10 @@ async fn small_upload_round_trip() {
     assert_eq!(got.bytes, bytes);
     assert_eq!(got.accept_ranges.as_deref(), Some("bytes"));
     assert!(
-        got.cache_control.as_deref().unwrap_or("").contains("immutable"),
+        got.cache_control
+            .as_deref()
+            .unwrap_or("")
+            .contains("immutable"),
         "missing immutable cache directive"
     );
 }
@@ -801,8 +832,11 @@ async fn chunked_upload_round_trip() {
         .await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
     let started = answer.json();
-    let session = started["Ok"]["id"].as_str().expect("start was refused").to_string();
-    assert_eq!(started["Ok"]["chunk_size"].as_u64(), Some(8 * 1024 * 1024));
+    let session = started["ok"]["id"]
+        .as_str()
+        .expect("start was refused")
+        .to_string();
+    assert_eq!(started["ok"]["chunk_size"].as_u64(), Some(8 * 1024 * 1024));
 
     let answer = app
         .put_bytes(
@@ -812,13 +846,23 @@ async fn chunked_upload_round_trip() {
         )
         .await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
-    assert_eq!(answer.json()["Ok"]["received_bytes"].as_u64(), Some(8 * 1024 * 1024));
+    assert_eq!(
+        answer.json()["ok"]["received_bytes"].as_u64(),
+        Some(8 * 1024 * 1024)
+    );
 
     let answer = app
-        .put_bytes(&format!("/api/upload/{session}/1"), Some(&cookie), &bytes[8 * 1024 * 1024..])
+        .put_bytes(
+            &format!("/api/upload/{session}/1"),
+            Some(&cookie),
+            &bytes[8 * 1024 * 1024..],
+        )
         .await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
-    assert_eq!(answer.json()["Ok"]["received_bytes"].as_u64(), Some(total as u64));
+    assert_eq!(
+        answer.json()["ok"]["received_bytes"].as_u64(),
+        Some(total as u64)
+    );
 
     let answer = app
         .post_json(
@@ -828,7 +872,10 @@ async fn chunked_upload_round_trip() {
         )
         .await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
-    let file_id = answer.json()["Ok"].as_str().expect("finish was refused").to_string();
+    let file_id = answer.json()["ok"]
+        .as_str()
+        .expect("finish was refused")
+        .to_string();
 
     let got = app.get(&format!("/file/{file_id}"), Some(&cookie)).await;
     assert_eq!(got.status, StatusCode::OK);
@@ -901,7 +948,7 @@ async fn quota_is_refused_before_and_during_upload() {
         .await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
     assert_eq!(
-        answer.json()["Err"].as_str(),
+        answer.json()["err"].as_str(),
         Some("QuotaExceeded"),
         "start was not refused: {}",
         answer.body
@@ -944,7 +991,11 @@ async fn thumbnail_is_served_after_image_upload() {
         )
         .await;
     assert!(
-        !answer.location.as_deref().unwrap_or("").contains("refusal="),
+        !answer
+            .location
+            .as_deref()
+            .unwrap_or("")
+            .contains("refusal="),
         "image upload was refused: {}",
         answer.location.unwrap_or_default()
     );
@@ -976,11 +1027,20 @@ async fn thumbnail_is_served_after_image_upload() {
 async fn cross_owner_answers_not_found() {
     let app = TestApp::build().await;
     let alice = app.sign_in("sub-alice", "alice@in.test", "Alice").await;
-    let alice_user = app.store.user_by_oidc_sub("sub-alice").await.unwrap().unwrap();
+    let alice_user = app
+        .store
+        .user_by_oidc_sub("sub-alice")
+        .await
+        .unwrap()
+        .unwrap();
     let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
 
-    app.post("/api/folder/create", Some(&alice), &[("parent_id", ""), ("name", "hers")])
-        .await;
+    app.post(
+        "/api/folder/create",
+        Some(&alice),
+        &[("parent_id", ""), ("name", "hers")],
+    )
+    .await;
     let hers = folder_id(&app, &alice_user.id, None, "hers").await;
     app.post_multipart(
         "/files",
@@ -1007,7 +1067,11 @@ async fn cross_owner_answers_not_found() {
     assert_eq!(page.status, StatusCode::NOT_FOUND);
 
     let answer = app
-        .post("/api/folder/rename", Some(&bob), &[("id", &hers), ("name", "theirs")])
+        .post(
+            "/api/folder/rename",
+            Some(&bob),
+            &[("id", &hers), ("name", "theirs")],
+        )
         .await;
     assert!(
         answer.body.contains("NotFound"),
@@ -1028,10 +1092,19 @@ async fn cross_owner_answers_not_found() {
 async fn file_rename_move_and_delete() {
     let app = TestApp::build().await;
     let cookie = app.sign_in("sub-fops", "fops@in.test", "Fops").await;
-    let user = app.store.user_by_oidc_sub("sub-fops").await.unwrap().unwrap();
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-fops")
+        .await
+        .unwrap()
+        .unwrap();
 
-    app.post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "box")])
-        .await;
+    app.post(
+        "/api/folder/create",
+        Some(&cookie),
+        &[("parent_id", ""), ("name", "box")],
+    )
+    .await;
     let boxed = folder_id(&app, &user.id, None, "box").await;
     app.post_multipart(
         "/files",
@@ -1051,21 +1124,34 @@ async fn file_rename_move_and_delete() {
         .unwrap();
 
     let answer = app
-        .post("/api/file/rename", Some(&cookie), &[("id", &file.id), ("name", "renamed.txt")])
+        .post(
+            "/api/file/rename",
+            Some(&cookie),
+            &[("id", &file.id), ("name", "renamed.txt")],
+        )
         .await;
     assert_eq!(answer.body, "null", "renaming was refused: {}", answer.body);
     let answer = app
-        .post("/api/file/move", Some(&cookie), &[("id", &file.id), ("folder_id", &boxed)])
+        .post(
+            "/api/file/move",
+            Some(&cookie),
+            &[("id", &file.id), ("folder_id", &boxed)],
+        )
         .await;
     assert_eq!(answer.body, "null", "moving was refused: {}", answer.body);
     let moved = app.store.file(&file.id).await.unwrap().unwrap();
     assert_eq!(moved.name, "renamed.txt");
     assert_eq!(moved.folder_id.as_deref(), Some(boxed.as_str()));
 
-    let answer = app.post("/api/file/delete", Some(&cookie), &[("id", &file.id)]).await;
+    let answer = app
+        .post("/api/file/delete", Some(&cookie), &[("id", &file.id)])
+        .await;
     assert_eq!(answer.body, "null", "deleting was refused: {}", answer.body);
     let trashed = app.store.file(&file.id).await.unwrap().unwrap();
-    assert!(trashed.deleted_at.is_some(), "delete did not trash the file");
+    assert!(
+        trashed.deleted_at.is_some(),
+        "delete did not trash the file"
+    );
     // And the bytes answer 404 once trashed.
     let gone = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
     assert_eq!(gone.status, StatusCode::NOT_FOUND);
@@ -1083,29 +1169,44 @@ async fn upload_abort_and_bad_chunk() {
             serde_json::json!({"folder_id": null, "name": "never.bin", "size_bytes": 100}),
         )
         .await;
-    let session = answer.json()["Ok"]["id"].as_str().unwrap().to_string();
+    let session = answer.json()["ok"]["id"].as_str().unwrap().to_string();
 
     // A short piece is a bad chunk, not a short file.
-    let answer = app.put_bytes(&format!("/api/upload/{session}/0"), Some(&cookie), b"short").await;
+    let answer = app
+        .put_bytes(&format!("/api/upload/{session}/0"), Some(&cookie), b"short")
+        .await;
     assert_eq!(
-        answer.json()["Err"].as_str(),
+        answer.json()["err"].as_str(),
         Some("BadChunk"),
         "short chunk was not refused: {}",
         answer.body
     );
 
     let answer = app
-        .post_json(&format!("/api/upload/{session}/abort"), Some(&cookie), serde_json::json!({}))
+        .post_json(
+            &format!("/api/upload/{session}/abort"),
+            Some(&cookie),
+            serde_json::json!({}),
+        )
         .await;
-    assert_eq!(answer.json()["Ok"], serde_json::Value::Null, "{}", answer.body);
+    assert_eq!(
+        answer.json()["ok"],
+        serde_json::Value::Null,
+        "{}",
+        answer.body
+    );
 
     // The finish after the abort finds an expired session, with the chunks
     // still staged for nothing.
     let answer = app
-        .post_json(&format!("/api/upload/{session}/finish"), Some(&cookie), serde_json::json!({}))
+        .post_json(
+            &format!("/api/upload/{session}/finish"),
+            Some(&cookie),
+            serde_json::json!({}),
+        )
         .await;
     assert_eq!(
-        answer.json()["Err"].as_str(),
+        answer.json()["err"].as_str(),
         Some("UploadExpired"),
         "finish after abort was not refused: {}",
         answer.body
@@ -1137,14 +1238,24 @@ async fn forced_download_is_attachment() {
 
     let inline = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
     assert!(
-        inline.disposition.as_deref().unwrap_or("").starts_with("inline"),
+        inline
+            .disposition
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("inline"),
         "text should render inline: {:?}",
         inline.disposition
     );
-    let forced = app.get(&format!("/file/{}?dl=1", file.id), Some(&cookie)).await;
+    let forced = app
+        .get(&format!("/file/{}?dl=1", file.id), Some(&cookie))
+        .await;
     assert_eq!(forced.status, StatusCode::OK);
     assert!(
-        forced.disposition.as_deref().unwrap_or("").starts_with("attachment"),
+        forced
+            .disposition
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("attachment"),
         "?dl=1 did not force attachment: {:?}",
         forced.disposition
     );
@@ -1316,10 +1427,18 @@ async fn cross_owner_link_create_is_not_found() {
         .post(
             "/api/share/link/create",
             Some(&admin),
-            &[("kind", "file"), ("target_id", &file), ("can_download", "1")],
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+            ],
         )
         .await;
-    assert!(answer.refused("not-found", "create"), "{:?}", answer.location);
+    assert!(
+        answer.refused("not-found", "create"),
+        "{:?}",
+        answer.location
+    );
 }
 
 // -- per-user shares --------------------------------------------------------
@@ -1406,16 +1525,30 @@ async fn trash_restore_purge_empty_flows() {
 
     // Restore one: it leaves the trash and keeps its bytes.
     let answer = app
-        .post("/api/trash/restore", Some(&admin), &[("kind", "file"), ("id", &one)])
+        .post(
+            "/api/trash/restore",
+            Some(&admin),
+            &[("kind", "file"), ("id", &one)],
+        )
         .await;
     assert!(answer.accepted(), "restore refused: {:?}", answer.location);
     assert!(
-        app.store.file(&one).await.unwrap().unwrap().deleted_at.is_none()
+        app.store
+            .file(&one)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_none()
     );
 
     // Purge the other: the row and its bytes go.
     let answer = app
-        .post("/api/trash/purge", Some(&admin), &[("kind", "file"), ("id", &two)])
+        .post(
+            "/api/trash/purge",
+            Some(&admin),
+            &[("kind", "file"), ("id", &two)],
+        )
         .await;
     assert!(answer.accepted(), "purge refused: {:?}", answer.location);
     assert!(app.store.file(&two).await.unwrap().is_none());
@@ -1425,14 +1558,7 @@ async fn trash_restore_purge_empty_flows() {
     app.store.delete_file(&three).await.unwrap();
     let answer = app.post("/api/trash/empty", Some(&admin), &[]).await;
     assert!(answer.accepted(), "empty refused: {:?}", answer.location);
-    assert!(
-        app.store
-            .list_trash(&owner)
-            .await
-            .unwrap()
-            .files
-            .is_empty()
-    );
+    assert!(app.store.list_trash(&owner).await.unwrap().files.is_empty());
 }
 
 #[tokio::test]
@@ -1440,11 +1566,7 @@ async fn restore_under_trashed_ancestor_is_refused() {
     let app = TestApp::build().await;
     let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
     let owner = owner_of(&app, "sub-admin").await;
-    let folder = app
-        .store
-        .create_folder(&owner, None, "box")
-        .await
-        .unwrap();
+    let folder = app.store.create_folder(&owner, None, "box").await.unwrap();
     let file = app
         .store
         .insert_file(&owner, Some(&folder.id), "inbox.txt", b"in")
@@ -1523,25 +1645,51 @@ async fn search_scopes_to_owner_and_hides_trashed() {
     // name: the upload control renders, no results caption does.
     let page = app.get("/drive", Some(&admin)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
-    assert!(page.text().contains("id=\"upload-form\""), "{}", page.text());
+    assert!(
+        page.text().contains("id=\"upload-form\""),
+        "{}",
+        page.text()
+    );
     assert!(!page.text().contains("Search results"), "{}", page.text());
 
     let page = app.get("/drive?q=quarterly", Some(&admin)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
-    assert!(page.text().contains("quarterly report.txt"), "{}", page.text());
-    assert!(!page.text().contains("quarterly notes.txt"), "{}", page.text());
-    assert!(!page.text().contains("quarterly draft.txt"), "{}", page.text());
+    assert!(
+        page.text().contains("quarterly report.txt"),
+        "{}",
+        page.text()
+    );
+    assert!(
+        !page.text().contains("quarterly notes.txt"),
+        "{}",
+        page.text()
+    );
+    assert!(
+        !page.text().contains("quarterly draft.txt"),
+        "{}",
+        page.text()
+    );
     assert!(app.store.file(&mine).await.unwrap().is_some());
 
     let page = app.get("/drive?q=quarterly", Some(&bob)).await;
-    assert!(page.text().contains("quarterly notes.txt"), "{}", page.text());
-    assert!(!page.text().contains("quarterly report.txt"), "{}", page.text());
+    assert!(
+        page.text().contains("quarterly notes.txt"),
+        "{}",
+        page.text()
+    );
+    assert!(
+        !page.text().contains("quarterly report.txt"),
+        "{}",
+        page.text()
+    );
 }
 
 #[tokio::test]
 async fn drive_search_results_merge_into_one_panel() {
     let app = TestApp::build().await;
-    let cookie = app.sign_in("sub-search-in-place", "inplace@in.test", "InPlace").await;
+    let cookie = app
+        .sign_in("sub-search-in-place", "inplace@in.test", "InPlace")
+        .await;
     let owner = owner_of(&app, "sub-search-in-place").await;
     let answer = app
         .post(
@@ -1561,12 +1709,16 @@ async fn drive_search_results_merge_into_one_panel() {
     assert!(body.contains("holiday photos"), "{body}");
     assert!(body.contains("holiday report.txt"), "{body}");
     assert!(body.contains(&format!("/drive?folder={folder}")), "{body}");
-    assert!(body.contains(&format!("/file/{file}")), "{body}");
+    assert!(body.contains(&format!("/view/{file}")), "{body}");
     let folder_at = body.find("holiday photos").expect("no folder hit");
     let file_at = body.find("holiday report.txt").expect("no file hit");
     assert!(folder_at < file_at, "file hit precedes folder hit: {body}");
     // One panel, no heads or chips.
-    assert_eq!(body.matches("<section class=\"panel\">").count(), 1, "{body}");
+    assert_eq!(
+        body.matches("<section class=\"panel\">").count(),
+        1,
+        "{body}"
+    );
     assert!(!body.contains("panel-head"), "{body}");
     assert!(!body.contains("class=\"chip\""), "{body}");
     assert!(!body.contains(">Folders</h2>"), "{body}");
@@ -1619,7 +1771,9 @@ async fn drive_search_never_shows_other_owners_hits() {
 #[tokio::test]
 async fn drive_search_empty_query_is_the_folder_view() {
     let app = TestApp::build().await;
-    let cookie = app.sign_in("sub-search-empty", "empty@in.test", "Empty").await;
+    let cookie = app
+        .sign_in("sub-search-empty", "empty@in.test", "Empty")
+        .await;
     let owner = owner_of(&app, "sub-search-empty").await;
     let _ = file_id(&app, &owner, "plain.txt", b"p").await;
 
@@ -1673,7 +1827,10 @@ async fn topbar_nav_has_no_search_link() {
     assert!(nav.contains("href=\"/drive\""), "{nav}");
     assert!(nav.contains("href=\"/shared\""), "{nav}");
     assert!(nav.contains("href=\"/trash\""), "{nav}");
-    assert!(!nav.contains("/search"), "search leaked into the nav: {nav}");
+    assert!(
+        !nav.contains("/search"),
+        "search leaked into the nav: {nav}"
+    );
     assert!(!nav.contains("Search"), "search leaked into the nav: {nav}");
 }
 
@@ -1700,7 +1857,10 @@ async fn settings_quota_and_disable_guards() {
         )
         .await;
     assert!(answer.accepted(), "quota refused: {:?}", answer.location);
-    assert_eq!(app.store.user(&bob_id).await.unwrap().unwrap().quota_bytes, 123456);
+    assert_eq!(
+        app.store.user(&bob_id).await.unwrap().unwrap().quota_bytes,
+        123456
+    );
 
     // A non-admin is refused the same call.
     let answer = app
@@ -1710,7 +1870,11 @@ async fn settings_quota_and_disable_guards() {
             &[("user_id", &bob_id), ("quota_bytes", "999")],
         )
         .await;
-    assert!(answer.refused("forbidden", "quota"), "{:?}", answer.location);
+    assert!(
+        answer.refused("forbidden", "quota"),
+        "{:?}",
+        answer.location
+    );
 
     // Disabling yourself is refused; disabling Bob signs him out.
     let answer = app
@@ -1720,7 +1884,11 @@ async fn settings_quota_and_disable_guards() {
             &[("user_id", &admin_id), ("disabled", "1")],
         )
         .await;
-    assert!(answer.refused("forbidden", "disable"), "{:?}", answer.location);
+    assert!(
+        answer.refused("forbidden", "disable"),
+        "{:?}",
+        answer.location
+    );
 
     let answer = app
         .post(
@@ -1798,9 +1966,18 @@ async fn empty_file_upload_round_trip() {
             &[("empty.txt", "text/plain", &[])],
         )
         .await;
-    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.location.clone().unwrap_or_default());
+    assert_eq!(
+        answer.status,
+        StatusCode::SEE_OTHER,
+        "{}",
+        answer.location.clone().unwrap_or_default()
+    );
     assert!(
-        !answer.location.as_deref().unwrap_or("").contains("refusal="),
+        !answer
+            .location
+            .as_deref()
+            .unwrap_or("")
+            .contains("refusal="),
         "empty upload was refused: {}",
         answer.location.clone().unwrap_or_default()
     );
@@ -1818,7 +1995,11 @@ async fn empty_file_upload_round_trip() {
 
     let got = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
     assert_eq!(got.status, StatusCode::OK);
-    assert!(got.bytes.is_empty(), "expected 0 bytes, got {}", got.bytes.len());
+    assert!(
+        got.bytes.is_empty(),
+        "expected 0 bytes, got {}",
+        got.bytes.len()
+    );
 }
 
 // -- share review regressions (FullSilkworm) ------------------------------------
@@ -1906,7 +2087,11 @@ async fn malformed_expiry_is_forbidden() {
             ],
         )
         .await;
-    assert!(answer.accepted(), "good expiry refused: {:?}", answer.location);
+    assert!(
+        answer.accepted(),
+        "good expiry refused: {:?}",
+        answer.location
+    );
     let links = app.store.share_links(&owner).await.unwrap();
     assert_eq!(links.len(), 1);
     assert!(
@@ -1925,7 +2110,11 @@ async fn malformed_expiry_is_forbidden() {
             ],
         )
         .await;
-    assert!(answer.accepted(), "empty expiry refused: {:?}", answer.location);
+    assert!(
+        answer.accepted(),
+        "empty expiry refused: {:?}",
+        answer.location
+    );
     let links = app.store.share_links(&owner).await.unwrap();
     assert_eq!(links.len(), 2);
     assert!(
@@ -1963,7 +2152,11 @@ async fn unshare_trashed_target_still_revokes() {
         .post(
             "/api/share/user/remove",
             Some(&admin),
-            &[("kind", "file"), ("target_id", &file), ("email", "bob@in.test")],
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("email", "bob@in.test"),
+            ],
         )
         .await;
     assert!(answer.accepted(), "remove refused: {:?}", answer.location);
@@ -1989,7 +2182,11 @@ async fn view_only_public_thumb_serves_webp() {
         )
         .await;
     assert!(
-        !answer.location.as_deref().unwrap_or("").contains("refusal="),
+        !answer
+            .location
+            .as_deref()
+            .unwrap_or("")
+            .contains("refusal="),
         "image upload was refused: {}",
         answer.location.unwrap_or_default()
     );
@@ -2115,8 +2312,16 @@ async fn settings_preferences_round_trip() {
     assert_eq!(user.language, "en");
     let page = app.get("/settings", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
-    assert!(page.text().contains("data-ui=\"instrument\""), "{}", page.text());
-    assert!(page.text().contains("data-theme=\"dark\""), "{}", page.text());
+    assert!(
+        page.text().contains("data-ui=\"instrument\""),
+        "{}",
+        page.text()
+    );
+    assert!(
+        page.text().contains("data-theme=\"dark\""),
+        "{}",
+        page.text()
+    );
     assert!(page.text().contains("lang=\"en\""), "{}", page.text());
 
     // Saving all three writes the row and re-renders the chrome — away from
@@ -2181,7 +2386,9 @@ async fn settings_preferences_round_trip() {
 #[tokio::test]
 async fn settings_preferences_rejects_unknown_values() {
     let app = TestApp::build().await;
-    let cookie = app.sign_in("sub-prefs-bad", "prefsbad@in.test", "PrefsBad").await;
+    let cookie = app
+        .sign_in("sub-prefs-bad", "prefsbad@in.test", "PrefsBad")
+        .await;
     let me = owner_of(&app, "sub-prefs-bad").await;
 
     // Each field is refused with its own code, and the row keeps the last
@@ -2193,7 +2400,11 @@ async fn settings_preferences_rejects_unknown_values() {
             &[("ui", "mosaic"), ("theme", "light"), ("language", "en")],
         )
         .await;
-    assert!(answer.refused("bad-ui", "preferences"), "{:?}", answer.location);
+    assert!(
+        answer.refused("bad-ui", "preferences"),
+        "{:?}",
+        answer.location
+    );
     let answer = app
         .post(
             "/api/settings/preferences",
@@ -2289,8 +2500,16 @@ async fn signed_out_settings_falls_back_to_accept_language() {
     let page = app.get("/settings", None).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(page.text().contains("lang=\"en\""), "{}", page.text());
-    assert!(page.text().contains("data-theme=\"dark\""), "{}", page.text());
-    assert!(page.text().contains("data-ui=\"instrument\""), "{}", page.text());
+    assert!(
+        page.text().contains("data-theme=\"dark\""),
+        "{}",
+        page.text()
+    );
+    assert!(
+        page.text().contains("data-ui=\"instrument\""),
+        "{}",
+        page.text()
+    );
     assert!(page.text().contains("Sign in first."), "{}", page.text());
     // A Turkish browser is answered in Turkish.
     let page = app
@@ -2343,8 +2562,12 @@ fn assert_stage_nests(body: &str, markers: &[&str]) {
 #[tokio::test]
 async fn shared_lists_nest_inside_the_stage() {
     let app = TestApp::build().await;
-    let admin = app.sign_in("sub-stage-sharer", "sharer@in.test", "Sharer").await;
-    let bob = app.sign_in("sub-stage-bob", "stagebob@in.test", "StageBob").await;
+    let admin = app
+        .sign_in("sub-stage-sharer", "sharer@in.test", "Sharer")
+        .await;
+    let bob = app
+        .sign_in("sub-stage-bob", "stagebob@in.test", "StageBob")
+        .await;
     let owner = owner_of(&app, "sub-stage-sharer").await;
     let file = file_id(&app, &owner, "staged.txt", b"staged").await;
     let answer = app
@@ -2371,7 +2594,9 @@ async fn shared_lists_nest_inside_the_stage() {
 #[tokio::test]
 async fn trash_panels_nest_inside_the_stage() {
     let app = TestApp::build().await;
-    let admin = app.sign_in("sub-stage-trash", "stagetrash@in.test", "StageTrash").await;
+    let admin = app
+        .sign_in("sub-stage-trash", "stagetrash@in.test", "StageTrash")
+        .await;
     let owner = owner_of(&app, "sub-stage-trash").await;
     let one = file_id(&app, &owner, "staged-trash.txt", b"staged").await;
     app.store.delete_file(&one).await.unwrap();
@@ -2391,7 +2616,9 @@ async fn trash_panels_nest_inside_the_stage() {
 #[tokio::test]
 async fn drive_search_panel_nests_inside_the_stage() {
     let app = TestApp::build().await;
-    let admin = app.sign_in("sub-stage-search", "stagesearch@in.test", "StageSearch").await;
+    let admin = app
+        .sign_in("sub-stage-search", "stagesearch@in.test", "StageSearch")
+        .await;
     let owner = owner_of(&app, "sub-stage-search").await;
     file_id(&app, &owner, "staged-report.txt", b"staged").await;
     let page = app.get("/drive?q=staged-report", Some(&admin)).await;
@@ -2427,7 +2654,11 @@ async fn drive_root_hides_crumbs_while_a_subfolder_shows_them() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(!page.text().contains("detail-crumbs"), "{}", page.text());
     // The filterbar itself stays, holding the search box and the create form.
-    assert!(page.text().contains("class=\"filterbar\""), "{}", page.text());
+    assert!(
+        page.text().contains("class=\"filterbar\""),
+        "{}",
+        page.text()
+    );
     assert!(page.text().contains("name=\"q\""), "{}", page.text());
     assert!(
         page.text().contains("action=\"/api/folder/create\""),
@@ -2437,7 +2668,11 @@ async fn drive_root_hides_crumbs_while_a_subfolder_shows_them() {
 
     // Inside a folder the way back renders.
     let answer = app
-        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "inside")])
+        .post(
+            "/api/folder/create",
+            Some(&cookie),
+            &[("parent_id", ""), ("name", "inside")],
+        )
         .await;
     assert_eq!(answer.status, StatusCode::SEE_OTHER, "{}", answer.body);
     let folder = folder_id(&app, &owner, None, "inside").await;
@@ -2452,7 +2687,9 @@ async fn drive_root_hides_crumbs_while_a_subfolder_shows_them() {
 #[tokio::test]
 async fn settings_quota_button_wears_the_quiet_class() {
     let app = TestApp::build().await;
-    let admin = app.sign_in("sub-quota-btn", "quotabtn@in.test", "QuotaBtn").await;
+    let admin = app
+        .sign_in("sub-quota-btn", "quotabtn@in.test", "QuotaBtn")
+        .await;
     let page = app.get("/settings", Some(&admin)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let body = page.text();
@@ -2462,12 +2699,19 @@ async fn settings_quota_button_wears_the_quiet_class() {
         body.contains("<form class=\"pop-row-form member-quota\""),
         "{body}"
     );
-    let quota_at = body.find("action=\"/api/settings/quota\"").expect("no quota form");
+    let quota_at = body
+        .find("action=\"/api/settings/quota\"")
+        .expect("no quota form");
     let button_at = body[quota_at..]
         .find("<button class=\"quiet\" type=\"submit\">")
         .expect("quota submit is not quiet");
-    let form_end = body[quota_at..].find("</form>").expect("quota form never closes");
-    assert!(button_at < form_end, "quiet button escapes the quota form: {body}");
+    let form_end = body[quota_at..]
+        .find("</form>")
+        .expect("quota form never closes");
+    assert!(
+        button_at < form_end,
+        "quiet button escapes the quota form: {body}"
+    );
 }
 
 #[tokio::test]
@@ -2482,14 +2726,20 @@ async fn settings_lives_in_the_user_menu_not_the_topbar() {
     let nav_start = body.find("topbar-nav-links").expect("no nav");
     let nav_end = body[nav_start..].find("</nav>").expect("nav never closes");
     let nav = &body[nav_start..nav_start + nav_end];
-    assert!(!nav.contains("/settings"), "settings leaked into the nav: {nav}");
+    assert!(
+        !nav.contains("/settings"),
+        "settings leaked into the nav: {nav}"
+    );
 
     // …the user menu carries it, plus the profile link out to im.
     let menu_start = body.find("user-menu-panel").expect("no user menu");
     let menu = &body[menu_start..];
     assert!(menu.contains("href=\"/settings\""), "{menu}");
     let issuer = format!("href=\"{}/\"", app.config.oidc.issuer);
-    assert!(menu.contains(&issuer), "no profile link to the issuer: {menu}");
+    assert!(
+        menu.contains(&issuer),
+        "no profile link to the issuer: {menu}"
+    );
 }
 
 #[tokio::test]
@@ -2523,7 +2773,10 @@ async fn avatar_serves_own_photo_with_etag() {
         body.contains(&format!("src=\"/avatar/{me}\"")),
         "menu wears no photo img"
     );
-    assert!(body.contains("avatar-stack"), "no initials stack under the photo");
+    assert!(
+        body.contains("avatar-stack"),
+        "no initials stack under the photo"
+    );
     assert!(body.contains("__inAvatar"), "no avatar fallback script");
 }
 
@@ -2541,7 +2794,9 @@ async fn avatar_without_photo_is_not_found() {
 #[tokio::test]
 async fn avatar_for_someone_else_is_not_found() {
     let app = TestApp::build().await;
-    let alice = app.sign_in("sub-alice-face", "alice@in.test", "Alice").await;
+    let alice = app
+        .sign_in("sub-alice-face", "alice@in.test", "Alice")
+        .await;
     let bob = app.sign_in("sub-bob-face", "bob@in.test", "Bob").await;
     let bob_id = owner_of(&app, "sub-bob-face").await;
     app.fake.set_photo("sub-bob-face", tiny_png(), "image/png");
@@ -2590,32 +2845,54 @@ async fn avatar_resolves_local_id_to_oidc_sub() {
 #[tokio::test]
 async fn drive_add_menu_has_two_items() {
     let app = TestApp::build().await;
-    let cookie = app.sign_in("sub-addmenu", "addmenu@in.test", "AddMenu").await;
+    let cookie = app
+        .sign_in("sub-addmenu", "addmenu@in.test", "AddMenu")
+        .await;
 
     let page = app.get("/drive", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK);
     let body = page.text();
 
     // The filterbar carries one + menu, not the old confirm modal.
-    assert!(!body.contains("confirm-details"), "confirm modal still rendered");
-    assert!(!body.contains("new-folder-form"), "modal form still rendered");
+    assert!(
+        !body.contains("confirm-details"),
+        "confirm modal still rendered"
+    );
+    assert!(
+        !body.contains("new-folder-form"),
+        "modal form still rendered"
+    );
     let details_at = body.find("drive-add").expect("no + menu on the drive");
-    let details_end = body[details_at..].find("</details>").expect("menu never closes");
+    let details_end = body[details_at..]
+        .find("</details>")
+        .expect("menu never closes");
     let details = &body[details_at..details_at + details_end];
     // New folder: a button-only quick form posting just the parent.
     assert!(
         details.contains("action=\"/api/folder/create\""),
         "quick form escapes the menu: {details}"
     );
-    assert!(details.contains("name=\"parent_id\""), "no parent field: {details}");
-    assert!(!details.contains("name=\"name\""), "quick form asks for a name: {details}");
-    assert!(details.contains("New folder"), "no New folder item: {details}");
+    assert!(
+        details.contains("name=\"parent_id\""),
+        "no parent field: {details}"
+    );
+    assert!(
+        !details.contains("name=\"name\""),
+        "quick form asks for a name: {details}"
+    );
+    assert!(
+        details.contains("New folder"),
+        "no New folder item: {details}"
+    );
     // Upload files: a label for the panel's own picker, no script needed.
     assert!(
         details.contains("for=\"drive-upload-input\""),
         "no upload label in the menu: {details}"
     );
-    assert!(details.contains("Upload files"), "no Upload files item: {details}");
+    assert!(
+        details.contains("Upload files"),
+        "no Upload files item: {details}"
+    );
     assert!(
         body.contains("id=\"drive-upload-input\""),
         "upload input carries no id for the label"
@@ -2629,11 +2906,22 @@ async fn drive_quick_create_names_and_edits() {
     let me = owner_of(&app, "sub-quick").await;
 
     // The + menu posts no name: generic name, 303 into that row's edit mode.
-    let answer = app.post("/api/folder/create", Some(&cookie), &[("parent_id", "")]).await;
+    let answer = app
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", "")])
+        .await;
     assert_eq!(answer.status, StatusCode::SEE_OTHER);
-    let location = answer.location.clone().expect("quick create redirects nowhere");
-    assert!(location.starts_with("/drive?"), "quick create leaves the drive: {location}");
-    assert!(location.contains("edit="), "quick create skips edit mode: {location}");
+    let location = answer
+        .location
+        .clone()
+        .expect("quick create redirects nowhere");
+    assert!(
+        location.starts_with("/drive?"),
+        "quick create leaves the drive: {location}"
+    );
+    assert!(
+        location.contains("edit="),
+        "quick create skips edit mode: {location}"
+    );
     let edit = location
         .split("edit=")
         .nth(1)
@@ -2643,62 +2931,113 @@ async fn drive_quick_create_names_and_edits() {
         .unwrap();
     assert_eq!(folder_id(&app, &me, None, "New folder").await, edit);
 
-    // A second quick create collision-suffixes instead of colliding.
-    let answer = app.post("/api/folder/create", Some(&cookie), &[("parent_id", "")]).await;
-    let location = answer.location.clone().expect("second quick create redirects nowhere");
-    let edit = location
+    // Duplicate folder names are allowed: a second quick create takes the
+    // same generic name on a new row instead of suffixing.
+    let answer = app
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", "")])
+        .await;
+    let location = answer
+        .location
+        .clone()
+        .expect("second quick create redirects nowhere");
+    let edit2 = location
         .split("edit=")
         .nth(1)
         .expect("no edit id")
         .split('&')
         .next()
         .unwrap();
-    assert_eq!(folder_id(&app, &me, None, "New folder 2").await, edit);
+    assert_ne!(edit, edit2, "second quick create reused the row");
+    let root = app.store.list_children(&me, None).await.unwrap();
+    assert_eq!(
+        root.folders
+            .iter()
+            .filter(|folder| folder.name == "New folder")
+            .count(),
+        2,
+        "second quick create did not repeat the generic name"
+    );
 
     // A typed name keeps the old answer: back to the page, no edit mode.
     let answer = app
-        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "typed")])
+        .post(
+            "/api/folder/create",
+            Some(&cookie),
+            &[("parent_id", ""), ("name", "typed")],
+        )
         .await;
-    assert!(answer.accepted(), "typed create refused: {:?}", answer.location);
     assert!(
-        answer.location.as_deref().is_some_and(|location| !location.contains("edit=")),
+        answer.accepted(),
+        "typed create refused: {:?}",
+        answer.location
+    );
+    assert!(
+        answer
+            .location
+            .as_deref()
+            .is_some_and(|location| !location.contains("edit=")),
         "typed create enters edit mode: {:?}",
         answer.location
     );
     folder_id(&app, &me, None, "typed").await;
 
-    // A refused typed create surfaces on the page line, once.
+    // A typed duplicate is accepted too — folders share names now.
     let answer = app
-        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "typed")])
+        .post(
+            "/api/folder/create",
+            Some(&cookie),
+            &[("parent_id", ""), ("name", "typed")],
+        )
         .await;
-    assert_eq!(answer.status, StatusCode::SEE_OTHER);
-    assert!(answer.body.contains("NameTaken"), "dupe was not refused: {}", answer.body);
-    let page = app.get("/drive?refusal=name-taken&on=create", Some(&cookie)).await;
-    assert_eq!(page.status, StatusCode::OK);
+    assert!(
+        answer.accepted(),
+        "typed dupe refused: {:?}",
+        answer.location
+    );
+    let root = app.store.list_children(&me, None).await.unwrap();
     assert_eq!(
-        page.text().matches("<p class=\"field-error\"").count(),
-        1,
-        "create refusal shows twice — or nowhere"
+        root.folders
+            .iter()
+            .filter(|folder| folder.name == "typed")
+            .count(),
+        2,
+        "typed dupe did not land beside the first"
     );
 }
 
 #[tokio::test]
 async fn drive_edit_row_renders_the_rename_form() {
     let app = TestApp::build().await;
-    let cookie = app.sign_in("sub-editrow", "editrow@in.test", "EditRow").await;
+    let cookie = app
+        .sign_in("sub-editrow", "editrow@in.test", "EditRow")
+        .await;
     let me = owner_of(&app, "sub-editrow").await;
 
     let answer = app
-        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "plans")])
+        .post(
+            "/api/folder/create",
+            Some(&cookie),
+            &[("parent_id", ""), ("name", "plans")],
+        )
         .await;
-    assert!(answer.accepted(), "setup create refused: {:?}", answer.location);
+    assert!(
+        answer.accepted(),
+        "setup create refused: {:?}",
+        answer.location
+    );
     let id = folder_id(&app, &me, None, "plans").await;
 
     // Plain view: the row is a link with an edit entry, no rename input.
     let page = app.get("/drive", Some(&cookie)).await;
     let body = page.text();
-    assert!(body.contains(&format!("/drive?folder={id}")), "row links nowhere");
-    assert!(body.contains(&format!("/drive?edit={id}")), "row has no edit entry");
+    assert!(
+        body.contains(&format!("/drive?folder={id}")),
+        "row links nowhere"
+    );
+    assert!(
+        body.contains(&format!("/drive?edit={id}")),
+        "row has no edit entry"
+    );
 
     // Edit view: that row — and only that row — is the rename form, pre-filled.
     let page = app.get(&format!("/drive?edit={id}"), Some(&cookie)).await;
@@ -2708,8 +3047,14 @@ async fn drive_edit_row_renders_the_rename_form() {
         body.contains("action=\"/api/folder/rename\""),
         "edit view renders no rename form"
     );
-    assert!(body.contains("data-edit-focus"), "rename input carries no focus hook");
-    assert!(body.contains("value=\"plans\""), "rename input is not pre-filled");
+    assert!(
+        body.contains("data-edit-focus"),
+        "rename input carries no focus hook"
+    );
+    assert!(
+        body.contains("value=\"plans\""),
+        "rename input is not pre-filled"
+    );
     assert!(body.contains("__inEditFocus"), "no edit focus script");
 }
 
@@ -2721,15 +3066,27 @@ async fn drive_lists_folders_before_files_in_one_panel() {
     // The file's name sorts first alphabetically, so order proves folders lead.
     let file_id = file_id(&app, &owner, "aaa file.txt", b"a").await;
     let answer = app
-        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "mmm folder")])
+        .post(
+            "/api/folder/create",
+            Some(&cookie),
+            &[("parent_id", ""), ("name", "mmm folder")],
+        )
         .await;
-    assert!(answer.accepted(), "setup create refused: {:?}", answer.location);
+    assert!(
+        answer.accepted(),
+        "setup create refused: {:?}",
+        answer.location
+    );
 
     let page = app.get("/drive", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let body = page.text();
     // One panel, no heads or chips — just the merged list.
-    assert_eq!(body.matches("<section class=\"panel\">").count(), 1, "{body}");
+    assert_eq!(
+        body.matches("<section class=\"panel\">").count(),
+        1,
+        "{body}"
+    );
     assert!(!body.contains("panel-head"), "{body}");
     assert!(!body.contains("class=\"chip\""), "{body}");
     assert!(!body.contains(">Folders</h2>"), "{body}");
@@ -2766,10 +3123,16 @@ async fn an_empty_folder_says_how_to_fill_it() {
     let body = page.text();
     // The single empty state names both ways to fill the folder.
     assert!(
-        body.contains("This folder is empty. Press + to create or upload, or drop files on this page."),
+        body.contains(
+            "This folder is empty. Press + to create or upload, or drop files on this page."
+        ),
         "no empty-state hint: {body}"
     );
-    assert_eq!(body.matches("<section class=\"panel\">").count(), 1, "{body}");
+    assert_eq!(
+        body.matches("<section class=\"panel\">").count(),
+        1,
+        "{body}"
+    );
     assert!(!body.contains("panel-head"), "{body}");
     // And the upload control plus the drop handler the hint promises are on the page.
     assert!(body.contains("id=\"upload-form\""), "{body}");

@@ -134,6 +134,10 @@ pub struct File {
     /// What the server decided the bytes are, never what the upload claimed.
     pub mime: String,
     pub size_bytes: u64,
+    /// How many times the bytes went to a reader: the download route and the
+    /// public-link bytes bump it through [`Store::record_download`], and
+    /// nothing internal — thumbnails, sniffing, the boot sweep — ever does.
+    pub download_count: u64,
     pub thumb_state: ThumbState,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -390,7 +394,8 @@ pub trait Store: 'static + Send + Sync {
     /// means for its screen.
     async fn folder(&self, id: &str) -> Result<Option<Folder>>;
 
-    /// Renames a folder. A name a live sibling wears is [`StoreError::NameTaken`].
+    /// Renames a folder. Names are labels, never identities: a live sibling
+    /// may already wear the name, and the rename still lands.
     async fn rename_folder(&self, id: &str, name: &str) -> Result<()>;
 
     /// Moves a folder. Into its own descendant is [`StoreError::Cycle`];
@@ -445,6 +450,13 @@ pub trait Store: 'static + Send + Sync {
     /// when no thumbnail was made, or its file went missing.
     async fn thumb_bytes(&self, id: &str) -> Result<Option<Vec<u8>>>;
 
+    /// Counts one user-facing serve of a file's bytes. Byte routes call this
+    /// once per download they complete — not per range chunk, not per
+    /// thumbnail, never from internal reads (sniffing, the boot sweep).
+    /// [`Store::file_bytes`] is a pure read and does not call it. Unknown
+    /// ids are [`StoreError::NotFound`].
+    async fn record_download(&self, id: &str) -> Result<()>;
+
     // -- trash -------------------------------------------------------------
 
     /// Everything the person trashed and has not purged: folders and files
@@ -459,7 +471,9 @@ pub trait Store: 'static + Send + Sync {
     /// Restores a trashed folder and everything under it that it took with
     /// it — descendants wearing the folder's own trash timestamp. Anything
     /// trashed individually before the folder keeps its earlier moment and
-    /// stays trashed. Same refusals as [`Store::restore_file`].
+    /// stays trashed. Refused with [`StoreError::AncestorTrashed`] while any
+    /// ancestor folder is still trashed; a live sibling wearing the name is
+    /// no refusal — folder names may repeat.
     async fn restore_folder(&self, id: &str) -> Result<()>;
 
     /// Purges one trashed file for good: the row goes and the bytes and
@@ -610,6 +624,16 @@ pub trait Store: 'static + Send + Sync {
     /// Aborts every active session past `expires_at` and deletes its chunks.
     /// The boot sweep calls this with now; a janitor may call it any time.
     async fn prune_expired_uploads(&self, now: OffsetDateTime) -> Result<u64>;
+
+    // -- instance settings -------------------------------------------------
+
+    /// One instance-level setting, by key. `None` when the key was never
+    /// set — the caller owns the default, not the row.
+    async fn get_setting(&self, key: &str) -> Result<Option<String>>;
+
+    /// Writes one instance-level setting, creating or replacing the row.
+    /// Keys are free-form; the web layer is the only writer today.
+    async fn set_setting(&self, key: &str, value: &str) -> Result<()>;
 
     // -- search ------------------------------------------------------------
 
