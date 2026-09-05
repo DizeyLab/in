@@ -197,7 +197,7 @@ pub async fn dropdown_script(cx: &Cx) -> Result {
                 select.__ddPanel = panel;\
                 var allOpts = opts(select);\
                 var search = null;\
-                if (allOpts.length > 7 || select.hasAttribute('data-search')) {\
+                if ((allOpts.length > 7 && !select.hasAttribute('data-nosearch')) || select.hasAttribute('data-search')) {\
                     search = document.createElement('input');\
                     search.type = 'text';\
                     search.className = 'dd-search';\

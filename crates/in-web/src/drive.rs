@@ -61,7 +61,7 @@ struct DriveQuery {
     q: Option<String>,
     edit: Option<String>,
     sort: Option<String>,
-    dir: Option<String>,
+    share: Option<String>,
     kind: Option<String>,
 }
 
@@ -222,25 +222,30 @@ impl KindFilter {
     }
 }
 
-fn parse_sort(raw: Option<&str>) -> Option<SortKey> {
-    match raw.unwrap_or("") {
-        "name" => Some(SortKey::Name),
-        "uploaded" => Some(SortKey::Uploaded),
-        "size" => Some(SortKey::Size),
-        "downloads" => Some(SortKey::Downloads),
-        _ => None,
-    }
-}
-
-fn parse_dir(raw: Option<&str>, key: Option<SortKey>) -> SortDir {
-    match raw.unwrap_or("") {
+/// The sort off the query: `key:direction` in one value ("size:desc"), the
+/// way the dropdown's options name it. A bare key reads with its natural
+/// direction (names ascend, measures descend); anything else is no sort.
+fn parse_sort(raw: Option<&str>) -> Option<(SortKey, SortDir)> {
+    let (key, dir) = raw
+        .unwrap_or("")
+        .split_once(':')
+        .unwrap_or((raw.unwrap_or(""), ""));
+    let key = match key {
+        "name" => SortKey::Name,
+        "uploaded" => SortKey::Uploaded,
+        "size" => SortKey::Size,
+        "downloads" => SortKey::Downloads,
+        _ => return None,
+    };
+    let dir = match dir {
         "asc" => SortDir::Asc,
         "desc" => SortDir::Desc,
         _ => match key {
-            Some(SortKey::Name) | None => SortDir::Asc,
+            SortKey::Name => SortDir::Asc,
             _ => SortDir::Desc,
         },
-    }
+    };
+    Some((key, dir))
 }
 
 fn parse_kind(raw: Option<&str>) -> KindFilter {
@@ -318,13 +323,9 @@ async fn drive(cx: &Cx) -> Result {
     // standing order (folders-then-files as listed), ascending names, and
     // the unfiltered kind — a hand-edited query re-orders nothing, it
     // never refuses.
-    let sort_key = params
+    let sorting = params
         .as_ref()
         .and_then(|query| parse_sort(query.sort.as_deref()));
-    let sort_dir = parse_dir(
-        params.as_ref().and_then(|query| query.dir.as_deref()),
-        sort_key,
-    );
     let kind = params
         .as_ref()
         .map(|query| parse_kind(query.kind.as_deref()))
@@ -345,9 +346,9 @@ async fn drive(cx: &Cx) -> Result {
     };
     // Sort and filter in the page layer, after the fetch — no store API
     // change. Each group keeps its own order; folders-then-files stands.
-    if let Some(key) = sort_key {
-        sort_folders(&mut listing.folders, key, sort_dir);
-        sort_files(&mut listing.files, key, sort_dir);
+    if let Some((key, dir)) = sorting {
+        sort_folders(&mut listing.folders, key, dir);
+        sort_files(&mut listing.files, key, dir);
     }
     match kind {
         KindFilter::All => {}
@@ -355,9 +356,9 @@ async fn drive(cx: &Cx) -> Result {
         KindFilter::Files => listing.folders.clear(),
     }
     if let Some(found) = hits.as_mut() {
-        if let Some(key) = sort_key {
-            sort_folders(&mut found.folders, key, sort_dir);
-            sort_files(&mut found.files, key, sort_dir);
+        if let Some((key, dir)) = sorting {
+            sort_folders(&mut found.folders, key, dir);
+            sort_files(&mut found.files, key, dir);
         }
         match kind {
             KindFilter::All => {}
@@ -392,15 +393,8 @@ async fn drive(cx: &Cx) -> Result {
     if !current_id.is_empty() {
         here_bits.push(format!("folder={current_id}"));
     }
-    if let Some(key) = sort_key {
-        here_bits.push(format!("sort={}", key.as_str()));
-    }
-    if params
-        .as_ref()
-        .and_then(|query| query.dir.clone())
-        .is_some_and(|dir| dir == "asc" || dir == "desc")
-    {
-        here_bits.push(format!("dir={}", sort_dir.as_str()));
+    if let Some((key, dir)) = sorting {
+        here_bits.push(format!("sort={}:{}", key.as_str(), dir.as_str()));
     }
     if kind != KindFilter::All {
         here_bits.push(format!("kind={}", kind.as_str()));
@@ -412,14 +406,27 @@ async fn drive(cx: &Cx) -> Result {
     };
     // The edit links extend `here` with the matching separator.
     let edit_sep = if here.contains('?') { "&" } else { "?" };
-    // The direction the toggle offers: the opposite of what is showing.
-    let dir_flip = match sort_dir {
-        SortDir::Asc => "desc",
-        SortDir::Desc => "asc",
+    // The value the sort dropdown shows as selected: the parsed pair, or the
+    // visual default when the standing order is on.
+    let sort_value = sorting
+        .map(|(key, dir)| format!("{}:{}", key.as_str(), dir.as_str()))
+        .unwrap_or_else(|| "name:asc".to_string());
+    // The share dialog: `?share=kind:id` renders the entry's modal over the
+    // page (its forms come back here through Referer, so it stays open); the
+    // close link is this view without the pair. A pair that names nothing
+    // owned and live opens nothing.
+    let share_pair = params.as_ref().and_then(|query| query.share.as_deref());
+    let share_dialog = match share_pair.and_then(|pair| pair.split_once(':')) {
+        Some((kind, id)) => {
+            crate::share::share_modal(cx, kind, id, &here, created.clone(), &origin).await?
+        }
+        None => None,
     };
-    let dir_glyph = match sort_dir {
-        SortDir::Asc => "↑",
-        SortDir::Desc => "↓",
+    // The copy-once banner belongs to the modal when it is open.
+    let created_panel = if share_pair.is_some() {
+        None
+    } else {
+        created.clone()
     };
 
     view! {
@@ -451,43 +458,33 @@ async fn drive(cx: &Cx) -> Result {
                         aria-label=(t(language, Key::SearchPlaceholder))
                     >
                     <input type="hidden" name="folder" value=(current_id.clone())>
-                    if sort_key.is_some() {
-                        <input type="hidden" name="sort" value=(sort_key.map(|key| key.as_str()).unwrap_or(""))>
-                    }
-                    <input type="hidden" name="dir" value=(sort_dir.as_str())>
-                    if kind != KindFilter::All {
-                        <input type="hidden" name="kind" value=(kind.as_str())>
-                    }
+    if sorting.is_some() {
+        <input type="hidden" name="sort" value=(sort_value.clone())>
+    }
+    if kind != KindFilter::All {
+        <input type="hidden" name="kind" value=(kind.as_str())>
+    }
                 </form>
                 <div class="spacer"></div>
                 <form class="field-box field-box-sort" method="get" action="/drive">
                     <span class="field-text">(t(language, Key::Sort))</span>
-                    <select class="status-select" name="sort" data-autosubmit="" aria-label=(t(language, Key::Sort))>
-                        <option value="name" selected=(sort_key.is_none() || sort_key == Some(SortKey::Name))>(t(language, Key::SortName))</option>
-                        <option value="uploaded" selected=(sort_key == Some(SortKey::Uploaded))>(t(language, Key::SortUploaded))</option>
-                        <option value="size" selected=(sort_key == Some(SortKey::Size))>(t(language, Key::SortSize))</option>
-                        <option value="downloads" selected=(sort_key == Some(SortKey::Downloads))>(t(language, Key::SortDownloads))</option>
-                    </select>
-                    <input type="hidden" name="folder" value=(current_id.clone())>
-                    <input type="hidden" name="q" value=(box_text.clone())>
-                    <input type="hidden" name="dir" value=(sort_dir.as_str())>
-                    if kind != KindFilter::All {
-                        <input type="hidden" name="kind" value=(kind.as_str())>
-                    }
-                    <button class="quiet" type="submit" aria-label=(t(language, Key::Sort))>"→"</button>
-                </form>
-                <form class="field-box field-box-sort" method="get" action="/drive">
-                    <input type="hidden" name="folder" value=(current_id.clone())>
-                    <input type="hidden" name="q" value=(box_text.clone())>
-                    if sort_key.is_some() {
-                        <input type="hidden" name="sort" value=(sort_key.map(|key| key.as_str()).unwrap_or(""))>
-                    }
-                    <input type="hidden" name="dir" value=(dir_flip)>
-                    if kind != KindFilter::All {
-                        <input type="hidden" name="kind" value=(kind.as_str())>
-                    }
-                    <button class="quiet" type="submit" aria-label=(t(language, Key::Sort))>(dir_glyph)</button>
-                </form>
+    <select class="status-select" name="sort" data-autosubmit="" data-nosearch="" aria-label=(t(language, Key::Sort))>
+        <option value="name:asc" selected=(sort_value == "name:asc")>(t(language, Key::SortNameAZ))</option>
+        <option value="name:desc" selected=(sort_value == "name:desc")>(t(language, Key::SortNameZA))</option>
+        <option value="uploaded:desc" selected=(sort_value == "uploaded:desc")>(t(language, Key::SortNewest))</option>
+        <option value="uploaded:asc" selected=(sort_value == "uploaded:asc")>(t(language, Key::SortOldest))</option>
+        <option value="size:desc" selected=(sort_value == "size:desc")>(t(language, Key::SortLargest))</option>
+        <option value="size:asc" selected=(sort_value == "size:asc")>(t(language, Key::SortSmallest))</option>
+        <option value="downloads:desc" selected=(sort_value == "downloads:desc")>(t(language, Key::SortMostDownloads))</option>
+        <option value="downloads:asc" selected=(sort_value == "downloads:asc")>(t(language, Key::SortLeastDownloads))</option>
+    </select>
+    <input type="hidden" name="folder" value=(current_id.clone())>
+    <input type="hidden" name="q" value=(box_text.clone())>
+    if kind != KindFilter::All {
+        <input type="hidden" name="kind" value=(kind.as_str())>
+    }
+    <button class="quiet" type="submit" aria-label=(t(language, Key::Sort))>"→"</button>
+    </form>
                 <form class="field-box field-box-sort" method="get" action="/drive">
                     <span class="field-text">(t(language, Key::Kind))</span>
                     <select class="status-select" name="kind" data-autosubmit="" aria-label=(t(language, Key::Kind))>
@@ -497,10 +494,9 @@ async fn drive(cx: &Cx) -> Result {
                     </select>
                     <input type="hidden" name="folder" value=(current_id.clone())>
                     <input type="hidden" name="q" value=(box_text.clone())>
-                    if sort_key.is_some() {
-                        <input type="hidden" name="sort" value=(sort_key.map(|key| key.as_str()).unwrap_or(""))>
+                    if sorting.is_some() {
+                        <input type="hidden" name="sort" value=(sort_value.clone())>
                     }
-                    <input type="hidden" name="dir" value=(sort_dir.as_str())>
                     <button class="quiet" type="submit" aria-label=(t(language, Key::Kind))>"→"</button>
                 </form>
                 <details class="user-menu drive-add">
@@ -517,7 +513,7 @@ async fn drive(cx: &Cx) -> Result {
             if let Some(refusal) = refusal {
                 <p class="field-error">(refusal.message_in(language))</p>
             }
-            if let Some(token) = created {
+    if let Some(token) = created_panel {
                 <section class="panel">
                     <h2 class="panel-title">(t(language, Key::LinkCreated))</h2>
                     <div class="panel-body">
@@ -596,7 +592,7 @@ async fn drive(cx: &Cx) -> Result {
                                     <a class="user-menu-item"
                                         href=(format!("{here}{edit_sep}edit={}", folder.id))>(t(language, Key::Rename))</a>
                                     <a class="user-menu-item"
-                                        href=(format!("/share/folder/{}", folder.id))>(t(language, Key::Share))</a>
+                                        href=(format!("{here}{edit_sep}share=folder:{}", folder.id))>(t(language, Key::Share))</a>
                                     <form class="user-menu-item-form" method="post" action="/api/folder/move">
                                         <input type="hidden" name="id" value=(folder.id.clone())>
                                         <div class="user-menu-item-move">
@@ -647,7 +643,7 @@ async fn drive(cx: &Cx) -> Result {
                                     <a class="user-menu-item"
                                         href=(format!("{here}{edit_sep}edit={}", file.id))>(t(language, Key::Rename))</a>
                                     <a class="user-menu-item"
-                                        href=(format!("/share/file/{}", file.id))>(t(language, Key::Share))</a>
+                                        href=(format!("{here}{edit_sep}share=file:{}", file.id))>(t(language, Key::Share))</a>
                                     <form class="user-menu-item-form" method="post" action="/api/file/move">
                                         <input type="hidden" name="id" value=(file.id.clone())>
                                         <div class="user-menu-item-move">
@@ -673,6 +669,9 @@ async fn drive(cx: &Cx) -> Result {
             </section>
             }
         </main>
+        if let Some(dialog) = share_dialog {
+            (dialog)
+        }
         (crate::dropdown::dropdown_script(cx).await?)
         (upload_script(cx).await?)
         (options_menu_script(cx).await?)
@@ -1107,6 +1106,11 @@ async fn options_menu_script(cx: &Cx) -> Result {
                     var above = anchor.top - roomTop - 4; \
                     var below = roomBottom - anchor.bottom - 4; \
                     if (above >= down.height || above > below) { details.classList.add('menu-up'); } \
+                    /* Never taller than the room on the chosen side: without \
+                       the cap a drop-up reaches over the topbar. */ \
+                    var up = details.classList.contains('menu-up'); \
+                    panel.style.maxHeight = Math.max(96, (up ? above : below) - 4) + 'px'; \
+                    panel.style.overflowY = 'auto'; \
                     var r = panel.getBoundingClientRect(); \
                     if (r.top < roomTop && r.bottom > roomBottom) { panel.scrollIntoView({ block: 'nearest' }); } \
                 }); \
@@ -1128,9 +1132,6 @@ struct CreateFolderForm {
 
 /// `POST /api/folder/create`: one folder under the open one, or the root.
 ///
-/// A form with no name is the + menu's quick create: a generic unique name
-/// (`New folder`, `New folder 2`, …) and a 303 straight into that row's
-/// rename form. A typed name keeps the old answer — back to the page.
 #[route(POST "/api/folder/create")]
 async fn create_folder(cx: &Cx, Form(input): Form<CreateFolderForm>) -> Redirect {
     let user = match require_user(cx).await {

@@ -128,7 +128,11 @@ async fn set_quota(cx: &Cx, Form(input): Form<QuotaForm>) -> Redirect {
         return redirect_back(cx, "quota", Some(refusal));
     }
     match unit_bytes(&input.quota, &input.quota_unit) {
-        Some(quota_bytes) => match app(cx).store.set_user_quota(&input.user_id, quota_bytes).await {
+        Some(quota_bytes) => match app(cx)
+            .store
+            .set_user_quota(&input.user_id, quota_bytes)
+            .await
+        {
             Ok(()) => redirect_back(cx, "quota", None),
             Err(error) => redirect_back(cx, "quota", Some(refusal_of(error))),
         },
@@ -158,10 +162,7 @@ async fn set_upload_limit(cx: &Cx, Form(input): Form<UploadLimitForm>) -> Redire
     match unit_bytes(&input.max_upload, &input.max_upload_unit) {
         Some(bytes) if bytes > 0 => match app(cx)
             .store
-            .set_setting(
-                crate::server::MAX_UPLOAD_SETTING,
-                &bytes.to_string(),
-            )
+            .set_setting(crate::server::MAX_UPLOAD_SETTING, &bytes.to_string())
             .await
         {
             Ok(()) => redirect_back(cx, "upload-limit", None),
@@ -271,13 +272,8 @@ async fn settings(cx: &Cx) -> Result {
     let language = lang(cx).await;
     let store = app(cx).store;
     // Re-read the row so the quota bar never shows a stale number.
-    let fresh = store
-        .user(&user.id)
-        .await?
-        .unwrap_or_else(|| user.clone());
-    let links = store
-        .share_links(&user.id)
-        .await?;
+    let fresh = store.user(&user.id).await?.unwrap_or_else(|| user.clone());
+    let links = store.share_links(&user.id).await?;
     let live_links: Vec<_> = links
         .iter()
         .filter(|link| link.revoked_at.is_none())
@@ -290,8 +286,18 @@ async fn settings(cx: &Cx) -> Result {
     let mut link_names: Vec<(&in_core::store::ShareLink, String)> = Vec::new();
     for link in &live_links {
         let name = match link.kind {
-            ShareKind::File => store.file(&link.target_id).await.ok().flatten().map(|file| file.name),
-            ShareKind::Folder => store.folder(&link.target_id).await.ok().flatten().map(|folder| folder.name),
+            ShareKind::File => store
+                .file(&link.target_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|file| file.name),
+            ShareKind::Folder => store
+                .folder(&link.target_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|folder| folder.name),
         }
         .unwrap_or_else(|| link.target_id.clone());
         link_names.push((*link, name));
@@ -403,7 +409,6 @@ async fn settings(cx: &Cx) -> Result {
                             <h2 class="panel-title">(t(language, Key::AdminPanel))</h2>
                         </div>
                         <div class="panel-body">
-                            <p class="field-note">(t(language, Key::EveryoneSubtitle))</p>
                             <div class="table-pan">
                                 <table class="member-table">
                                     <thead>
@@ -458,19 +463,18 @@ async fn settings(cx: &Cx) -> Result {
                                     </tbody>
                                 </table>
                             </div>
-                            if let Some(limit) = upload_limit {
-                                <p class="field-note">(t(language, Key::UploadLimitSection))</p>
-                                <p class="field-note">(t(language, Key::UploadLimitHelp))</p>
-                                <form class="pop-row-form" method="post" action="/api/settings/upload-limit">
-                                    <span class="field-note">(format!("{}: {}", t(language, Key::CurrentUploadLimit), human_bytes(limit)))</span>
-                                    <input class="field-input" type="number" name="max_upload" min="0" step="any" value=(bytes_as_unit(limit).0) aria-label=(t(language, Key::MaxUploadBytes))>
-                                    <select class="field-input" name="max_upload_unit" aria-label=(t(language, Key::MaxUploadBytes))>
-                                        <option value="MiB" selected=(bytes_as_unit(limit).1 == "MiB")>"MiB"</option>
-                                        <option value="GiB" selected=(bytes_as_unit(limit).1 == "GiB")>"GiB"</option>
-                                    </select>
-                                    <button class="quiet" type="submit">(t(language, Key::Save))</button>
-                                </form>
-                            }
+    if let Some(limit) = upload_limit {
+        <form class="pop-row-form member-quota" method="post" action="/api/settings/upload-limit">
+            <span class="field-note">(t(language, Key::UploadLimitSection))</span>
+            <span class="field-note">(format!("{}: {}", t(language, Key::CurrentUploadLimit), human_bytes(limit)))</span>
+            <input class="field-input" type="number" name="max_upload" min="0" step="any" value=(bytes_as_unit(limit).0) aria-label=(t(language, Key::MaxUploadBytes))>
+            <select class="field-input" name="max_upload_unit" aria-label=(t(language, Key::MaxUploadBytes))>
+                <option value="MiB" selected=(bytes_as_unit(limit).1 == "MiB")>"MiB"</option>
+                <option value="GiB" selected=(bytes_as_unit(limit).1 == "GiB")>"GiB"</option>
+            </select>
+            <button class="quiet" type="submit">(t(language, Key::Save))</button>
+        </form>
+    }
                         </div>
                     </section>
                 }

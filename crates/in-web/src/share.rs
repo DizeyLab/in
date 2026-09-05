@@ -22,15 +22,16 @@ use serde::Deserialize;
 use time::OffsetDateTime;
 use topcoat::Result;
 use topcoat::context::Cx;
-use topcoat::router::error::not_found as page_not_found;
 use topcoat::router::content::Form;
 use topcoat::router::request::{headers as request_headers, uri};
 use topcoat::router::response::IntoResponse;
-use topcoat::router::{HeaderName, HeaderValue, StatusCode, header, page, path_param, query_params, route};
+use topcoat::router::{
+    HeaderName, StatusCode, header, page, path_param, query_params, route,
+};
 use topcoat::view::view;
 
-use crate::i18n::{Key, Lang, lang, t};
 use crate::files::entry_chip;
+use crate::i18n::{Key, Lang, lang, t};
 use crate::layout::{NavPage, topbar, wordmark};
 use crate::server::{Refusal, app, back_to, require_user};
 
@@ -155,7 +156,11 @@ async fn owned_target(
             .map_err(|_| Refusal::Unavailable)?
             .is_some_and(|folder| folder.owner_id == user.id && folder.deleted_at.is_none()),
     };
-    if owned { Ok(()) } else { Err(Refusal::NotFound) }
+    if owned {
+        Ok(())
+    } else {
+        Err(Refusal::NotFound)
+    }
 }
 /// The target the caller owns, trashed or not: unsharing a trashed target
 /// still revokes the grant, and the grant row outlives the trash either way.
@@ -178,7 +183,11 @@ async fn owned_target_for_unshare(
             .map_err(|_| Refusal::Unavailable)?
             .is_some_and(|folder| folder.owner_id == user.id),
     };
-    if owned { Ok(()) } else { Err(Refusal::NotFound) }
+    if owned {
+        Ok(())
+    } else {
+        Err(Refusal::NotFound)
+    }
 }
 
 #[derive(Deserialize)]
@@ -349,7 +358,8 @@ async fn remove_share(cx: &Cx, Form(input): Form<ShareUserForm>) -> Redirect {
     let Some(kind) = parse_kind(&input.kind) else {
         return redirect_back(cx, "/settings", "remove", Some(Refusal::NotFound));
     };
-    if let Err(refusal) = owned_target_for_unshare(app(cx).store.as_ref(), &user, kind, &input.target_id).await
+    if let Err(refusal) =
+        owned_target_for_unshare(app(cx).store.as_ref(), &user, kind, &input.target_id).await
     {
         return redirect_back(cx, "/settings", "remove", Some(refusal));
     }
@@ -445,7 +455,15 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
                 return dead_link(cx).await.into_response(cx);
             }
             if query.dl {
-                return download_bytes(cx, store.as_ref(), &file.id, &file.name, &file.mime, link.can_download).await;
+                return download_bytes(
+                    cx,
+                    store.as_ref(),
+                    &file.id,
+                    &file.name,
+                    &file.mime,
+                    link.can_download,
+                )
+                .await;
             }
             if query.thumb {
                 return public_thumb(cx, store.as_ref(), &file.id).await;
@@ -471,10 +489,7 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
                 let Some(file_id) = query.file.as_deref() else {
                     return dead_link(cx).await.into_response(cx);
                 };
-                let file = store
-                    .file(file_id)
-                    .await
-                    .map_err(|_| Refusal::Unavailable);
+                let file = store.file(file_id).await.map_err(|_| Refusal::Unavailable);
                 let Ok(Some(file)) = file else {
                     return dead_link(cx).await.into_response(cx);
                 };
@@ -484,16 +499,21 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
                 {
                     return dead_link(cx).await.into_response(cx);
                 }
-                return download_bytes(cx, store.as_ref(), &file.id, &file.name, &file.mime, link.can_download).await;
+                return download_bytes(
+                    cx,
+                    store.as_ref(),
+                    &file.id,
+                    &file.name,
+                    &file.mime,
+                    link.can_download,
+                )
+                .await;
             }
             if query.thumb {
                 let Some(file_id) = query.file.as_deref() else {
                     return dead_link(cx).await.into_response(cx);
                 };
-                let file = store
-                    .file(file_id)
-                    .await
-                    .map_err(|_| Refusal::Unavailable);
+                let file = store.file(file_id).await.map_err(|_| Refusal::Unavailable);
                 let Ok(Some(file)) = file else {
                     return dead_link(cx).await.into_response(cx);
                 };
@@ -601,10 +621,7 @@ async fn public_thumb(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=31536000, immutable"),
     );
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("image/webp"),
-    );
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/webp"));
     let if_none_match = request_headers(cx)
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok());
@@ -715,15 +732,11 @@ async fn folder_card(
     token: &str,
 ) -> topcoat::Result<topcoat::router::response::Response> {
     let language = lang(cx).await;
-    let here = store
-        .folder(at)
-        .await?;
+    let here = store.folder(at).await?;
     let Some(here) = here else {
         return dead_link(cx).await.into_response(cx);
     };
-    let listing = store
-        .list_children(&root.owner_id, Some(at))
-        .await?;
+    let listing = store.list_children(&root.owner_id, Some(at)).await?;
     let base = format!("/s/{token}");
     let mut rows: Vec<PublicEntry> = Vec::new();
     rows.extend(listing.folders.iter().map(PublicEntry::Folder));
@@ -769,7 +782,11 @@ async fn folder_card(
 /// cards render point back at the same token.
 fn current_path(cx: &Cx) -> String {
     let path = uri(cx).path();
-    if path.is_empty() { "/".to_string() } else { path.to_string() }
+    if path.is_empty() {
+        "/".to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 #[query_params]
@@ -779,16 +796,27 @@ struct SharedPageQuery {
     q: Option<String>,
 }
 
-/// The shared list's sort, off the query: name, uploaded, size or owner.
-/// Anything else is the default — by name.
-fn valid_shared_sort(raw: Option<&str>) -> &'static str {
-    match raw {
-        Some("name") => "name",
-        Some("uploaded") => "uploaded",
-        Some("size") => "size",
-        Some("owner") => "owner",
+/// The shared list's sort, off the query as `key:direction` ("owner:desc"):
+/// name, uploaded, size or owner; name and owner ascend by default, the
+/// measures descend. Anything else is the default — by name.
+fn valid_shared_sort(raw: Option<&str>) -> (&'static str, bool) {
+    let (key, dir) = raw
+        .unwrap_or("")
+        .split_once(':')
+        .unwrap_or((raw.unwrap_or(""), ""));
+    let key = match key {
+        "name" => "name",
+        "uploaded" => "uploaded",
+        "size" => "size",
+        "owner" => "owner",
         _ => "name",
-    }
+    };
+    let descending = match dir {
+        "asc" => false,
+        "desc" => true,
+        _ => matches!(key, "uploaded" | "size"),
+    };
+    (key, descending)
 }
 
 /// The kind filter, off the query: all, folders or files. Anything else
@@ -878,9 +906,7 @@ async fn shared(cx: &Cx) -> Result {
         .filter(|query| !query.is_empty());
     let box_text = asked.clone().unwrap_or_default();
     let store = app(cx).store;
-    let items = store
-        .shares_for_user(&user.id)
-        .await?;
+    let items = store.shares_for_user(&user.id).await?;
     let mut owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for item in &items {
         if !owners.contains_key(&item.owner_id) {
@@ -939,31 +965,32 @@ async fn shared(cx: &Cx) -> Result {
         });
     }
     let nothing_shared = rows.is_empty() && asked.is_none() && kind == "all";
-    match sort {
-        "uploaded" => rows.sort_by(|a, b| {
-            b.uploaded
-                .cmp(&a.uploaded)
-                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase()))
-        }),
-        "size" => rows.sort_by(|a, b| {
-            b.size()
-                .cmp(&a.size())
-                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase()))
-        }),
-        "owner" => rows.sort_by(|a, b| {
-            a.owner_name
+    let (sort, descending) = sort;
+    rows.sort_by(|a, b| {
+        let order = match sort {
+            "uploaded" => a
+                .uploaded
+                .cmp(&b.uploaded)
+                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase())),
+            "size" => a
+                .size()
+                .cmp(&b.size())
+                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase())),
+            "owner" => a
+                .owner_name
                 .to_lowercase()
                 .cmp(&b.owner_name.to_lowercase())
-                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase()))
-        }),
-        _ => rows.sort_by(|a, b| {
-            a.item
+                .then_with(|| a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase())),
+            _ => a
+                .item
                 .name
                 .to_lowercase()
                 .cmp(&b.item.name.to_lowercase())
-                .then_with(|| a.item.target_id.cmp(&b.item.target_id))
-        }),
-    }
+                .then_with(|| a.item.target_id.cmp(&b.item.target_id)),
+        };
+        if descending { order.reverse() } else { order }
+    });
+    let sort_value = format!("{}:{}", sort, if descending { "desc" } else { "asc" });
     view! {
         cx =>
         (topbar(cx, NavPage::Shared, &user, language).await?)
@@ -972,11 +999,15 @@ async fn shared(cx: &Cx) -> Result {
             <div class="filterbar">
                 <form class="field-box field-box-sort" method="get" action="/shared">
                     <span class="field-text">(t(language, Key::Sort))</span>
-                    <select class="status-select" name="sort" data-autosubmit="" aria-label=(t(language, Key::Sort))>
-                        <option value="name" selected=(sort == "name")>(t(language, Key::SortName))</option>
-                        <option value="uploaded" selected=(sort == "uploaded")>(t(language, Key::SortUploaded))</option>
-                        <option value="size" selected=(sort == "size")>(t(language, Key::SortSize))</option>
-                        <option value="owner" selected=(sort == "owner")>(t(language, Key::SortOwner))</option>
+                    <select class="status-select" name="sort" data-autosubmit="" data-nosearch="" aria-label=(t(language, Key::Sort))>
+                        <option value="name:asc" selected=(sort_value == "name:asc")>(t(language, Key::SortNameAZ))</option>
+                        <option value="name:desc" selected=(sort_value == "name:desc")>(t(language, Key::SortNameZA))</option>
+                        <option value="uploaded:desc" selected=(sort_value == "uploaded:desc")>(t(language, Key::SortNewest))</option>
+                        <option value="uploaded:asc" selected=(sort_value == "uploaded:asc")>(t(language, Key::SortOldest))</option>
+                        <option value="size:desc" selected=(sort_value == "size:desc")>(t(language, Key::SortLargest))</option>
+                        <option value="size:asc" selected=(sort_value == "size:asc")>(t(language, Key::SortSmallest))</option>
+                        <option value="owner:asc" selected=(sort_value == "owner:asc")>(t(language, Key::SortOwnerAZ))</option>
+                        <option value="owner:desc" selected=(sort_value == "owner:desc")>(t(language, Key::SortOwnerZA))</option>
                     </select>
                     <input type="hidden" name="kind" value=(kind.to_string())>
                     <input type="hidden" name="q" value=(box_text.clone())>
@@ -1037,6 +1068,7 @@ async fn shared(cx: &Cx) -> Result {
                 </div>
             </section>
         </main>
+        (crate::dropdown::dropdown_script(cx).await?)
     }
 }
 
@@ -1049,74 +1081,64 @@ fn access_chip(language: Lang, can_download: bool) -> &'static str {
     }
 }
 
-/// `GET /share/{kind}/{id}`: one entry's share surface — the page the drive
-/// row's Share item links to. Owner only: a signed-out reader goes back to
-/// the landing, and anyone else — a stranger, or a missing or trashed target
-/// — answers not-found, the way the other owner surfaces do.
+/// The share modal: the drive row's Share item links to `?share=kind:id`
+/// and the drive page renders this over itself — the Proton-style dialog
+/// (add-people row, who-has-access list, public-link section), not a
+/// separate page. `None` when the target is missing, trashed, or not the
+/// reader's — a hand-edited `?share=` pair simply opens nothing.
 ///
-/// The public-link panel twins the settings page's shape: the live links for
-/// this target with their expiry line, access chip and revoke form — or, when
-/// none is live, the create form. The token's copy-once banner renders off
-/// the create redirect's `?created=` pair, which lands back here through the
-/// posting form's `Referer`, so no handler change was needed. The people
-/// panel lists this target's grants with remove forms, plus the add form.
-#[page("/share/{kind}/{id}")]
-async fn share_entry(cx: &Cx) -> Result {
-    let kind_raw: &str = path_param::<Kind>(cx);
-    let target_id: &str = path_param::<Id>(cx);
+/// Every form inside posts to the existing share routes and comes back
+/// through `Referer`, so the modal survives them; the minted token's
+/// copy-once banner rides the `?created=` pair into the modal itself.
+pub(crate) async fn share_modal(
+    cx: &Cx,
+    kind_raw: &str,
+    target_id: &str,
+    close_href: &str,
+    created: Option<String>,
+    origin: &str,
+) -> Result<Option<topcoat::view::View>> {
     let Some(kind) = parse_kind(kind_raw) else {
-        return Err(page_not_found().into());
+        return Ok(None);
     };
     let user = match require_user(cx).await {
         Ok(user) => user,
-        Err(_) => {
-            let location = (header::LOCATION, HeaderValue::from_static("/"));
-            return view! {
-                cx =>
-                (StatusCode::SEE_OTHER)
-                (location)
-            };
-        }
+        Err(_) => return Ok(None),
     };
     let language = lang(cx).await;
     let store = app(cx).store.clone();
     // The owned, live target: present, untrashed, and theirs. Anything else
-    // is not-found — a stranger learns nothing about whose it is.
+    // opens nothing — a stranger learns not even whose it is.
     let (name, file): (String, Option<File>) = match kind {
         ShareKind::File => {
             let Some(file) = store.file(target_id).await? else {
-                return Err(page_not_found().into());
+                return Ok(None);
             };
             if file.owner_id != user.id || file.deleted_at.is_some() {
-                return Err(page_not_found().into());
+                return Ok(None);
             }
             (file.name.clone(), Some(file))
         }
         ShareKind::Folder => {
             let Some(folder) = store.folder(target_id).await? else {
-                return Err(page_not_found().into());
+                return Ok(None);
             };
             if folder.owner_id != user.id || folder.deleted_at.is_some() {
-                return Err(page_not_found().into());
+                return Ok(None);
             }
             (folder.name.clone(), None)
         }
     };
-    // The live links for this target alone, newest first — the settings page
-    // lists every link; this page owns just its entry's.
     let links = store.share_links(&user.id).await?;
     let live: Vec<_> = links
         .iter()
-        .filter(|link| link.kind == kind && link.target_id == target_id && link.revoked_at.is_none())
+        .filter(|link| {
+            link.kind == kind && link.target_id == target_id && link.revoked_at.is_none()
+        })
         .collect();
-    // The grants on this target. The ownership read above already vetted the
-    // caller, so a refusal here is only ever the target going missing
-    // mid-page — still not-found, never a leak.
     let grants = match store.shares_for_target(&user.id, kind, target_id).await {
         Ok(grants) => grants,
-        Err(StoreError::NotFound) | Err(StoreError::CrossOwner) => {
-            return Err(page_not_found().into());
-        }
+        Err(StoreError::NotFound) | Err(StoreError::CrossOwner) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let mut people: Vec<(String, String, bool)> = Vec::new();
@@ -1125,116 +1147,123 @@ async fn share_entry(cx: &Cx) -> Result {
             people.push((grantee.display_name, grantee.email, grant.can_download));
         }
     }
-    let created = created_token(uri(cx).query().unwrap_or(""));
-    let origin = app(cx).config.listen_url();
-    view! {
+    let refusal = query_value(uri(cx).query().unwrap_or(""), "refusal").and_then(|code| Refusal::from_code(&code));
+    Ok(Some(view! {
         cx =>
-        (topbar(cx, NavPage::Drive, &user, language).await?)
-        <main class="settings-stage stage-wide">
-            <div class="viewer-head">
-                <a class="quiet" href="/drive">(t(language, Key::BackToDrive))</a>
-            </div>
-            <h1 class="settings-title viewer-title">
-                if kind == ShareKind::Folder {
-                    <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
-                }
-                if let Some(file) = file.as_ref() {
-                    (entry_chip(cx, file).await?)
-                }
-                (name.clone())
-            </h1>
-            <p class="field-note">(kind.as_str())</p>
-            (refusal_banner(cx, language, &["create", "revoke", "add", "remove"]).await?)
-            if let Some(token) = created {
-                <section class="panel">
-                    <div class="panel-head">
-                        <h2 class="panel-title">(t(language, Key::LinkCreated))</h2>
-                    </div>
-                    <div class="panel-body">
-                        <p class="field-note">(t(language, Key::CopyLinkOnce))</p>
-                        <p class="member-link-value">(format!("{origin}/s/{token}"))</p>
-                    </div>
-                </section>
-            }
-            <section class="panel">
-                <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::ShareLink))</h2>
+        <div class="modal-scrim">
+            <div class="modal share-modal">
+                <div class="viewer-head">
+                    <h2 class="settings-title share-modal-title">
+                        if kind == ShareKind::Folder {
+                            <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                        }
+                        if let Some(file) = file.as_ref() {
+                            (entry_chip(cx, file).await?)
+                        }
+                        (format!("{} “{}”", t(language, Key::Share), name.clone()))
+                    </h2>
+                    <div class="spacer"></div>
+                    <a class="quiet" href=(close_href.to_string()) aria-label=(t(language, Key::Close))>(t(language, Key::Close))</a>
                 </div>
-                <div class="panel-body">
-                    if live.is_empty() {
-                        <form class="pop-row-form" method="post" action="/api/share/link/create">
+                if let Some(refusal) = refusal {
+                    <p class="field-error share-modal-note">(refusal.message_in(language))</p>
+                }
+                if let Some(token) = created {
+                    <p class="field-note share-modal-note">(t(language, Key::CopyLinkOnce))</p>
+                    <div class="share-link-row">
+                        <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/{token}")) aria-label=(t(language, Key::ShareLink))>
+                        <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
+                    </div>
+                }
+                <form class="pop-row-form share-add" method="post" action="/api/share/user/add">
+                    <input type="hidden" name="kind" value=(kind.as_str())>
+                    <input type="hidden" name="target_id" value=(target_id.to_string())>
+                    <input class="field-input share-add-email" type="email" name="email" required="" placeholder=(t(language, Key::SharePlaceholder)) aria-label=(t(language, Key::EmailAddress))>
+                    <select class="field-input" name="can_download" aria-label=(t(language, Key::CanDownload))>
+                        <option value="1">(t(language, Key::CanDownload))</option>
+                        <option value="0">(t(language, Key::ViewOnly))</option>
+                    </select>
+                    <button class="quiet" type="submit">(t(language, Key::Share))</button>
+                </form>
+                <p class="share-section">(t(language, Key::WhoHasAccess))</p>
+                <div class="member-row share-owner">
+                    <span class="member-name">(format!("{} {}", user.display_name.clone(), t(language, Key::YouSuffix)))</span>
+                    <span class="field-note">(user.email.clone())</span>
+                    <div class="spacer"></div>
+                    <span class="field-note">(t(language, Key::OwnerRole))</span>
+                </div>
+                for person in &people {
+                    <div class="member-row">
+                        <span class="member-name">(person.0.clone())</span>
+                        <span class="field-note">(person.1.clone())</span>
+                        <div class="spacer"></div>
+                        <span class="field-note">(access_chip(language, person.2))</span>
+                        <form class="pop-row-form" method="post" action="/api/share/user/remove">
                             <input type="hidden" name="kind" value=(kind.as_str())>
                             <input type="hidden" name="target_id" value=(target_id.to_string())>
-                            <label class="field">
-                                <input type="checkbox" name="can_download" value="1" checked="">
-                                <span class="field-label">(t(language, Key::CanDownload))</span>
-                            </label>
-                            <label class="field">
-                                <span class="field-label">(t(language, Key::ExpiresInDays))</span>
-                                <input class="field-input" type="number" name="expires_in_days" min="1" step="1">
-                            </label>
-                            <button type="submit">(t(language, Key::CreateLink))</button>
+                            <input type="hidden" name="email" value=(person.1.clone())>
+                            <button class="quiet" type="submit">(t(language, Key::RemoveAccess))</button>
                         </form>
-                    }
-                    for link in live {
-                        <div class="member-row">
-                            <span class="member-name">(format!("{} · {}", link.kind.as_str(), name.clone()))</span>
-                            <span class="field-note">(expiry_line(language, link.expires_at))</span>
-                            <span class="field-note">(access_chip(language, link.can_download))</span>
-                            <form class="pop-row-form" method="post" action="/api/share/link/revoke">
-                                <input type="hidden" name="id" value=(link.id.clone())>
-                                <button type="submit">(t(language, Key::RevokeLink))</button>
-                            </form>
-                        </div>
-                    }
-                </div>
-            </section>
-            <section class="panel">
-                <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::SharedWith))</h2>
-                </div>
-                <div class="panel-body">
-                    if people.is_empty() {
-                        <p class="field-note">(t(language, Key::NoShares))</p>
-                    }
-                    for person in &people {
-                        <div class="member-row">
-                            <span class="member-name">(person.0.clone())</span>
-                            <span class="field-note">(person.1.clone())</span>
-                            <span class="field-note">(access_chip(language, person.2))</span>
-                            <form class="pop-row-form" method="post" action="/api/share/user/remove">
-                                <input type="hidden" name="kind" value=(kind.as_str())>
-                                <input type="hidden" name="target_id" value=(target_id.to_string())>
-                                <input type="hidden" name="email" value=(person.1.clone())>
-                                <button type="submit">(t(language, Key::RemoveAccess))</button>
-                            </form>
-                        </div>
-                    }
-                    <form class="pop-row-form" method="post" action="/api/share/user/add">
-                        <input type="hidden" name="kind" value=(kind.as_str())>
-                        <input type="hidden" name="target_id" value=(target_id.to_string())>
-                        <input class="field-input" type="email" name="email" required="" placeholder=(t(language, Key::SharePlaceholder)) aria-label=(t(language, Key::EmailAddress))>
-                        <label class="field">
-                            <input type="checkbox" name="can_download" value="1" checked="">
-                            <span class="field-label">(t(language, Key::CanDownload))</span>
-                        </label>
-                        <button type="submit">(t(language, Key::Share))</button>
-                    </form>
-                </div>
-            </section>
-        </main>
+                    </div>
+                }
+                <p class="share-section">(t(language, Key::PublicLinkLabel))</p>
+    if live.is_empty() {
+        <form class="pop-row-form" method="post" action="/api/share/link/create">
+            <input type="hidden" name="kind" value=(kind.as_str())>
+            <input type="hidden" name="target_id" value=(target_id.to_string())>
+            <span class="field-note">(t(language, Key::NotActive))</span>
+            <div class="spacer"></div>
+            <select class="field-input" name="can_download" aria-label=(t(language, Key::CanDownload))>
+                <option value="1">(t(language, Key::CanDownload))</option>
+                <option value="0">(t(language, Key::ViewOnly))</option>
+            </select>
+            <input class="field-input share-expiry" type="number" name="expires_in_days" min="1" step="1" placeholder=(t(language, Key::ExpiresInDays)) aria-label=(t(language, Key::ExpiresInDays))>
+            <button class="quiet" type="submit">(t(language, Key::CreateLink))</button>
+        </form>
     }
+    for link in live.iter().take(1) {
+        <div class="member-row">
+            <span class="member-name">(t(language, Key::AnyoneWithLink))</span>
+            <div class="spacer"></div>
+            <span class="field-note">(expiry_line(language, link.expires_at))</span>
+            <span class="field-note">(access_chip(language, link.can_download))</span>
+        </div>
+        <div class="share-link-row">
+            <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>
+            <form class="pop-row-form" method="post" action="/api/share/link/revoke">
+                <input type="hidden" name="id" value=(link.id.clone())>
+                <button class="quiet quiet-danger" type="submit">(t(language, Key::RevokeLink))</button>
+            </form>
+        </div>
+    }
+            </div>
+        </div>
+        (share_copy_script(cx).await?)
+    }?))
 }
 
-/// The just-minted token off the redirect's `?created=` pair, if present.
-/// Twins the drive and settings pages' helper; all three render the same
-/// copy-once banner off the same pair.
-fn created_token(query: &str) -> Option<String> {
-    query.split('&').find_map(|pair| {
-        let (name, value) = pair.split_once('=')?;
-        (name == "created" && !value.is_empty()).then(|| value.to_string())
-    })
+/// The copy button's client half: one delegated listener, idempotent across
+/// the modal's re-renders (the `share-modal-copy` class marks a wired row).
+async fn share_copy_script(cx: &Cx) -> Result {
+    use topcoat::view::Unescaped;
+    const JS: &str = "\
+        (function () { \
+            if (window.__inShareCopy) { return; } \
+            window.__inShareCopy = true; \
+            document.addEventListener('click', function (e) { \
+                var b = e.target.closest ? e.target.closest('.share-copy') : null; \
+                if (!b) { return; } \
+                var u = b.parentNode.querySelector('.share-link-url'); \
+                if (!u) { return; } \
+                u.select(); \
+                var done = function () { b.textContent = b.getAttribute('data-copied-label'); }; \
+                if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(u.value).then(done, done); } \
+                else { try { document.execCommand('copy'); } catch (err) {} done(); } \
+            }); \
+        })();";
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
+
 
 /// When the link stops opening, or never on its own. Twins the settings
 /// page's helper; the share page renders the same expiry line.

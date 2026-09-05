@@ -44,7 +44,11 @@ async fn trashed_row(
             .map_err(|_| Refusal::Unavailable)?
             .is_some_and(|folder| folder.owner_id == user.id && folder.deleted_at.is_some()),
     };
-    if owned { Ok(()) } else { Err(Refusal::NotFound) }
+    if owned {
+        Ok(())
+    } else {
+        Err(Refusal::NotFound)
+    }
 }
 
 type Redirect = Result<(StatusCode, [(HeaderName, String); 1])>;
@@ -153,16 +157,27 @@ struct TrashQuery {
     q: Option<String>,
 }
 
-/// The trash's sort, off the query: name, deleted, uploaded or size.
+/// The trash's sort, off the query as `key:direction` ("deleted:asc"): name,
+/// deleted, uploaded or size; names ascend by default, measures descend.
 /// Anything else is the default — newest trash first.
-fn valid_trash_sort(raw: Option<&str>) -> &'static str {
-    match raw {
-        Some("name") => "name",
-        Some("deleted") => "deleted",
-        Some("uploaded") => "uploaded",
-        Some("size") => "size",
+fn valid_trash_sort(raw: Option<&str>) -> (&'static str, bool) {
+    let (key, dir) = raw
+        .unwrap_or("")
+        .split_once(':')
+        .unwrap_or((raw.unwrap_or(""), ""));
+    let key = match key {
+        "name" => "name",
+        "deleted" => "deleted",
+        "uploaded" => "uploaded",
+        "size" => "size",
         _ => "deleted",
-    }
+    };
+    let descending = match dir {
+        "asc" => false,
+        "desc" => true,
+        _ => key != "name",
+    };
+    (key, descending)
 }
 
 /// The kind filter, off the query: all, folders or files. Anything else
@@ -227,13 +242,16 @@ impl TrashEntry<'_> {
 fn trash_details(language: Lang, row: &TrashEntry) -> String {
     let mut out = format!(
         "{} {} · {} {}",
-        t(language, Key::SortDeleted),
+        t(language, Key::DeletedLabel),
         row.deleted().date(),
         t(language, Key::UploadedLabel),
         row.uploaded().date()
     );
     if let TrashEntry::File(file) = row {
-        out.push_str(&format!(" · {}", crate::settings::human_bytes(file.size_bytes)));
+        out.push_str(&format!(
+            " · {}",
+            crate::settings::human_bytes(file.size_bytes)
+        ));
     }
     out
 }
@@ -265,10 +283,7 @@ async fn trash(cx: &Cx) -> Result {
         .map(|query| query.trim().to_string())
         .filter(|query| !query.is_empty());
     let box_text = asked.clone().unwrap_or_default();
-    let listing = app(cx)
-        .store
-        .list_trash(&user.id)
-        .await?;
+    let listing = app(cx).store.list_trash(&user.id).await?;
     let nothing_trashed = listing.folders.is_empty() && listing.files.is_empty();
     let mut rows: Vec<TrashEntry> = Vec::new();
     if kind == "all" || kind == "folders" {
@@ -281,29 +296,30 @@ async fn trash(cx: &Cx) -> Result {
         let needle = needle.to_lowercase();
         rows.retain(|row| row.name().to_lowercase().contains(&needle));
     }
-    match sort {
-        "name" => rows.sort_by(|a, b| {
-            a.name()
+    let (sort, descending) = sort;
+    rows.sort_by(|a, b| {
+        let order = match sort {
+            "name" => a
+                .name()
                 .to_lowercase()
                 .cmp(&b.name().to_lowercase())
-                .then_with(|| a.id().cmp(b.id()))
-        }),
-        "uploaded" => rows.sort_by(|a, b| {
-            b.uploaded()
-                .cmp(&a.uploaded())
-                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
-        }),
-        "size" => rows.sort_by(|a, b| {
-            b.size()
-                .cmp(&a.size())
-                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
-        }),
-        _ => rows.sort_by(|a, b| {
-            b.deleted()
-                .cmp(&a.deleted())
-                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase()))
-        }),
-    }
+                .then_with(|| a.id().cmp(b.id())),
+            "uploaded" => a
+                .uploaded()
+                .cmp(&b.uploaded())
+                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase())),
+            "size" => a
+                .size()
+                .cmp(&b.size())
+                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase())),
+            _ => a
+                .deleted()
+                .cmp(&b.deleted())
+                .then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase())),
+        };
+        if descending { order.reverse() } else { order }
+    });
+    let sort_value = format!("{}:{}", sort, if descending { "desc" } else { "asc" });
     view! {
         cx =>
         (topbar(cx, NavPage::Trash, &user, language).await?)
@@ -312,11 +328,15 @@ async fn trash(cx: &Cx) -> Result {
             <div class="filterbar">
                 <form class="field-box field-box-sort" method="get" action="/trash">
                     <span class="field-text">(t(language, Key::Sort))</span>
-                    <select class="status-select" name="sort" data-autosubmit="" aria-label=(t(language, Key::Sort))>
-                        <option value="deleted" selected=(sort == "deleted")>(t(language, Key::SortDeleted))</option>
-                        <option value="name" selected=(sort == "name")>(t(language, Key::SortName))</option>
-                        <option value="uploaded" selected=(sort == "uploaded")>(t(language, Key::SortUploaded))</option>
-                        <option value="size" selected=(sort == "size")>(t(language, Key::SortSize))</option>
+                    <select class="status-select" name="sort" data-autosubmit="" data-nosearch="" aria-label=(t(language, Key::Sort))>
+                        <option value="deleted:desc" selected=(sort_value == "deleted:desc")>(t(language, Key::SortNewest))</option>
+                        <option value="deleted:asc" selected=(sort_value == "deleted:asc")>(t(language, Key::SortOldest))</option>
+                        <option value="name:asc" selected=(sort_value == "name:asc")>(t(language, Key::SortNameAZ))</option>
+                        <option value="name:desc" selected=(sort_value == "name:desc")>(t(language, Key::SortNameZA))</option>
+                        <option value="uploaded:desc" selected=(sort_value == "uploaded:desc")>(t(language, Key::SortNewest))</option>
+                        <option value="uploaded:asc" selected=(sort_value == "uploaded:asc")>(t(language, Key::SortOldest))</option>
+                        <option value="size:desc" selected=(sort_value == "size:desc")>(t(language, Key::SortLargest))</option>
+                        <option value="size:asc" selected=(sort_value == "size:asc")>(t(language, Key::SortSmallest))</option>
                     </select>
                     <input type="hidden" name="kind" value=(kind.to_string())>
                     <input type="hidden" name="q" value=(box_text.clone())>
@@ -328,7 +348,7 @@ async fn trash(cx: &Cx) -> Result {
                         <option value="folders" selected=(kind == "folders")>(t(language, Key::KindFolders))</option>
                         <option value="files" selected=(kind == "files")>(t(language, Key::KindFiles))</option>
                     </select>
-                    <input type="hidden" name="sort" value=(sort.to_string())>
+                    <input type="hidden" name="sort" value=(sort_value.clone())>
                     <input type="hidden" name="q" value=(box_text.clone())>
                 </form>
                 <form class="field-box field-box-search" method="get" action="/trash">
@@ -341,7 +361,7 @@ async fn trash(cx: &Cx) -> Result {
                         placeholder=(t(language, Key::SearchPlaceholder))
                         aria-label=(t(language, Key::SearchPlaceholder))
                     >
-                    <input type="hidden" name="sort" value=(sort.to_string())>
+                    <input type="hidden" name="sort" value=(sort_value.clone())>
                     <input type="hidden" name="kind" value=(kind.to_string())>
                 </form>
             </div>
@@ -403,5 +423,6 @@ async fn trash(cx: &Cx) -> Result {
                 </div>
             </section>
         </main>
+        (crate::dropdown::dropdown_script(cx).await?)
     }
 }

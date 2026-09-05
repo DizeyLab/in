@@ -1395,11 +1395,13 @@ async fn link_create_without_the_flag_is_view_only() {
         blocked.text()
     );
     // Both share surfaces print the target's name, never its raw id.
-    let named = app.get(&format!("/share/file/{file}"), Some(&admin)).await;
+    let named = app
+        .get(&format!("/drive?share=file:{file}"), Some(&admin))
+        .await;
     assert_eq!(named.status, StatusCode::OK, "{}", named.text());
     assert!(
-        named.text().contains("file · plain.txt"),
-        "share page showed no name: {}",
+        named.text().contains("plain.txt") && named.text().contains("modal-scrim"),
+        "share modal showed no name: {}",
         named.text()
     );
     let settings = app.get("/settings", Some(&admin)).await;
