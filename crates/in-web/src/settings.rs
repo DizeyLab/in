@@ -416,7 +416,7 @@ async fn settings(cx: &Cx) -> Result {
                                             <th class="member-col-name" scope="col">(t(language, Key::NameColumn))</th>
                                             <th class="member-col-address" scope="col">(t(language, Key::EmailAddress))</th>
                                             <th class="member-col-account" scope="col">(t(language, Key::QuotaUsage))</th>
-                                            <th class="member-col-role" scope="col"></th>
+                                            <th class="member-col-quota" scope="col">(t(language, Key::QuotaBytes))</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -435,7 +435,7 @@ async fn settings(cx: &Cx) -> Result {
                                                 </td>
                                                 <td class="member-col-address member-address">(listed.email.clone())</td>
                                                 <td class="member-col-account member-account">(format!("{} {} {}", human_bytes(listed.used_bytes), t(language, Key::QuotaOf), human_bytes(listed.quota_bytes)))</td>
-                                                <td class="member-col-role">
+                                                <td class="member-col-quota">
                                                     <form class="pop-row-form member-quota" method="post" action="/api/settings/quota">
                                                         <input type="hidden" name="user_id" value=(listed.id.clone())>
                                                         <input class="field-input" type="number" name="quota" min="0" step="any" value=(bytes_as_unit(listed.quota_bytes).0) aria-label=(t(language, Key::QuotaBytes))>
@@ -445,6 +445,8 @@ async fn settings(cx: &Cx) -> Result {
                                                         </select>
                                                         <button class="quiet" type="submit">(t(language, Key::SetQuota))</button>
                                                     </form>
+                                                </td>
+                                                <td class="member-col-role">
                                                     if listed.id != fresh.id {
                                                         <form class="pop-row-form" method="post" action="/api/settings/disable">
                                                             <input type="hidden" name="user_id" value=(listed.id.clone())>
@@ -464,16 +466,21 @@ async fn settings(cx: &Cx) -> Result {
                                 </table>
                             </div>
     if let Some(limit) = upload_limit {
-        <form class="pop-row-form member-quota" method="post" action="/api/settings/upload-limit">
-            <span class="field-note">(t(language, Key::UploadLimitSection))</span>
+        // The instance-wide limit, one labeled row under the member table —
+        // same compact amount+unit form the per-user quota cells use.
+        <div class="upload-limit">
+            <span class="field-label">(t(language, Key::MaxUploadBytes))</span>
             <span class="field-note">(format!("{}: {}", t(language, Key::CurrentUploadLimit), human_bytes(limit)))</span>
-            <input class="field-input" type="number" name="max_upload" min="0" step="any" value=(bytes_as_unit(limit).0) aria-label=(t(language, Key::MaxUploadBytes))>
-            <select class="field-input" name="max_upload_unit" aria-label=(t(language, Key::MaxUploadBytes))>
-                <option value="MiB" selected=(bytes_as_unit(limit).1 == "MiB")>"MiB"</option>
-                <option value="GiB" selected=(bytes_as_unit(limit).1 == "GiB")>"GiB"</option>
-            </select>
-            <button class="quiet" type="submit">(t(language, Key::Save))</button>
-        </form>
+            <div class="spacer"></div>
+            <form class="pop-row-form member-quota" method="post" action="/api/settings/upload-limit">
+                <input class="field-input" type="number" name="max_upload" min="0" step="any" value=(bytes_as_unit(limit).0) aria-label=(t(language, Key::MaxUploadBytes))>
+                <select class="field-input" name="max_upload_unit" aria-label=(t(language, Key::MaxUploadBytes))>
+                    <option value="MiB" selected=(bytes_as_unit(limit).1 == "MiB")>"MiB"</option>
+                    <option value="GiB" selected=(bytes_as_unit(limit).1 == "GiB")>"GiB"</option>
+                </select>
+                <button class="quiet" type="submit">(t(language, Key::Save))</button>
+            </form>
+        </div>
     }
                         </div>
                     </section>

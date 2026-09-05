@@ -1295,10 +1295,11 @@ img.avatar {
 
 .viewer-media { max-width: 100%; max-height: 78vh; border-radius: var(--radius-md); }
 
-// The house audio player: the native pill is browser chrome — it ignores the
-// theme's shape language and swallows Escape while focused, so the viewer
-// draws its own controls over a hidden `<audio>`.
-.audio-player {
+// The house media player: the native controls are browser chrome — they
+// ignore the theme's shape language and swallow Escape while focused, so the
+// viewer draws its own over a controls-less element. One player serves both
+// kinds: audio is the bar alone, video stacks the bar under the picture.
+.media-player {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1308,10 +1309,42 @@ img.avatar {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
 
-  .audio-el { display: none; }
+  .media-el { display: none; }
 }
 
-.audio-play {
+.media-player-video {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  width: 100%;
+  // No card of its own: the viewer stage already frames it.
+  padding: 0;
+  border: none;
+  background: none;
+
+  // The controls bar lives under the picture, and the page chrome (topbar,
+  // head, title, meta, stage padding) takes ~330px above it: the picture's
+  // cap pays for both, so player and bar land on screen together.
+  .media-el {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: calc(100vh - 380px);
+    border-radius: var(--radius-md);
+    background: #000;
+    cursor: pointer;
+  }
+}
+
+.media-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.media-play {
   display: grid;
   place-items: center;
   width: 32px;
@@ -1328,12 +1361,12 @@ img.avatar {
   &:hover { border-color: var(--accent-strong); }
 }
 
-.audio-playing .audio-play {
+.media-playing .media-play {
   .glyph-play { display: none; }
   .glyph-pause { display: block; }
 }
 
-.audio-time {
+.media-time {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--muted);
@@ -1341,7 +1374,7 @@ img.avatar {
   text-align: center;
 }
 
-.audio-seek {
+.media-seek {
   flex: 1;
   appearance: none;
   height: 4px;
@@ -1378,6 +1411,32 @@ img.avatar {
     background: var(--accent);
     border-radius: 2px;
   }
+}
+
+.media-full {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+
+  &:hover { background: var(--row-hover); color: var(--ink); }
+}
+
+// Fullscreen re-frames the same player: the picture takes the screen and the
+// bar settles at its bottom.
+.media-player-video:fullscreen {
+  width: 100%;
+  max-width: none;
+  background: #000;
+
+  .media-el { height: calc(100% - 48px); max-height: none; object-fit: contain; border-radius: 0; }
 }
 
 .viewer-pdf { width: 100%; height: 78vh; border: 1px solid var(--border); border-radius: var(--radius-md); }
@@ -3429,6 +3488,7 @@ input[type="radio"] {
   // `width: 1%` is how a table cell asks for its intrinsic width.
   .member-col-name,
   .member-col-role,
+  .member-col-quota,
   .member-col-account {
     width: 1%;
     white-space: nowrap;
@@ -4357,17 +4417,9 @@ input[type="radio"] {
 
 // -- file viewer page ------------------------------------------------------------
 // GET /view/{id}: the preview on its own page. The media elements reuse the
-// in-app viewer classes (.viewer-media, .viewer-pdf); the stage centers
-// them, the audio element takes a readable width, and the text frame wears
-// the pdf box's shape.
-.viewer-stage {
-  display: flex;
-  justify-content: center;
-  margin: 16px 0;
-}
-
-.viewer-audio { width: min(480px, 100%); }
-
+// in-app viewer classes (.viewer-media, .viewer-pdf); the text frame wears
+// the pdf box's shape. The stage card itself is defined with viewer-details
+// below — one rule, not two that must agree.
 .viewer-text {
   width: 100%;
   height: 70vh;
@@ -4587,8 +4639,8 @@ input[type="radio"] {
 // capped at the modal viewer's width so media never sprawls into a full-width
 // slab at desktop sizes. Video/images shrink to fit the viewport (70vh, the
 // same proportion as the modal's 78vh minus the page chrome); text and pdf
-// fill the card in the same chrome. The native audio pill ignores the theme's
-// shape language, so it sits in a sunken wrap at a readable width instead.
+// fill the card in the same chrome. Media plays through the house
+// `.media-player` — the native pill is gone from the page entirely.
 .viewer-head {
   display: flex;
   align-items: center;
@@ -4599,6 +4651,9 @@ input[type="radio"] {
 .viewer-title { overflow-wrap: anywhere; }
 
 .viewer-stage {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   width: 100%;
   max-width: min(100%, 960px);
   margin: 16px auto;
@@ -4629,18 +4684,6 @@ input[type="radio"] {
   height: 70vh;
   max-height: 70vh;
 }
-
-.viewer-audio-wrap {
-  width: min(560px, 100%);
-  display: flex;
-  justify-content: center;
-  padding: 12px 16px;
-  background: var(--surface-sunken);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-.viewer-audio-wrap .viewer-audio { width: 100%; }
 
 // -- row polish (RowBuild) ------------------------------------------------------------
 // Single-line discipline for the drive/trash/shared rows, the anchored options
@@ -4728,6 +4771,22 @@ input[type="radio"] {
 .member-quota select.field-input {
   width: auto;
   flex: none;
+}
+.member-quota button.field-input {
+  width: auto;
+  flex: none;
+}
+
+// The instance-wide upload limit: one labeled row under the register, the
+// same compact amount+unit form the quota cells use.
+.upload-limit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
 }
 .member-table .member-col-address {
   min-width: 26ch;

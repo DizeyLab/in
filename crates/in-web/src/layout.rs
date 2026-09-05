@@ -294,7 +294,7 @@ pub async fn topbar(cx: &Cx, active: NavPage, user: &User, lang: Lang) -> Result
 /// click listener — registered after the close/scrim one, and skipped when
 /// that one already `preventDefault`ed — fetches the href and swaps it in
 /// under a `history.pushState`, so folder rows and file chips no longer
-/// reload the page. Raw `/files/` byte routes, `download`/`target`/
+/// reload the page. Raw byte routes (`/file/<id>`, `/files`), `download`/
 /// `data-hard` links and modified clicks (ctrl/meta/shift/alt, non-left
 /// button) stay browser-native. `popstate` replays the same fetch without
 /// pushing. Fresh-URL navigations pass `swap`'s third argument to scroll
@@ -651,7 +651,7 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
                 var link = e.target.closest ? e.target.closest('a') : null; \
                 if (!link || link.hasAttribute('download') || link.hasAttribute('target') || link.hasAttribute('data-hard')) { return; } \
                 var href = link.getAttribute('href'); \
-                if (!href || href.charAt(0) !== '/' || href.indexOf('/files/') === 0) { return; } \
+                if (!href || href.charAt(0) !== '/' || href.indexOf('/files/') === 0 || href.indexOf('/file/') === 0) { return; } \
                 e.preventDefault(); \
                 var n = navStep(); \
                 fetch(href).then( \

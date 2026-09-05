@@ -484,7 +484,7 @@ async fn view_file(cx: &Cx) -> Result {
                 <a class="quiet" href="/drive">(t(language, Key::BackToDrive))</a>
                 <div class="spacer"></div>
                 if may_download {
-                    <a class="primary" href=(download_href)>(t(language, Key::Download))</a>
+                    <a class="primary" href=(download_href) download="">(t(language, Key::Download))</a>
                 }
             </div>
             <h1 class="settings-title viewer-title">(entry_chip(cx, &file).await?) (file.name.clone())</h1>
@@ -495,8 +495,33 @@ async fn view_file(cx: &Cx) -> Result {
                 if matches!(viewer_kind(&file.mime), Some(ViewerKind::Image | ViewerKind::Video | ViewerKind::Audio)) || may_download {
                     match viewer_kind(&file.mime) {
                         Some(ViewerKind::Image) => <img class="viewer-media" src=(src.clone()) alt=(file.name.clone()) draggable="false">,
-                        Some(ViewerKind::Video) => <video class="viewer-media" src=(src.clone()) controls="" controlslist="nodownload" preload="metadata"></video>,
-                        Some(ViewerKind::Audio) => <div class="viewer-audio-wrap"><audio class="viewer-audio" src=(src.clone()) controls="" controlslist="nodownload" preload="metadata"></audio></div>,
+                        Some(ViewerKind::Video) => <div class="media-player media-player-video">
+                            <video class="media-el viewer-video" src=(src.clone()) preload="metadata"></video>
+                            <div class="media-controls">
+                                <button type="button" class="media-play" aria-label=(t(language, Key::Play))
+                                    data-play=(t(language, Key::Play)) data-pause=(t(language, Key::Pause))>
+                                    <svg class="glyph glyph-play" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 3.5v9l7.5-4.5z"></path></svg>
+                                    <svg class="glyph glyph-pause" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9"></path></svg>
+                                </button>
+                                <span class="media-time media-now">"0:00"</span>
+                                <input class="media-seek" type="range" min="0" max="1000" value="0" aria-label=(file.name.clone())>
+                                <span class="media-time media-dur">"0:00"</span>
+                                <button type="button" class="media-full" aria-label=(t(language, Key::Fullscreen))>
+                                    <svg class="glyph" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M6 2H2v4M10 2h4v4M14 10v4h-4M2 10v4h4"></path></svg>
+                                </button>
+                            </div>
+                        </div>,
+                        Some(ViewerKind::Audio) => <div class="media-player">
+                            <button type="button" class="media-play" aria-label=(t(language, Key::Play))
+                                data-play=(t(language, Key::Play)) data-pause=(t(language, Key::Pause))>
+                                <svg class="glyph glyph-play" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 3.5v9l7.5-4.5z"></path></svg>
+                                <svg class="glyph glyph-pause" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9"></path></svg>
+                            </button>
+                            <span class="media-time media-now">"0:00"</span>
+                            <input class="media-seek" type="range" min="0" max="1000" value="0" aria-label=(file.name.clone())>
+                            <span class="media-time media-dur">"0:00"</span>
+                            <audio class="media-el" src=(src.clone()) preload="metadata"></audio>
+                        </div>,
                         Some(ViewerKind::Pdf) => <object class="viewer-media viewer-pdf" data=(src.clone()) type="application/pdf">
                             <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
                         </object>,
@@ -531,16 +556,81 @@ async fn view_file(cx: &Cx) -> Result {
                 </div>
             </section>
         </main>
+        (media_player_script(cx).await?)
         (viewer_guard_script(cx).await?)
     }
 }
 
-/// The preview's save-path cleanup: the media elements already carry no
-/// download affordance (`controlslist="nodownload"`, `draggable="false"`),
-/// and this drops the context menu over the stage, so "save as" never
-/// opens on a preview. A page's bytes on the wire can always be captured —
-/// this keeps the surface from offering it, which is what a view-only
-/// grant promises.
+/// The house media player: play toggle, clock, seek bar — and a fullscreen
+/// button on video — over a controls-less `<audio>`/`<video>`. Native
+/// controls are the browser's own chrome: they ignore the theme's shape
+/// language and swallow `Escape` while focused, so the viewer draws its own
+/// (ported from iz's audio player, one player for both media kinds). Wiring
+/// is per-player and idempotent (`data-wired`), re-run on `in:wire` so a
+/// player arriving in a soft page swap still gets its controls.
+async fn media_player_script(cx: &Cx) -> Result {
+    use topcoat::view::Unescaped;
+    const JS: &str = "\
+        (function () { \
+            if (window.__inMediaWired) { return; } \
+            window.__inMediaWired = true; \
+            function wireAll() { document.querySelectorAll('.media-player').forEach(wirePlayer); } \
+            function wirePlayer(player) { \
+            if (player.dataset.wired) { return; } \
+            window.__inOwn(player, [], ['data-wired']); \
+            player.dataset.wired = '1'; \
+            var media = player.querySelector('.media-el'); \
+            var play = player.querySelector('.media-play'); \
+            var seek = player.querySelector('.media-seek'); \
+            var now = player.querySelector('.media-now'); \
+            var dur = player.querySelector('.media-dur'); \
+            var full = player.querySelector('.media-full'); \
+            function clock(s) { \
+                if (!isFinite(s)) { return '0:00'; } \
+                var m = Math.floor(s / 60); \
+                var r = Math.floor(s % 60); \
+                return m + ':' + (r < 10 ? '0' : '') + r; \
+            } \
+            function toggle() { if (media.paused) { media.play(); } else { media.pause(); } } \
+            play.addEventListener('click', toggle); \
+            /* The video surface itself toggles too — the house bar is the \
+               only chrome, so the picture keeps the habit. */ \
+            if (media.tagName === 'VIDEO') { media.addEventListener('click', toggle); } \
+            media.addEventListener('play', function () { \
+                window.__inOwn(player, ['media-playing'], []); \
+                player.classList.add('media-playing'); \
+                play.setAttribute('aria-label', play.getAttribute('data-pause')); \
+            }); \
+            media.addEventListener('pause', function () { \
+                player.classList.remove('media-playing'); \
+                play.setAttribute('aria-label', play.getAttribute('data-play')); \
+            }); \
+            media.addEventListener('loadedmetadata', function () { dur.textContent = clock(media.duration); }); \
+            media.addEventListener('timeupdate', function () { \
+                now.textContent = clock(media.currentTime); \
+                if (media.duration) { seek.value = media.currentTime / media.duration * 1000; } \
+            }); \
+            seek.addEventListener('input', function () { \
+                if (media.duration) { media.currentTime = seek.value / 1000 * media.duration; } \
+            }); \
+            if (full) { \
+                full.addEventListener('click', function () { \
+                    if (document.fullscreenElement) { document.exitFullscreen(); } \
+                    else if (player.requestFullscreen) { player.requestFullscreen(); } \
+                }); \
+            } \
+            } \
+            wireAll(); \
+            document.addEventListener('in:wire', wireAll); \
+        })();";
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+}
+
+/// The preview's save-path cleanup: the house media player carries no
+/// download affordance, images are not draggable, and this drops the
+/// context menu over the stage, so "save as" never opens on a preview.
+/// A page's bytes on the wire can always be captured — this keeps the
+/// surface from offering it, which is what a view-only grant promises.
 async fn viewer_guard_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
