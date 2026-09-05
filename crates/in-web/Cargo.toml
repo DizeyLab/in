@@ -30,6 +30,11 @@ async-trait = "0.1.92"
 # The live stream is built with `futures_util::stream::unfold`; topcoat does
 # not re-export the futures traits, so this is named directly.
 futures-util = { version = "0.3", default-features = false }
+# The byte routes build streamed bodies from `bytes::Bytes` frames; topcoat
+# re-exports neither, so both are named directly.
+bytes = "1"
+http-body-util = "0.1"
+http-body = "1"
 # Hashes the compiled stylesheet against the bundle's bytes at boot, so a
 # bundle from another generation refuses the boot instead of serving under
 # this binary (see `server.rs`'s `stylesheet_guard`).

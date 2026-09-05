@@ -142,6 +142,20 @@ pub struct File {
     pub deleted_at: Option<OffsetDateTime>,
 }
 
+/// A file's bytes as chunked frames: the serving shape of
+/// [`Store::file_stream`], so a response can stream off disk instead of
+/// holding the whole file in memory.
+pub type ByteStream =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = std::io::Result<bytes::Bytes>> + Send>>;
+
+/// One clamped span of a file's bytes: `len` is exactly what `stream` will
+/// yield — the row's declared size can drift from the file on disk, and the
+/// served length must be the honest one.
+pub struct FileSpan {
+    pub len: u64,
+    pub stream: ByteStream,
+}
+
 /// Whether a file's thumbnail exists. `None` for bytes no thumbnail is
 /// attempted for; `Pending` while one is being made; `Ready` or `Failed`
 /// once the attempt settled.
@@ -446,6 +460,15 @@ pub trait Store: 'static + Send + Sync {
     /// The bytes themselves, for the one handler that serves them. `None`
     /// when there is no such row, or its file went missing.
     async fn file_bytes(&self, id: &str) -> Result<Option<Vec<u8>>>;
+
+    /// The bytes as a stream, for the serving routes: `len` of them starting
+    /// at `start`, read off disk in chunks — a serve never buffers the whole
+    /// file, and a range serve reads only its span. The span is clamped to
+    /// what the file really holds, and [`FileSpan::len`] says how much the
+    /// stream will yield, so a row whose size drifted from its file cannot
+    /// hang a response. `None` when there is no such row, or its file went
+    /// missing.
+    async fn file_stream(&self, id: &str, start: u64, len: u64) -> Result<Option<FileSpan>>;
 
     /// The thumbnail's bytes, for the one handler that serves them. `None`
     /// when no thumbnail was made, or its file went missing.

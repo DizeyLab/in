@@ -7,8 +7,8 @@
 
 use async_trait::async_trait;
 use rand::Rng;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use turso::transaction::{Transaction, TransactionBehavior};
 use turso::{Builder, Connection, Row, params};
 use ulid::Ulid;
@@ -35,15 +35,12 @@ const UPLOADS_DIR: &str = "uploads";
 /// row wears `failed` rather than pinning memory the size of the file.
 const THUMB_SOURCE_CAP: u64 = 64 * 1024 * 1024;
 
-const USER_COLUMNS: &str =
-    "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, ui, created_at, last_seen_at, theme, language";
+const USER_COLUMNS: &str = "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, ui, created_at, last_seen_at, theme, language";
 const FOLDER_COLUMNS: &str = "id, owner_id, parent_id, name, created_at, deleted_at";
-const FILE_COLUMNS: &str =
-    "id, owner_id, folder_id, name, mime, size_bytes, thumb_state, created_at, updated_at, deleted_at, download_count";
+const FILE_COLUMNS: &str = "id, owner_id, folder_id, name, mime, size_bytes, thumb_state, created_at, updated_at, deleted_at, download_count";
 const LINK_COLUMNS: &str =
     "id, token_hash, kind, target_id, created_by, can_download, created_at, expires_at, revoked_at";
-const SESSION_COLUMNS: &str =
-    "id, owner_id, folder_id, name, size_bytes, chunk_size, received_bytes, state, created_at, expires_at";
+const SESSION_COLUMNS: &str = "id, owner_id, folder_id, name, size_bytes, chunk_size, received_bytes, state, created_at, expires_at";
 
 pub struct TursoStore {
     /// Shared by every single-statement call. Turso serialises statements on a
@@ -111,7 +108,10 @@ impl TursoStore {
         // is rebuilt now, while no handle of ours points at the file that the
         // rebuild is about to replace.
         Self::repair_if_stale(database, storage).await?;
-        let db = Builder::new_local(database).build().await.map_err(backend)?;
+        let db = Builder::new_local(database)
+            .build()
+            .await
+            .map_err(backend)?;
         let conn = db.connect().map_err(backend)?;
         // Turso is a single-writer engine. Two connections on one Database
         // handle serialise by themselves, but a second handle on the same file
@@ -143,7 +143,9 @@ impl TursoStore {
             storage: storage.to_path_buf(),
         };
         store.migrate(database).await?;
-        store.prune_expired_uploads(OffsetDateTime::now_utc()).await?;
+        store
+            .prune_expired_uploads(OffsetDateTime::now_utc())
+            .await?;
         // Trash is deliberately NOT purged here: the age cutoff is the
         // deployment's `purge_after_days`, which this signature never sees.
         // The server calls `purge_expired` with its configured cutoff right
@@ -171,11 +173,7 @@ impl TursoStore {
     async fn sweep_orphan_files(&self) -> Result<()> {
         let conn = self.conn.lock().await;
         let files = known_ids(&conn, "SELECT id FROM file").await?;
-        let thumbs = known_ids(
-            &conn,
-            "SELECT id FROM file WHERE thumb_state = 'ready'",
-        )
-        .await?;
+        let thumbs = known_ids(&conn, "SELECT id FROM file WHERE thumb_state = 'ready'").await?;
         let sessions = known_ids(
             &conn,
             "SELECT id FROM upload_session WHERE state = 'active'",
@@ -578,11 +576,7 @@ fn session_dir(storage: &std::path::Path, id: &str) -> std::path::PathBuf {
 }
 
 /// Where chunk `index` of session `id` stages.
-fn chunk_path(
-    storage: &std::path::Path,
-    id: &str,
-    index: u64,
-) -> std::path::PathBuf {
+fn chunk_path(storage: &std::path::Path, id: &str, index: u64) -> std::path::PathBuf {
     session_dir(storage, id).join(index.to_string())
 }
 
@@ -898,7 +892,11 @@ impl Store for TursoStore {
             .await
             .map_err(backend)?;
             let mut back = tx.query(&sql, params![sub]).await.map_err(backend)?;
-            let row = back.next().await.map_err(backend)?.ok_or(StoreError::NotFound)?;
+            let row = back
+                .next()
+                .await
+                .map_err(backend)?
+                .ok_or(StoreError::NotFound)?;
             let user = user_from(&row)?;
             drop(back);
             tx.commit().await.map_err(backend)?;
@@ -943,7 +941,11 @@ impl Store for TursoStore {
             )
             .await
             .map_err(backend)?;
-        let row = back.next().await.map_err(backend)?.ok_or(StoreError::NotFound)?;
+        let row = back
+            .next()
+            .await
+            .map_err(backend)?
+            .ok_or(StoreError::NotFound)?;
         let user = user_from(&row)?;
         drop(back);
         tx.commit().await.map_err(backend)?;
@@ -1045,7 +1047,11 @@ impl Store for TursoStore {
             )
             .await
             .map_err(backend)?;
-        let row = rows.next().await.map_err(backend)?.ok_or(StoreError::NotFound)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(backend)?
+            .ok_or(StoreError::NotFound)?;
         let folder = folder_from(&row)?;
         drop(rows);
         tx.commit().await.map_err(backend)?;
@@ -1074,12 +1080,20 @@ impl Store for TursoStore {
         }
         // A live sibling wearing the name is no refusal: the rename lands
         // on the first free `name (2)` postfix instead.
-        let name =
-            free_folder_name(&tx, &folder.owner_id, folder.parent_id.as_deref(), &name, Some(id))
-                .await?;
-        tx.execute("UPDATE folder SET name = ?1 WHERE id = ?2", params![name, id])
-            .await
-            .map_err(backend)?;
+        let name = free_folder_name(
+            &tx,
+            &folder.owner_id,
+            folder.parent_id.as_deref(),
+            &name,
+            Some(id),
+        )
+        .await?;
+        tx.execute(
+            "UPDATE folder SET name = ?1 WHERE id = ?2",
+            params![name, id],
+        )
+        .await
+        .map_err(backend)?;
         refresh_usage(&tx, &folder.owner_id).await?;
         tx.commit().await.map_err(backend)?;
         self.announce([Topic::Library(folder.owner_id)]);
@@ -1173,11 +1187,7 @@ impl Store for TursoStore {
         Ok(())
     }
 
-    async fn list_children(
-        &self,
-        owner_id: &str,
-        parent_id: Option<&str>,
-    ) -> Result<Listing> {
+    async fn list_children(&self, owner_id: &str, parent_id: Option<&str>) -> Result<Listing> {
         let conn = self.conn.lock().await;
         let mut folders = Vec::new();
         let mut files = Vec::new();
@@ -1283,9 +1293,7 @@ impl Store for TursoStore {
                 let _ = std::fs::remove_file(thumb_path(&self.storage, &id));
             }
         }
-        let stored_thumb = if thumb_bytes.is_some()
-            && thumb_path(&self.storage, &id).is_file()
-        {
+        let stored_thumb = if thumb_bytes.is_some() && thumb_path(&self.storage, &id).is_file() {
             ThumbState::Ready
         } else if thumb_state == ThumbState::Ready {
             ThumbState::Failed
@@ -1325,7 +1333,11 @@ impl Store for TursoStore {
             )
             .await
             .map_err(backend)?;
-        let row = rows.next().await.map_err(backend)?.ok_or(StoreError::NotFound)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(backend)?
+            .ok_or(StoreError::NotFound)?;
         let file = file_from(&row)?;
         drop(rows);
         tx.commit().await.map_err(backend)?;
@@ -1354,8 +1366,14 @@ impl Store for TursoStore {
         }
         // A live sibling wearing the name is no refusal: the rename lands
         // on the first free `stem (2).ext` postfix instead.
-        let name =
-            free_file_name(&tx, &file.owner_id, file.folder_id.as_deref(), &name, Some(id)).await?;
+        let name = free_file_name(
+            &tx,
+            &file.owner_id,
+            file.folder_id.as_deref(),
+            &name,
+            Some(id),
+        )
+        .await?;
         let now = now_text()?;
         tx.execute(
             "UPDATE file SET name = ?1, updated_at = ?2 WHERE id = ?3",
@@ -1438,6 +1456,45 @@ impl Store for TursoStore {
         }
     }
 
+    async fn file_stream(&self, id: &str, start: u64, len: u64) -> Result<Option<super::FileSpan>> {
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query("SELECT 1 FROM file WHERE id = ?1", params![id])
+            .await
+            .map_err(backend)?;
+        let known = rows.next().await.map_err(backend)?.is_some();
+        drop(conn);
+        if !known {
+            return Ok(None);
+        }
+        let mut file = match tokio::fs::File::open(file_path(&self.storage, id)).await {
+            Ok(file) => file,
+            // Same answer as `file_bytes`: a missing file is "nothing to
+            // serve", not a stack.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(StoreError::Backend(e.to_string())),
+        };
+        // Clamp against the real file, not the row: the span served is the
+        // span that exists.
+        let on_disk = file
+            .metadata()
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?
+            .len();
+        let len = len.min(on_disk.saturating_sub(start));
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        // 64 KiB frames: big enough that a serve is a handful of reads,
+        // small enough that a canceled download leaves nothing held.
+        let stream = tokio_util::io::ReaderStream::with_capacity(file.take(len), 64 * 1024);
+        Ok(Some(super::FileSpan {
+            len,
+            stream: Box::pin(stream),
+        }))
+    }
+
     async fn record_download(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().await;
         let mut rows = conn
@@ -1485,10 +1542,7 @@ impl Store for TursoStore {
     async fn thumb_bytes(&self, id: &str) -> Result<Option<Vec<u8>>> {
         let conn = self.conn.lock().await;
         let mut rows = conn
-            .query(
-                "SELECT thumb_state FROM file WHERE id = ?1",
-                params![id],
-            )
+            .query("SELECT thumb_state FROM file WHERE id = ?1", params![id])
             .await
             .map_err(backend)?;
         let ready = match rows.next().await.map_err(backend)? {
@@ -1639,9 +1693,12 @@ impl Store for TursoStore {
             Some(id),
         )
         .await?;
-        tx.execute("UPDATE folder SET name = ?1 WHERE id = ?2", params![name, id])
-            .await
-            .map_err(backend)?;
+        tx.execute(
+            "UPDATE folder SET name = ?1 WHERE id = ?2",
+            params![name, id],
+        )
+        .await
+        .map_err(backend)?;
         refresh_usage(&tx, &folder.owner_id).await?;
         tx.commit().await.map_err(backend)?;
         self.announce([
@@ -1801,7 +1858,10 @@ impl Store for TursoStore {
             .map_err(backend)?;
         delete_file_rows(
             &tx,
-            &file_ids.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            &file_ids
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
         )
         .await?;
         delete_folder_rows(&tx, &folder_ids).await?;
@@ -1914,7 +1974,11 @@ impl Store for TursoStore {
             )
             .await
             .map_err(backend)?;
-        let row = rows.next().await.map_err(backend)?.ok_or(StoreError::NotFound)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(backend)?
+            .ok_or(StoreError::NotFound)?;
         let link = link_from(&row)?;
         drop(rows);
         drop(conn);
@@ -2030,10 +2094,7 @@ impl Store for TursoStore {
         .await
         .map_err(backend)?;
         drop(conn);
-        self.announce([
-            Topic::Shares(owner),
-            Topic::Shares(user_id.to_string()),
-        ]);
+        self.announce([Topic::Shares(owner), Topic::Shares(user_id.to_string())]);
         Ok(())
     }
 
@@ -2057,10 +2118,7 @@ impl Store for TursoStore {
         .await
         .map_err(backend)?;
         drop(conn);
-        self.announce([
-            Topic::Shares(owner),
-            Topic::Shares(user_id.to_string()),
-        ]);
+        self.announce([Topic::Shares(owner), Topic::Shares(user_id.to_string())]);
         Ok(())
     }
 
@@ -2191,12 +2249,7 @@ impl Store for TursoStore {
         }
     }
 
-    async fn can_download(
-        &self,
-        kind: ShareKind,
-        target_id: &str,
-        user_id: &str,
-    ) -> Result<bool> {
+    async fn can_download(&self, kind: ShareKind, target_id: &str, user_id: &str) -> Result<bool> {
         // The owner always downloads. Anyone else downloads only through a
         // grant whose `can_download` is set — on the target or above it. A
         // view-only grant opens the page but not the bytes.
@@ -2257,7 +2310,11 @@ impl Store for TursoStore {
             )
             .await
             .map_err(backend)?;
-        let row = rows.next().await.map_err(backend)?.ok_or(StoreError::NotFound)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(backend)?
+            .ok_or(StoreError::NotFound)?;
         let session = session_from(&row)?;
         drop(rows);
         drop(conn);
@@ -2276,8 +2333,7 @@ impl Store for TursoStore {
 
     async fn record_chunk(&self, id: &str, index: u64, bytes: &[u8]) -> Result<UploadSession> {
         let session = self.upload_session(id).await?.ok_or(StoreError::NotFound)?;
-        if session.state != UploadState::Active || session.expires_at <= OffsetDateTime::now_utc()
-        {
+        if session.state != UploadState::Active || session.expires_at <= OffsetDateTime::now_utc() {
             return Err(StoreError::UploadExpired);
         }
         let count = chunk_count(session.size_bytes);
@@ -2308,7 +2364,11 @@ impl Store for TursoStore {
             )
             .await
             .map_err(backend)?;
-        let row = rows.next().await.map_err(backend)?.ok_or(StoreError::NotFound)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(backend)?
+            .ok_or(StoreError::NotFound)?;
         let session = session_from(&row)?;
         drop(rows);
         drop(conn);
@@ -2317,8 +2377,7 @@ impl Store for TursoStore {
 
     async fn finish_upload(&self, id: &str) -> Result<File> {
         let session = self.upload_session(id).await?.ok_or(StoreError::NotFound)?;
-        if session.state != UploadState::Active || session.expires_at <= OffsetDateTime::now_utc()
-        {
+        if session.state != UploadState::Active || session.expires_at <= OffsetDateTime::now_utc() {
             return Err(StoreError::UploadExpired);
         }
         // Every chunk present, every chunk exact: the finish assembles what
@@ -2350,7 +2409,8 @@ impl Store for TursoStore {
                 total += std::io::copy(&mut chunk, &mut out)
                     .map_err(|e| StoreError::Backend(e.to_string()))?;
             }
-            out.flush().map_err(|e| StoreError::Backend(e.to_string()))?;
+            out.flush()
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
             drop(out);
             if total != session.size_bytes {
                 let _ = std::fs::remove_file(&tmp);
@@ -2366,8 +2426,7 @@ impl Store for TursoStore {
         })?;
         head.truncate(head_len.min(session.size_bytes as usize));
         let mime = sniff::sniff(&head).to_string();
-        let thumb_bytes = if !thumbs::thumbnailed(&mime) || session.size_bytes > THUMB_SOURCE_CAP
-        {
+        let thumb_bytes = if !thumbs::thumbnailed(&mime) || session.size_bytes > THUMB_SOURCE_CAP {
             None
         } else if thumbs::is_video_mime(&mime) {
             // The assembled file is already on disk: frame it in place
@@ -2425,7 +2484,9 @@ impl Store for TursoStore {
         };
         if std::fs::rename(&tmp, &dest).is_err() {
             let _ = std::fs::remove_file(&tmp);
-            return Err(StoreError::Backend("could not place the assembled file".into()));
+            return Err(StoreError::Backend(
+                "could not place the assembled file".into(),
+            ));
         }
         if let Some(thumb) = thumb_bytes.as_ref() {
             if write_file_atomic(&thumb_path(&self.storage, &file_id), thumb).is_err() {
@@ -2480,7 +2541,11 @@ impl Store for TursoStore {
             )
             .await
             .map_err(backend)?;
-        let row = rows.next().await.map_err(backend)?.ok_or(StoreError::NotFound)?;
+        let row = rows
+            .next()
+            .await
+            .map_err(backend)?
+            .ok_or(StoreError::NotFound)?;
         let file = file_from(&row)?;
         drop(rows);
         tx.commit().await.map_err(backend)?;
@@ -2665,24 +2730,22 @@ async fn file_name_taken(
 ) -> Result<bool> {
     let exclude = exclude.unwrap_or("");
     let mut rows = match folder_id {
-        Some(folder) => {
-            conn.query(
+        Some(folder) => conn
+            .query(
                 "SELECT 1 FROM file WHERE owner_id = ?1 AND folder_id = ?2 \
                  AND name = ?3 AND deleted_at IS NULL AND id <> ?4",
                 params![owner_id, folder, name, exclude],
             )
             .await
-            .map_err(backend)?
-        }
-        None => {
-            conn.query(
+            .map_err(backend)?,
+        None => conn
+            .query(
                 "SELECT 1 FROM file WHERE owner_id = ?1 AND folder_id IS NULL \
                  AND name = ?2 AND deleted_at IS NULL AND id <> ?3",
                 params![owner_id, name, exclude],
             )
             .await
-            .map_err(backend)?
-        }
+            .map_err(backend)?,
     };
     Ok(rows.next().await.map_err(backend)?.is_some())
 }
@@ -2700,24 +2763,22 @@ async fn folder_name_taken(
 ) -> Result<bool> {
     let exclude = exclude.unwrap_or("");
     let mut rows = match parent_id {
-        Some(parent) => {
-            conn.query(
+        Some(parent) => conn
+            .query(
                 "SELECT 1 FROM folder WHERE owner_id = ?1 AND parent_id = ?2 \
                  AND name = ?3 AND deleted_at IS NULL AND id <> ?4",
                 params![owner_id, parent, name, exclude],
             )
             .await
-            .map_err(backend)?
-        }
-        None => {
-            conn.query(
+            .map_err(backend)?,
+        None => conn
+            .query(
                 "SELECT 1 FROM folder WHERE owner_id = ?1 AND parent_id IS NULL \
                  AND name = ?2 AND deleted_at IS NULL AND id <> ?3",
                 params![owner_id, name, exclude],
             )
             .await
-            .map_err(backend)?
-        }
+            .map_err(backend)?,
     };
     Ok(rows.next().await.map_err(backend)?.is_some())
 }
@@ -2864,19 +2925,20 @@ async fn row_owner(
 ) -> Result<Option<String>> {
     let conn = conn.lock().await;
     let mut rows = match kind {
-        ShareKind::File => {
-            conn.query("SELECT owner_id FROM file WHERE id = ?1", params![target_id])
-                .await
-                .map_err(backend)?
-        }
-        ShareKind::Folder => {
-            conn.query(
+        ShareKind::File => conn
+            .query(
+                "SELECT owner_id FROM file WHERE id = ?1",
+                params![target_id],
+            )
+            .await
+            .map_err(backend)?,
+        ShareKind::Folder => conn
+            .query(
                 "SELECT owner_id FROM folder WHERE id = ?1",
                 params![target_id],
             )
             .await
-            .map_err(backend)?
-        }
+            .map_err(backend)?,
     };
     match rows.next().await.map_err(backend)? {
         Some(row) => Ok(Some(text(&row, 0)?)),
@@ -2894,22 +2956,20 @@ async fn target_owner(
 ) -> Result<Option<String>> {
     let conn = conn.lock().await;
     let mut rows = match kind {
-        ShareKind::File => {
-            conn.query(
+        ShareKind::File => conn
+            .query(
                 "SELECT owner_id FROM file WHERE id = ?1 AND deleted_at IS NULL",
                 params![target_id],
             )
             .await
-            .map_err(backend)?
-        }
-        ShareKind::Folder => {
-            conn.query(
+            .map_err(backend)?,
+        ShareKind::Folder => conn
+            .query(
                 "SELECT owner_id FROM folder WHERE id = ?1 AND deleted_at IS NULL",
                 params![target_id],
             )
             .await
-            .map_err(backend)?
-        }
+            .map_err(backend)?,
     };
     match rows.next().await.map_err(backend)? {
         Some(row) => Ok(Some(text(&row, 0)?)),
@@ -2992,7 +3052,11 @@ fn order_deepest_first(rows: &[(String, Option<String>)]) -> Vec<String> {
 /// How deep `id` sits inside `rows`: the ancestors it names that are
 /// themselves in the set. A row whose parent is outside the set counts depth
 /// only within it.
-fn depth_in(id: &str, parents: &std::collections::HashMap<&str, &str>, in_set: &std::collections::HashSet<&str>) -> usize {
+fn depth_in(
+    id: &str,
+    parents: &std::collections::HashMap<&str, &str>,
+    in_set: &std::collections::HashSet<&str>,
+) -> usize {
     let mut depth = 0;
     let mut cursor = id;
     while let Some(parent) = parents.get(cursor) {
@@ -3084,7 +3148,10 @@ mod tests {
     #[test]
     fn postfixes_split_at_the_last_dot() {
         assert_eq!(postfixed_file_name("report.txt", 2), "report (2).txt");
-        assert_eq!(postfixed_file_name("archive.tar.gz", 2), "archive.tar (2).gz");
+        assert_eq!(
+            postfixed_file_name("archive.tar.gz", 2),
+            "archive.tar (2).gz"
+        );
         assert_eq!(postfixed_file_name("name", 2), "name (2)");
         assert_eq!(postfixed_file_name("name", 3), "name (3)");
         // A leading dot is the whole stem, not an extension: dotfiles keep

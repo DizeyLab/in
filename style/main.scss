@@ -1445,11 +1445,14 @@ img.avatar {
 }
 
 // The speed cycle reads as a value, not an icon: mono, quiet, button-sized.
+// The width is fixed in ch — the longest label on the ladder ("0.75×") — so
+// cycling never moves the bar's other controls.
 .media-speed {
   flex: none;
-  min-width: 38px;
+  width: 5.5ch;
   height: 28px;
-  padding: 0 4px;
+  padding: 0;
+  text-align: center;
   border: none;
   border-radius: var(--radius);
   background: none;

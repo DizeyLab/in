@@ -13,6 +13,9 @@ description = "Domain model and storage for In"
 default = ["server"]
 server = [
   "dep:async-trait",
+  "dep:bytes",
+  "dep:futures-core",
+  "dep:tokio-util",
   "dep:base64",
   "dep:chacha20poly1305",
   "dep:image",
@@ -26,6 +29,9 @@ server = [
 
 [dependencies]
 async-trait = { version = "0.1.92", optional = true }
+bytes = { version = "1", optional = true }
+futures-core = { version = "0.3", optional = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
 base64 = { workspace = true, optional = true }
 chacha20poly1305 = { workspace = true, optional = true }
 image = { workspace = true, optional = true }

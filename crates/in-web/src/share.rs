@@ -25,9 +25,7 @@ use topcoat::context::Cx;
 use topcoat::router::content::Form;
 use topcoat::router::request::{headers as request_headers, uri};
 use topcoat::router::response::IntoResponse;
-use topcoat::router::{
-    HeaderName, StatusCode, header, page, path_param, query_params, route,
-};
+use topcoat::router::{HeaderName, StatusCode, header, page, path_param, query_params, route};
 use topcoat::view::view;
 
 use crate::files::entry_chip;
@@ -459,6 +457,7 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
                     cx,
                     store.as_ref(),
                     &file.id,
+                    file.size_bytes,
                     &file.name,
                     &file.mime,
                     link.can_download,
@@ -503,6 +502,7 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
                     cx,
                     store.as_ref(),
                     &file.id,
+                    file.size_bytes,
                     &file.name,
                     &file.mime,
                     link.can_download,
@@ -532,11 +532,14 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
 
 /// The bytes behind a public link. A view-only link answers the dead card
 /// here — the same answer as a spent token — so the surface never says which
-/// tokens exist.
+/// tokens exist. The body streams off disk through
+/// [`crate::files::bytes_response`], the same shape the signed-in route
+/// serves: a range reads only its span, and no fetch buffers the file whole.
 async fn download_bytes(
     cx: &Cx,
     store: &dyn Store,
     file_id: &str,
+    size_bytes: u64,
     name: &str,
     mime: &str,
     can_download: bool,
@@ -546,13 +549,6 @@ async fn download_bytes(
     if !can_download {
         return dead_link(cx).await.into_response(cx);
     }
-    let bytes = store
-        .file_bytes(file_id)
-        .await
-        .map_err(|_| Refusal::Unavailable);
-    let Ok(Some(bytes)) = bytes else {
-        return dead_link(cx).await.into_response(cx);
-    };
     // A fetch counts once: a full fetch, or a range resuming from byte 0.
     // A mid-file chunk is the same view going on, not a new one — the way
     // the signed-in download route counts its first chunk only.
@@ -578,7 +574,12 @@ async fn download_bytes(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, no-cache"),
     );
-    Ok((StatusCode::OK, headers, bytes).into_response(cx)?)
+    let Some(parts) =
+        crate::files::bytes_response(store, file_id, size_bytes, range, headers).await
+    else {
+        return dead_link(cx).await.into_response(cx);
+    };
+    Ok(parts.into_response(cx)?)
 }
 
 /// Whether a `Range` header starts at byte 0: only those ranges (and the
@@ -1147,7 +1148,8 @@ pub(crate) async fn share_modal(
             people.push((grantee.display_name, grantee.email, grant.can_download));
         }
     }
-    let refusal = query_value(uri(cx).query().unwrap_or(""), "refusal").and_then(|code| Refusal::from_code(&code));
+    let refusal = query_value(uri(cx).query().unwrap_or(""), "refusal")
+        .and_then(|code| Refusal::from_code(&code));
     Ok(Some(view! {
         cx =>
         <div class="modal-scrim">
@@ -1263,7 +1265,6 @@ async fn share_copy_script(cx: &Cx) -> Result {
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
-
 
 /// When the link stops opening, or never on its own. Twins the settings
 /// page's helper; the share page renders the same expiry line.

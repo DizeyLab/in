@@ -69,8 +69,8 @@ fn back_to_folder(
     redirect_to(&location)
 }
 
-fn not_found() -> (StatusCode, HeaderMap, Vec<u8>) {
-    (StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new())
+fn not_found<B: From<Vec<u8>>>() -> (StatusCode, HeaderMap, B) {
+    (StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new().into())
 }
 
 /// Whether the browser renders this stored mime on its own rather than only
@@ -204,15 +204,22 @@ async fn visible_file(
 /// belongs to somebody else's drive. Inline bytes are the viewer's preview:
 /// anyone who may see the file reads them. Taking the file away is a
 /// different act — `?dl=1` needs the download grant, and only it counts.
+///
+/// The body streams off disk through [`bytes_response`]: a play starts on
+/// the first 64 KiB frame, not on the whole file landing in memory, and a
+/// range serve reads only its span.
 #[route(GET "/file/{id}")]
-async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
+async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, topcoat::router::Body)> {
     let id: &str = path_param::<Id>(cx);
 
     let user = match require_user(cx).await {
         Ok(user) => user,
         // A byte route has no page to carry a refusal on: back to the
         // front door, where the sign-in card says what to do.
-        Err(_) => return Ok(redirect_to("/")),
+        Err(_) => {
+            let (status, headers, body) = redirect_to("/");
+            return Ok((status, headers, body.into()));
+        }
     };
 
     let store = app(cx).store.clone();
@@ -232,9 +239,6 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> 
     if forced && !may_download {
         return Ok(not_found());
     }
-    let Ok(Some(bytes)) = store.file_bytes(id).await else {
-        return Ok(not_found());
-    };
 
     let inline = !forced && inline_ok(&file.mime);
 
@@ -263,39 +267,69 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> 
         HeaderValue::from_static("private, max-age=31536000, immutable"),
     );
 
-    let total = bytes.len() as u64;
     let range = request_headers(cx)
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok());
-    match range.and_then(|range| parse_range(range, total)) {
-        Some(Ok((start, end))) => {
-            // Only a real download counts — `?dl=1` — never the viewer's
-            // inline bytes. A resumed download counts once, on its first
-            // chunk; later chunks are the same download going on.
-            if forced && start == 0 {
+    // Only a real download counts — `?dl=1` — never the viewer's inline
+    // bytes. A resumed download counts once, on its first chunk; later
+    // chunks are the same download going on.
+    let counts = forced
+        && match range.and_then(|range| parse_range(range, file.size_bytes)) {
+            Some(Ok((0, _))) | None => true,
+            _ => false,
+        };
+    match bytes_response(store.as_ref(), id, file.size_bytes, range, headers).await {
+        Some((status, headers, body)) => {
+            if counts && status.is_success() {
                 let _ = store.record_download(id).await;
             }
-            let slice = bytes[start as usize..=end as usize].to_vec();
-            headers.insert(
-                header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).unwrap(),
-            );
-            Ok((StatusCode::PARTIAL_CONTENT, headers, slice))
+            Ok((status, headers, body))
         }
+        None => Ok(not_found()),
+    }
+}
+
+/// The streamed answer for a file's bytes: the whole file from 0, or the
+/// parsed range's span — [`Store::file_stream`] clamps both against what is
+/// really on disk, and the `Content-Length` (and a 206's `Content-Range`)
+/// say the clamped truth. `None` when the bytes are not there. Shared by the
+/// signed-in route above and the public link's `download_bytes`.
+pub(crate) async fn bytes_response(
+    store: &dyn Store,
+    id: &str,
+    total: u64,
+    range: Option<&str>,
+    mut headers: HeaderMap,
+) -> Option<(StatusCode, HeaderMap, topcoat::router::Body)> {
+    use futures_util::StreamExt;
+    use http_body::Frame;
+    use http_body_util::StreamBody;
+    use topcoat::router::Body;
+    let (status, start, len) = match range.and_then(|range| parse_range(range, total)) {
+        Some(Ok((start, end))) => (StatusCode::PARTIAL_CONTENT, start, end - start + 1),
         Some(Err(())) => {
             headers.insert(
                 header::CONTENT_RANGE,
                 HeaderValue::from_str(&format!("bytes */{total}")).unwrap(),
             );
-            Ok((StatusCode::RANGE_NOT_SATISFIABLE, headers, Vec::new()))
+            return Some((StatusCode::RANGE_NOT_SATISFIABLE, headers, Body::empty()));
         }
-        None => {
-            if forced {
-                let _ = store.record_download(id).await;
-            }
-            Ok((StatusCode::OK, headers, bytes))
-        }
+        None => (StatusCode::OK, 0, total),
+    };
+    let span = store.file_stream(id, start, len).await.ok().flatten()?;
+    if status == StatusCode::PARTIAL_CONTENT {
+        let end = start + span.len.saturating_sub(1);
+        headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).unwrap(),
+        );
     }
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&span.len.to_string()).unwrap(),
+    );
+    let frames = span.stream.map(|chunk| chunk.map(Frame::data));
+    Some((status, headers, Body::new(StreamBody::new(frames))))
 }
 
 /// Serves one file's webp thumbnail under the same visibility as the file
@@ -597,6 +631,7 @@ async fn media_player_script(cx: &Cx) -> Result {
             var volBtn = player.querySelector('.media-vol'); \
             var volSlider = player.querySelector('.media-vol-slider'); \
             var speed = player.querySelector('.media-speed'); \
+            var full = player.querySelector('.media-full'); \
             function clock(s) { \
                 if (!isFinite(s)) { return '0:00'; } \
                 var m = Math.floor(s / 60); \
