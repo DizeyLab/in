@@ -4468,18 +4468,11 @@ input[type="radio"] {
   white-space: nowrap;
 }
 
-// Upload progress rows under the filterbar: name, bar, percent. The track is
+// Upload progress rows in the corner stack: name, bar, percent. The track is
 // the house upload-progress rule freed of its upload-box geometry (it was
 // absolutely positioned into a box the drive form never renders) — here it
-// flexes beside the name it belongs to.
-.upload-progress-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-
-  &:empty { display: none; }
-}
+// flexes beside the name it belongs to. The stack itself is the container,
+// so there is no list wrapper to style or hide.
 
 .upload-progress-row {
   display: flex;
@@ -4497,7 +4490,7 @@ input[type="radio"] {
   color: var(--muted);
 }
 
-.upload-progress-list .upload-progress {
+.in-status-stack .upload-progress {
   position: relative;
   flex: 1;
   left: auto;
@@ -4598,4 +4591,158 @@ input[type="radio"] {
   cursor: pointer;
 
   &:hover { color: var(--danger); }
+}
+
+// -- viewer page polish (ViewerBuild) ------------------------------------------------
+// GET /view/{id} aligned with the house: a head row carries Back left and the
+// .primary Download right (the iz detail-head arrangement), the title keeps
+// the house .settings-title size, and the stage is a centered panel card —
+// capped at the modal viewer's width so media never sprawls into a full-width
+// slab at desktop sizes. Video/images shrink to fit the viewport (70vh, the
+// same proportion as the modal's 78vh minus the page chrome); text and pdf
+// fill the card in the same chrome. The native audio pill ignores the theme's
+// shape language, so it sits in a sunken wrap at a readable width instead.
+.viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.viewer-title { overflow-wrap: anywhere; }
+
+.viewer-stage {
+  width: 100%;
+  max-width: min(100%, 960px);
+  margin: 16px auto;
+  padding: 20px 24px 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  align-items: center;
+}
+
+.viewer-details {
+  width: 100%;
+  max-width: min(100%, 960px);
+  margin: 0 auto;
+}
+
+.viewer-stage .viewer-media {
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  max-height: 70vh;
+  display: block;
+}
+
+.viewer-stage .viewer-pdf,
+.viewer-stage .viewer-text {
+  width: 100%;
+  height: 70vh;
+  max-height: 70vh;
+}
+
+.viewer-audio-wrap {
+  width: min(560px, 100%);
+  display: flex;
+  justify-content: center;
+  padding: 12px 16px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.viewer-audio-wrap .viewer-audio { width: 100%; }
+
+// -- row polish (RowBuild) ------------------------------------------------------------
+// Single-line discipline for the drive/trash/shared rows, the anchored options
+// menu, and progress rows inside the corner stack. One contiguous section;
+// the house panel, chip, quiet and user-menu rules above do the rest.
+
+// A row never wraps: the name takes the slack as an ellipsis, every detail
+// token and action holds its column. The name span in trash and public rows
+// is `.member-name`, which carries no geometry of its own — inside a row it
+// borrows the dep-title shape (flex, ellipsis, and the old-house `.dep-title`
+// geometry it also wears in markup, so the ellipsis does not depend on this
+// block alone); the shared page wraps its linked names in `.dep-title`
+// directly.
+.dep-row { flex-wrap: nowrap; }
+
+.dep-row > .member-name,
+.dep-row > .dep-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// Detail tokens never break mid-value ('6.1 KiB' stays whole): the name's
+// ellipsis absorbs the pressure instead.
+.dep-row > .field-note {
+  flex: none;
+  white-space: nowrap;
+}
+
+// Chips, action forms and the options menu hold their width; only the name
+// (or the spacer) yields. Action buttons and links never wrap their own
+// label under pressure either ('Delete forever' stays one line).
+.dep-row > .file-chip,
+.dep-row > .pop-row-form,
+.dep-row > .entry-options { flex: none; }
+
+.dep-row .quiet { flex: none; white-space: nowrap; }
+
+// The row's Options menu wears the house user-menu panel. The positioning
+// context is pinned here rather than inherited, so the panel stays anchored
+// to its trigger whatever the generic rule does.
+.entry-options { position: relative; }
+
+// A <details> menu is a toggle, not a hover: while open, the panel stays —
+// even where the pointer rests outside hover and focus. The Escape pin
+// (`.user-menu-esc`) still wins on specificity, so Escape keeps closing it.
+.entry-options[open] > .user-menu-panel {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+// Panels clip their corners with `overflow: hidden`, which would cut an open
+// menu off at the panel's edge — most visibly on the bottom rows, whose menu
+// opens past it. While a menu is open the clip lifts; closed panels keep
+// their corners. Near the viewport bottom the menu still opens downward and
+// the page (the scrolling stage) grows to take it, the house drive-add
+// behaviour — no upward variant to learn.
+.panel:has(.entry-options[open]) { overflow: visible; }
+
+// Progress rows stretch the stack's width so the bar has room to flex; the
+// stack's own max-width still caps them.
+.in-status-stack .upload-progress-row { width: 100%; }
+
+// -- settings quota table (SettingsBuild) ---------------------------------------
+//
+// The human-unit quota row added a unit <select> beside the amount input, and
+// the old `.member-quota .field-input { width: 140px }` sized BOTH of them —
+// the role cell's intrinsic width grew ~140px and auto layout billed the
+// elastic address column, which `overflow-wrap: anywhere` then stacked one
+// character per line. Size each control for what it holds instead, and put a
+// floor under the address so no future control can squeeze it vertical again.
+// The auto-layout geometry above is untouched: the address still absorbs the
+// slack and wraps (never clips) under real pressure.
+.member-quota input.field-input {
+  width: 96px;
+  flex: none;
+}
+.member-quota select.field-input {
+  width: auto;
+  flex: none;
+}
+.member-table .member-col-address {
+  min-width: 26ch;
+}
+// Outside the narrow-viewport query the register has no pan: if minimums ever
+// exceed the panel again, scroll the register rather than stacking a column.
+.table-pan {
+  overflow-x: auto;
 }

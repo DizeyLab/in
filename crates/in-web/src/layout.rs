@@ -868,6 +868,73 @@ pub async fn escape_script(cx: &Cx) -> Result {
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
+/// The persistent notice stack's client half: upload errors and completions
+/// that must stay until dismissed. Emitted from the document shell so every
+/// page carries the stack — an upload started on the drive keeps its home
+/// when the reader soft-navigates to the trash mid-flight.
+///
+/// How the cards survive the swaps: every card is registered through
+/// `__inAdded`, so the live path's morph — which pairs only server-rendered
+/// nodes and leaves client-made ones alone — keeps them where they are. The
+/// full-replace path (navigations, form posts) rebuilds the body and would
+/// drop them, so every notice is also mirrored in `window.__inNotices`,
+/// which lives on the document's `window` and outlives any one body; the
+/// `in:wire` pass `swap()` runs after every paint re-renders the stack from
+/// that array. Dismissing (the ✕, labelled from the stack's
+/// `data-dismiss-label`) drops the notice from both. Nothing here
+/// auto-times out.
+///
+/// The server-rendered `?refusal` banner needs no such route: it rides the
+/// redirect URL the swap just painted, so both paths re-render it from the
+/// server's own bytes.
+pub async fn status_script(cx: &Cx) -> Result {
+    const JS: &str = "\
+        (function () { \
+            if (window.__inStatus) { return; } \
+            window.__inStatus = true; \
+            if (!window.__inNotices) { window.__inNotices = []; } \
+            var seq = 0; \
+            window.__inNotices.forEach(function (n) { if (n.id > seq) { seq = n.id; } }); \
+            function box() { return document.getElementById('in-status'); } \
+            function dismissLabel() { \
+                var b = box(); \
+                return (b && b.getAttribute('data-dismiss-label')) || 'dismiss'; \
+            } \
+            window.__inNotify = function (kind, text) { \
+                seq++; \
+                window.__inNotices.push({ id: seq, kind: kind, text: text }); \
+                render(); \
+            }; \
+            function render() { \
+                var target = box(); \
+                if (!target) { return; } \
+                target.querySelectorAll('[data-notice]').forEach(function (old) { old.remove(); }); \
+                window.__inNotices.forEach(function (n) { \
+                    var card = document.createElement('div'); \
+                    card.className = 'in-status-card in-status-' + n.kind; \
+                    card.setAttribute('data-notice', String(n.id)); \
+                    var text = document.createElement('span'); \
+                    text.className = 'in-status-text'; \
+                    text.textContent = n.text; \
+                    var shut = document.createElement('button'); \
+                    shut.type = 'button'; \
+                    shut.className = 'in-status-dismiss'; \
+                    shut.textContent = '✕'; \
+                    shut.setAttribute('aria-label', dismissLabel()); \
+                    shut.addEventListener('click', function () { \
+                        window.__inNotices = window.__inNotices.filter(function (x) { return x.id !== n.id; }); \
+                        card.remove(); \
+                    }); \
+                    card.appendChild(text); \
+                    card.appendChild(shut); \
+                    target.appendChild(window.__inAdded(card)); \
+                }); \
+            } \
+            document.addEventListener('in:wire', render); \
+            render(); \
+        })();";
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+}
 
 /// Every path that matches no page raises a `NotFoundError`, so it renders
 /// through `root_layout`'s catch below rather than the router's bare default.
@@ -939,6 +1006,13 @@ async fn root_layout(cx: &Cx, slot: Result) -> Result {
                 // would just reconnect against that refusal forever.
                 if asking { (live_script(cx).await?) }
                 (content)
+                // The persistent corner stack: client-made upload progress
+                // rows and notice cards live here, marked `__inAdded` and
+                // mirrored on `window`, so both swap paths keep them while
+                // the reader moves between pages mid-upload.
+                <div id="in-status" class="in-status-stack" aria-live="polite"
+                    data-dismiss-label=(t(lang, Key::Dismiss))></div>
+                (status_script(cx).await?)
             </body>
         </html>
     }

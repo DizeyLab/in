@@ -1848,18 +1848,18 @@ async fn settings_quota_and_disable_guards() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(page.text().contains("ada@in.test"), "{}", page.text());
 
-    // Admin sets Bob's quota.
+    // Admin sets Bob's quota in human units: 2 GiB lands as 2147483648 bytes.
     let answer = app
         .post(
             "/api/settings/quota",
             Some(&admin),
-            &[("user_id", &bob_id), ("quota_bytes", "123456")],
+            &[("user_id", &bob_id), ("quota", "2"), ("quota_unit", "GiB")],
         )
         .await;
     assert!(answer.accepted(), "quota refused: {:?}", answer.location);
     assert_eq!(
         app.store.user(&bob_id).await.unwrap().unwrap().quota_bytes,
-        123456
+        2147483648
     );
 
     // A non-admin is refused the same call.
@@ -1867,7 +1867,11 @@ async fn settings_quota_and_disable_guards() {
         .post(
             "/api/settings/quota",
             Some(&bob),
-            &[("user_id", &bob_id), ("quota_bytes", "999")],
+            &[
+                ("user_id", &bob_id),
+                ("quota", "999"),
+                ("quota_unit", "MiB"),
+            ],
         )
         .await;
     assert!(
@@ -1931,7 +1935,7 @@ async fn signed_out_mutations_ask_to_sign_in() {
         (
             "/api/settings/quota",
             "quota",
-            &[("user_id", "x"), ("quota_bytes", "1")][..],
+            &[("user_id", "x"), ("quota", "1"), ("quota_unit", "GiB")][..],
         ),
     ] {
         let answer = app.post(path, None, form).await;
@@ -2258,42 +2262,29 @@ async fn view_only_public_thumb_serves_webp() {
 }
 
 #[tokio::test]
-async fn a_refused_upload_carries_a_well_formed_query() {
+async fn a_name_collision_upload_lands_postfixed() {
     let app = TestApp::build().await;
     let cookie = app.sign_in("sub-dupe", "dupe@in.test", "Dupe").await;
 
-    // One file in, then the same name again: the refusal redirect must join
-    // the feedback pairs with `?`, not `&` — a `/drive&refusal=...` Location
-    // is a different path entirely and 404s (observed live).
-    for _ in 0..2 {
-        app.post_multipart(
-            "/files",
-            Some(&cookie),
-            &[("folder_id", "")],
-            &[("same.txt", "text/plain", b"first or second")],
-        )
-        .await;
+    // Three uploads under one name: none is refused — the later ones land
+    // with a postfix before the extension instead of wasting the upload.
+    for body in [b"first" as &[u8], b"second", b"third"] {
+        let answer = app
+            .post_multipart(
+                "/files",
+                Some(&cookie),
+                &[("folder_id", "")],
+                &[("same.txt", "text/plain", body)],
+            )
+            .await;
+        assert!(answer.accepted(), "upload refused: {:?}", answer.location);
     }
-    let answer = app
-        .post_multipart(
-            "/files",
-            Some(&cookie),
-            &[("folder_id", "")],
-            &[("same.txt", "text/plain", b"third")],
-        )
-        .await;
-    let location = answer.location.expect("no Location on the refusal");
-    assert_eq!(answer.status, StatusCode::SEE_OTHER);
-    assert!(
-        location.starts_with("/drive?"),
-        "refusal Location was: {location}"
-    );
-    assert!(location.contains("refusal=name-taken"), "{location}");
 
-    // And the browser that follows it lands on the drive page, not the 404.
-    let page = app.get(&location, Some(&cookie)).await;
+    let page = app.get("/drive", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
-    assert!(page.text().contains("already taken"), "{}", page.text());
+    assert!(page.text().contains("same.txt"), "{}", page.text());
+    assert!(page.text().contains("same (2).txt"), "{}", page.text());
+    assert!(page.text().contains("same (3).txt"), "{}", page.text());
 }
 
 // -- settings preferences ------------------------------------------------------
@@ -2549,7 +2540,7 @@ fn assert_stage_nests(body: &str, markers: &[&str]) {
         "content still sits in the shell: {body}"
     );
     let stage = body
-        .find("<main class=\"settings-stage\">")
+        .find("<main class=\"settings-stage")
         .expect("no settings-stage");
     let close = body.find("</main>").expect("no main close");
     assert!(stage < close, "unclosed stage");
@@ -2931,8 +2922,8 @@ async fn drive_quick_create_names_and_edits() {
         .unwrap();
     assert_eq!(folder_id(&app, &me, None, "New folder").await, edit);
 
-    // Duplicate folder names are allowed: a second quick create takes the
-    // same generic name on a new row instead of suffixing.
+    // A second quick create never refuses: the store postfixes the generic
+    // name instead of duplicating it.
     let answer = app
         .post("/api/folder/create", Some(&cookie), &[("parent_id", "")])
         .await;
@@ -2949,13 +2940,14 @@ async fn drive_quick_create_names_and_edits() {
         .unwrap();
     assert_ne!(edit, edit2, "second quick create reused the row");
     let root = app.store.list_children(&me, None).await.unwrap();
-    assert_eq!(
-        root.folders
-            .iter()
-            .filter(|folder| folder.name == "New folder")
-            .count(),
-        2,
-        "second quick create did not repeat the generic name"
+    let names: Vec<&str> = root
+        .folders
+        .iter()
+        .map(|folder| folder.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"New folder") && names.contains(&"New folder (2)"),
+        "second quick create did not postfix the generic name: {names:?}"
     );
 
     // A typed name keeps the old answer: back to the page, no edit mode.
@@ -2981,7 +2973,6 @@ async fn drive_quick_create_names_and_edits() {
     );
     folder_id(&app, &me, None, "typed").await;
 
-    // A typed duplicate is accepted too — folders share names now.
     let answer = app
         .post(
             "/api/folder/create",
@@ -2995,13 +2986,14 @@ async fn drive_quick_create_names_and_edits() {
         answer.location
     );
     let root = app.store.list_children(&me, None).await.unwrap();
-    assert_eq!(
-        root.folders
-            .iter()
-            .filter(|folder| folder.name == "typed")
-            .count(),
-        2,
-        "typed dupe did not land beside the first"
+    let names: Vec<&str> = root
+        .folders
+        .iter()
+        .map(|folder| folder.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"typed") && names.contains(&"typed (2)"),
+        "typed dupe did not land postfixed: {names:?}"
     );
 }
 

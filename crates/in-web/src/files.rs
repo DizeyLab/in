@@ -35,7 +35,6 @@ path_param!(id);
 /// [`Refusal::NotFound`], same as a missing id.
 fn store_refusal(error: StoreError) -> Refusal {
     match error {
-        StoreError::NameTaken => Refusal::NameTaken,
         StoreError::QuotaExceeded => Refusal::QuotaExceeded,
         StoreError::NotFound | StoreError::CrossOwner => Refusal::NotFound,
         StoreError::UploadExpired => Refusal::UploadExpired,
@@ -472,16 +471,22 @@ async fn view_file(cx: &Cx) -> Result {
     view! {
         cx =>
         (topbar(cx, NavPage::Drive, &user, language).await?)
-        <main class="settings-stage">
-            <p><a class="quiet" href="/drive">(t(language, Key::BackToDrive))</a></p>
-            <h1 class="settings-title">(entry_chip(cx, &file).await?) (file.name.clone())</h1>
+        <main class="settings-stage stage-wide">
+            <div class="viewer-head">
+                <a class="quiet" href="/drive">(t(language, Key::BackToDrive))</a>
+                <div class="spacer"></div>
+                if may_download {
+                    <a class="primary" href=(download_href)>(t(language, Key::Download))</a>
+                }
+            </div>
+            <h1 class="settings-title viewer-title">(entry_chip(cx, &file).await?) (file.name.clone())</h1>
             <p class="field-note">(meta)</p>
             <div class="viewer-stage">
                 if may_download {
                     match viewer_kind(&file.mime) {
                         Some(ViewerKind::Image) => <img class="viewer-media" src=(src.clone()) alt=(file.name.clone())>,
                         Some(ViewerKind::Video) => <video class="viewer-media" src=(src.clone()) controls="" preload="metadata"></video>,
-                        Some(ViewerKind::Audio) => <audio class="viewer-audio" src=(src.clone()) controls="" preload="metadata"></audio>,
+                        Some(ViewerKind::Audio) => <div class="viewer-audio-wrap"><audio class="viewer-audio" src=(src.clone()) controls="" preload="metadata"></audio></div>,
                         Some(ViewerKind::Pdf) => <object class="viewer-media viewer-pdf" data=(src.clone()) type="application/pdf">
                             <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
                         </object>,
@@ -499,10 +504,7 @@ async fn view_file(cx: &Cx) -> Result {
                     </div>
                 }
             </div>
-            if may_download {
-                <p><a class="primary" href=(download_href)>(t(language, Key::Download))</a></p>
-            }
-            <section class="panel">
+            <section class="panel viewer-details">
                 <div class="panel-head">
                     <h2 class="panel-title">(t(language, Key::FileDetails))</h2>
                 </div>

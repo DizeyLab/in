@@ -459,6 +459,50 @@ pub(crate) fn label_of(name: &str) -> String {
         trimmed
     }
 }
+/// The longest name the store keeps whole: the drive forms carry
+/// `maxlength="255"`, so a postfix (` (2)`, `.txt`) truncates the base to
+/// fit rather than growing the name past what the UI accepts.
+pub(crate) const MAX_NAME_CHARS: usize = 255;
+
+/// The first `max` characters of `s`, on a character boundary — never
+/// splitting a multi-byte character the way a byte slice would.
+fn truncate_chars(s: &str, max: usize) -> &str {
+    if s.chars().count() <= max {
+        return s;
+    }
+    match s.char_indices().nth(max) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
+
+/// Splits a file name at its LAST dot into stem and extension (dot kept on
+/// the extension): `report.txt` is `("report", ".txt")`, `archive.tar.gz`
+/// is `("archive.tar", ".gz")`. No dot, a leading dot only (`.gitignore`),
+/// or a trailing dot (`foo.`) is no split — the whole name is the stem —
+/// so the postfix never lands in front of a dotfile's only dot.
+fn split_file_name(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(at) if at > 0 && at + 1 < name.len() => (&name[..at], &name[at..]),
+        _ => (name, ""),
+    }
+}
+
+/// `report.txt` at 2 is `report (2).txt`; `name` at 2 is `name (2)`. The
+/// stem is truncated so stem + postfix + extension fits [`MAX_NAME_CHARS`].
+fn postfixed_file_name(want: &str, n: u32) -> String {
+    let suffix = format!(" ({n})");
+    let (stem, ext) = split_file_name(want);
+    let keep = MAX_NAME_CHARS.saturating_sub(suffix.chars().count() + ext.chars().count());
+    format!("{}{}{}", truncate_chars(stem, keep), suffix, ext)
+}
+
+/// `Name` at 2 is `Name (2)`, truncated to fit [`MAX_NAME_CHARS`].
+fn postfixed_folder_name(want: &str, n: u32) -> String {
+    let suffix = format!(" ({n})");
+    let keep = MAX_NAME_CHARS.saturating_sub(suffix.chars().count());
+    format!("{}{}", truncate_chars(want, keep), suffix)
+}
 
 /// Addresses match case-insensitively: the provider may capitalise what
 /// the row stored, so both sides fold before comparing. Provisioning folds
@@ -669,15 +713,6 @@ fn restrict_if_present(path: &std::path::Path) -> Result<()> {
 
 fn backend<E: std::fmt::Display>(e: E) -> StoreError {
     StoreError::Backend(e.to_string())
-}
-
-/// Whether this engine error is a uniqueness refusal rather than a
-/// malfunction. The store checks names before writing, so this is only ever
-/// the backstop for a race two Immediate transactions could not serialise —
-/// and it answers with the name the check would have used.
-fn is_constraint_violation(e: &turso::Error) -> bool {
-    let text = e.to_string().to_lowercase();
-    text.contains("constraint") || text.contains("unique")
 }
 
 fn now_text() -> Result<String> {
@@ -983,15 +1018,17 @@ impl Store for TursoStore {
         name: &str,
     ) -> Result<Folder> {
         let name = label_of(name);
-        // IMMEDIATE: the parent check and the insert are one write set, so a
-        // parent trashed mid-create still refuses. Names are not checked:
-        // two folders may wear one name in one place.
+        // IMMEDIATE: the parent check, the name search and the insert are
+        // one write set, so a parent trashed mid-create still refuses. A
+        // live sibling wearing the name is no refusal: the folder takes the
+        // first free `name (2)` postfix instead.
         let mut conn = self.tx_conn().await?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .await
             .map_err(backend)?;
         check_live_parent(&tx, owner_id, parent_id).await?;
+        let name = free_folder_name(&tx, owner_id, parent_id, &name, None).await?;
         let id = Ulid::new().to_string();
         let now = now_text()?;
         tx.execute(
@@ -1000,7 +1037,7 @@ impl Store for TursoStore {
             params![id.clone(), owner_id, parent_id, name, now],
         )
         .await
-        .map_err(|e| map_constraint(e, StoreError::NameTaken))?;
+        .map_err(backend)?;
         let mut rows = tx
             .query(
                 &format!("SELECT {FOLDER_COLUMNS} FROM folder WHERE id = ?1"),
@@ -1035,9 +1072,14 @@ impl Store for TursoStore {
         if folder.deleted_at.is_some() {
             return Err(StoreError::NotFound);
         }
+        // A live sibling wearing the name is no refusal: the rename lands
+        // on the first free `name (2)` postfix instead.
+        let name =
+            free_folder_name(&tx, &folder.owner_id, folder.parent_id.as_deref(), &name, Some(id))
+                .await?;
         tx.execute("UPDATE folder SET name = ?1 WHERE id = ?2", params![name, id])
             .await
-            .map_err(|e| map_constraint(e, StoreError::NameTaken))?;
+            .map_err(backend)?;
         refresh_usage(&tx, &folder.owner_id).await?;
         tx.commit().await.map_err(backend)?;
         self.announce([Topic::Library(folder.owner_id)]);
@@ -1066,12 +1108,16 @@ impl Store for TursoStore {
             }
             cursor = parent_of(&tx, &current).await?;
         }
+        // A live child of the destination wearing the folder's name is no
+        // obstacle: the move lands on the first free `name (2)` postfix.
+        let name =
+            free_folder_name(&tx, &folder.owner_id, parent_id, &folder.name, Some(id)).await?;
         tx.execute(
-            "UPDATE folder SET parent_id = ?1 WHERE id = ?2",
-            params![parent_id, id],
+            "UPDATE folder SET parent_id = ?1, name = ?2 WHERE id = ?3",
+            params![parent_id, name, id],
         )
         .await
-        .map_err(|e| map_constraint(e, StoreError::NameTaken))?;
+        .map_err(backend)?;
         refresh_usage(&tx, &folder.owner_id).await?;
         tx.commit().await.map_err(backend)?;
         self.announce([Topic::Library(folder.owner_id)]);
@@ -1219,9 +1265,9 @@ impl Store for TursoStore {
         check_live_parent(&tx, owner_id, folder_id).await?;
         let (quota, used) = check_quota(&tx, owner_id).await?;
         fit_quota(quota, used, size)?;
-        if file_name_taken(&tx, owner_id, folder_id, &name, None).await? {
-            return Err(StoreError::NameTaken);
-        }
+        // A live sibling wearing the name is no refusal: the file takes the
+        // first free `stem (2).ext` postfix instead.
+        let name = free_file_name(&tx, owner_id, folder_id, &name, None).await?;
         let mime = sniff::sniff(bytes).to_string();
         let (thumb_state, thumb_bytes) = thumb_for(&mime, size, Some(bytes));
         // The bytes land first, temp-plus-rename, then the row says they are
@@ -1269,7 +1315,7 @@ impl Store for TursoStore {
             // a name nothing points at.
             let _ = std::fs::remove_file(&path);
             let _ = std::fs::remove_file(thumb_path(&self.storage, &id));
-            return Err(map_constraint(e, StoreError::NameTaken));
+            return Err(backend(e));
         }
         refresh_usage(&tx, owner_id).await?;
         let mut rows = tx
@@ -1306,17 +1352,17 @@ impl Store for TursoStore {
         if file.deleted_at.is_some() {
             return Err(StoreError::NotFound);
         }
-        if file_name_taken(&tx, &file.owner_id, file.folder_id.as_deref(), &name, Some(id)).await?
-        {
-            return Err(StoreError::NameTaken);
-        }
+        // A live sibling wearing the name is no refusal: the rename lands
+        // on the first free `stem (2).ext` postfix instead.
+        let name =
+            free_file_name(&tx, &file.owner_id, file.folder_id.as_deref(), &name, Some(id)).await?;
         let now = now_text()?;
         tx.execute(
             "UPDATE file SET name = ?1, updated_at = ?2 WHERE id = ?3",
             params![name, now, id],
         )
         .await
-        .map_err(|e| map_constraint(e, StoreError::NameTaken))?;
+        .map_err(backend)?;
         refresh_usage(&tx, &file.owner_id).await?;
         tx.commit().await.map_err(backend)?;
         self.announce([Topic::Library(file.owner_id)]);
@@ -1334,16 +1380,16 @@ impl Store for TursoStore {
             return Err(StoreError::NotFound);
         }
         check_live_parent(&tx, &file.owner_id, folder_id).await?;
-        if file_name_taken(&tx, &file.owner_id, folder_id, &file.name, Some(id)).await? {
-            return Err(StoreError::NameTaken);
-        }
+        // A live child of the destination wearing the file's name is no
+        // obstacle: the move lands on the first free `stem (2).ext` postfix.
+        let name = free_file_name(&tx, &file.owner_id, folder_id, &file.name, Some(id)).await?;
         let now = now_text()?;
         tx.execute(
-            "UPDATE file SET folder_id = ?1, updated_at = ?2 WHERE id = ?3",
-            params![folder_id, now, id],
+            "UPDATE file SET folder_id = ?1, name = ?2, updated_at = ?3 WHERE id = ?4",
+            params![folder_id, name, now, id],
         )
         .await
-        .map_err(|e| map_constraint(e, StoreError::NameTaken))?;
+        .map_err(backend)?;
         refresh_usage(&tx, &file.owner_id).await?;
         tx.commit().await.map_err(backend)?;
         self.announce([Topic::Library(file.owner_id)]);
@@ -1509,24 +1555,23 @@ impl Store for TursoStore {
         if let Some(folder_id) = file.folder_id.as_deref() {
             ancestor_trashed(&tx, folder_id).await?;
         }
-        if file_name_taken(
+        // A live sibling wearing the name is no refusal: the restore lands
+        // on the first free `stem (2).ext` postfix instead.
+        let name = free_file_name(
             &tx,
             &file.owner_id,
             file.folder_id.as_deref(),
             &file.name,
             Some(id),
         )
-        .await?
-        {
-            return Err(StoreError::NameTaken);
-        }
+        .await?;
         let now = now_text()?;
         tx.execute(
-            "UPDATE file SET deleted_at = NULL, updated_at = ?1 WHERE id = ?2",
-            params![now, id],
+            "UPDATE file SET name = ?1, deleted_at = NULL, updated_at = ?2 WHERE id = ?3",
+            params![name, now, id],
         )
         .await
-        .map_err(|e| map_constraint(e, StoreError::NameTaken))?;
+        .map_err(backend)?;
         refresh_usage(&tx, &file.owner_id).await?;
         tx.commit().await.map_err(backend)?;
         self.announce([
@@ -1582,6 +1627,21 @@ impl Store for TursoStore {
         )
         .await
         .map_err(backend)?;
+        // A live sibling wearing the folder's name is no refusal: the
+        // restored folder takes the first free `name (2)` postfix. The
+        // cascade below needs no fix-up — no live row can sit under a
+        // trashed folder, so only this top folder can collide.
+        let name = free_folder_name(
+            &tx,
+            &folder.owner_id,
+            folder.parent_id.as_deref(),
+            &folder.name,
+            Some(id),
+        )
+        .await?;
+        tx.execute("UPDATE folder SET name = ?1 WHERE id = ?2", params![name, id])
+            .await
+            .map_err(backend)?;
         refresh_usage(&tx, &folder.owner_id).await?;
         tx.commit().await.map_err(backend)?;
         self.announce([
@@ -2304,28 +2364,29 @@ impl Store for TursoStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .await
             .map_err(backend)?;
-        let vetted: Result<()> = async {
+        let vetted: Result<String> = async {
             check_live_parent(&tx, &session.owner_id, session.folder_id.as_deref()).await?;
             let (quota, used) = check_quota(&tx, &session.owner_id).await?;
             fit_quota(quota, used, session.size_bytes)?;
-            if file_name_taken(
+            // A live sibling wearing the session's name is no refusal: the
+            // finished file takes the first free `stem (2).ext` postfix.
+            free_file_name(
                 &tx,
                 &session.owner_id,
                 session.folder_id.as_deref(),
                 &session.name,
                 None,
             )
-            .await?
-            {
-                return Err(StoreError::NameTaken);
-            }
-            Ok(())
+            .await
         }
         .await;
-        if let Err(e) = vetted {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
+        let name = match vetted {
+            Ok(name) => name,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+        };
         if std::fs::rename(&tmp, &dest).is_err() {
             let _ = std::fs::remove_file(&tmp);
             return Err(StoreError::Backend("could not place the assembled file".into()));
@@ -2353,7 +2414,7 @@ impl Store for TursoStore {
                     file_id.clone(),
                     session.owner_id.as_str(),
                     session.folder_id.as_deref(),
-                    session.name.as_str(),
+                    name.as_str(),
                     mime,
                     session.size_bytes as i64,
                     stored_thumb.as_str(),
@@ -2367,7 +2428,7 @@ impl Store for TursoStore {
             // is what failed.
             let _ = std::fs::remove_file(&dest);
             let _ = std::fs::remove_file(thumb_path(&self.storage, &file_id));
-            return Err(map_constraint(e, StoreError::NameTaken));
+            return Err(backend(e));
         }
         tx.execute(
             "UPDATE upload_session SET state = 'done', received_bytes = ?1 WHERE id = ?2",
@@ -2588,6 +2649,95 @@ async fn file_name_taken(
         }
     };
     Ok(rows.next().await.map_err(backend)?.is_some())
+}
+
+/// Whether a live sibling folder already wears `name` — the folder half of
+/// [`file_name_taken`], over `parent_id` (NULL is the root) instead of
+/// `folder_id`. Same rules: trash does not count, `exclude` skips the row
+/// being renamed, moved or restored.
+async fn folder_name_taken(
+    conn: &Connection,
+    owner_id: &str,
+    parent_id: Option<&str>,
+    name: &str,
+    exclude: Option<&str>,
+) -> Result<bool> {
+    let exclude = exclude.unwrap_or("");
+    let mut rows = match parent_id {
+        Some(parent) => {
+            conn.query(
+                "SELECT 1 FROM folder WHERE owner_id = ?1 AND parent_id = ?2 \
+                 AND name = ?3 AND deleted_at IS NULL AND id <> ?4",
+                params![owner_id, parent, name, exclude],
+            )
+            .await
+            .map_err(backend)?
+        }
+        None => {
+            conn.query(
+                "SELECT 1 FROM folder WHERE owner_id = ?1 AND parent_id IS NULL \
+                 AND name = ?2 AND deleted_at IS NULL AND id <> ?3",
+                params![owner_id, name, exclude],
+            )
+            .await
+            .map_err(backend)?
+        }
+    };
+    Ok(rows.next().await.map_err(backend)?.is_some())
+}
+
+/// The name a new or renamed file actually takes: `want` when no live
+/// sibling wears it, else the first free `stem (2).ext` postfix — `(3)`,
+/// `(4)`, … when `(2)` is taken too. Runs inside the caller's write
+/// transaction, so the check and the write are one write set.
+async fn free_file_name(
+    conn: &Connection,
+    owner_id: &str,
+    folder_id: Option<&str>,
+    want: &str,
+    exclude: Option<&str>,
+) -> Result<String> {
+    if !file_name_taken(conn, owner_id, folder_id, want, exclude).await? {
+        return Ok(want.to_string());
+    }
+    let mut n = 2u32;
+    loop {
+        let candidate = postfixed_file_name(want, n);
+        if !file_name_taken(conn, owner_id, folder_id, &candidate, exclude).await? {
+            return Ok(candidate);
+        }
+        // Unreachable in practice — four billion live siblings — but the
+        // loop must be total, so exhaustion is a backend error, never a
+        // name refusal.
+        n = n
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Backend("too many siblings".into()))?;
+    }
+}
+
+/// The folder half of [`free_file_name`]: `want` when free, else the first
+/// free `want (2)` postfix.
+async fn free_folder_name(
+    conn: &Connection,
+    owner_id: &str,
+    parent_id: Option<&str>,
+    want: &str,
+    exclude: Option<&str>,
+) -> Result<String> {
+    if !folder_name_taken(conn, owner_id, parent_id, want, exclude).await? {
+        return Ok(want.to_string());
+    }
+    let mut n = 2u32;
+    loop {
+        let candidate = postfixed_folder_name(want, n);
+        if !folder_name_taken(conn, owner_id, parent_id, &candidate, exclude).await? {
+            return Ok(candidate);
+        }
+        // Unreachable in practice — see `free_file_name` — but total.
+        n = n
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Backend("too many siblings".into()))?;
+    }
 }
 
 /// Refuses with [`StoreError::AncestorTrashed`] while any folder at or above
@@ -2848,16 +2998,6 @@ fn thumb_for(mime: &str, size: u64, bytes: Option<&[u8]>) -> (ThumbState, Option
     }
 }
 
-/// A uniqueness refusal is the name check's answer, not a malfunction: the
-/// backstop for a race two Immediate transactions could not serialise.
-fn map_constraint(e: turso::Error, taken: StoreError) -> StoreError {
-    if is_constraint_violation(&e) {
-        taken
-    } else {
-        backend(e)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2903,5 +3043,34 @@ mod tests {
     fn like_queries_escape_their_wildcards() {
         assert_eq!(like_pattern("100%"), "%100\\%%");
         assert_eq!(like_pattern("a_b\\c"), "%a\\_b\\\\c%");
+    }
+
+    #[test]
+    fn postfixes_split_at_the_last_dot() {
+        assert_eq!(postfixed_file_name("report.txt", 2), "report (2).txt");
+        assert_eq!(postfixed_file_name("archive.tar.gz", 2), "archive.tar (2).gz");
+        assert_eq!(postfixed_file_name("name", 2), "name (2)");
+        assert_eq!(postfixed_file_name("name", 3), "name (3)");
+        // A leading dot is the whole stem, not an extension: dotfiles keep
+        // their name whole and wear the postfix at the end.
+        assert_eq!(postfixed_file_name(".gitignore", 2), ".gitignore (2)");
+        assert_eq!(postfixed_folder_name("New folder", 2), "New folder (2)");
+    }
+
+    #[test]
+    fn postfixes_fit_the_name_cap() {
+        let long = "a".repeat(300);
+        let file = postfixed_file_name(&format!("{long}.txt"), 2);
+        assert_eq!(file.chars().count(), MAX_NAME_CHARS);
+        assert!(file.ends_with(" (2).txt"));
+        let folder = postfixed_folder_name(&long, 2);
+        assert_eq!(folder.chars().count(), MAX_NAME_CHARS);
+        assert!(folder.ends_with(" (2)"));
+        // Multi-byte stems truncate on a character boundary, never mid-rune.
+        let wide = "é".repeat(300);
+        let cut = postfixed_folder_name(&wide, 2);
+        assert_eq!(cut.chars().count(), MAX_NAME_CHARS);
+        assert!(cut.ends_with(" (2)"));
+        assert!(cut.starts_with("é"));
     }
 }

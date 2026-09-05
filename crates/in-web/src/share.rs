@@ -87,7 +87,6 @@ fn redirect_back(cx: &Cx, nowhere: &str, call: &str, refusal: Option<Refusal>) -
 pub(crate) fn refusal_of(error: StoreError) -> Refusal {
     match error {
         StoreError::NotFound | StoreError::CrossOwner => Refusal::NotFound,
-        StoreError::NameTaken => Refusal::NameTaken,
         StoreError::QuotaExceeded => Refusal::QuotaExceeded,
         StoreError::AncestorTrashed => Refusal::AncestorTrashed,
         _ => Refusal::Unavailable,
@@ -726,7 +725,7 @@ async fn folder_card(
     view! {
         cx =>
         (wordmark(cx).await?)
-        <main class="settings-stage">
+        <main class="settings-stage stage-wide">
             <h1 class="settings-title">(here.name.clone())</h1>
             <section class="panel">
                 <div class="panel-body">
@@ -737,11 +736,11 @@ async fn folder_card(
                         match row {
                             PublicEntry::Folder(folder) => <div class="dep-row">
                                 <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
-                                <a class="dep-link" href=(format!("{base}?folder={}", folder.id))>(folder.name.clone())</a>
+                                <a class="dep-link" href=(format!("{base}?folder={}", folder.id))><span class="dep-title">(folder.name.clone())</span></a>
                             </div>,
                             PublicEntry::File(file) => <div class="dep-row">
                                 (public_chip(cx, &format!("{base}?folder={at}&file={}&thumb=1", file.id), file).await?)
-                                <span class="member-name">(file.name.clone())</span>
+                                <span class="member-name dep-title">(file.name.clone())</span>
                                 <span class="field-note">(crate::settings::human_bytes(file.size_bytes))</span>
                                 <div class="spacer"></div>
                                 if link.can_download {
@@ -961,7 +960,7 @@ async fn shared(cx: &Cx) -> Result {
     view! {
         cx =>
         (topbar(cx, NavPage::Shared, &user, language).await?)
-        <main class="settings-stage">
+        <main class="settings-stage stage-wide">
             <h1 class="settings-title">(t(language, Key::SharedWithMe))</h1>
             <div class="filterbar">
                 <form class="field-box field-box-sort" method="get" action="/shared">
@@ -1016,13 +1015,13 @@ async fn shared(cx: &Cx) -> Result {
                         <div class="dep-row">
                             if row.item.kind == ShareKind::Folder {
                                 <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
-                                <a class="dep-link" href=(format!("/drive?folder={}", row.item.target_id))>(row.item.name.clone())</a>
+                                <a class="dep-link" href=(format!("/drive?folder={}", row.item.target_id))><span class="dep-title">(row.item.name.clone())</span></a>
                             } else {
                                 match &row.file {
                                     Some(file) => (shared_chip(cx, file).await?),
                                     None => <span class="file-chip file-chip-generic" aria-hidden="true">"▦"</span>,
                                 }
-                                <a class="dep-link" href=(format!("/view/{}", row.item.target_id))>(row.item.name.clone())</a>
+                                <a class="dep-link" href=(format!("/view/{}", row.item.target_id))><span class="dep-title">(row.item.name.clone())</span></a>
                             }
                             <div class="spacer"></div>
                             <span class="field-note">(shared_details(language, row))</span>

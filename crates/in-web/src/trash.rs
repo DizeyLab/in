@@ -307,7 +307,7 @@ async fn trash(cx: &Cx) -> Result {
     view! {
         cx =>
         (topbar(cx, NavPage::Trash, &user, language).await?)
-        <main class="settings-stage">
+        <main class="settings-stage stage-wide">
             <h1 class="settings-title">(t(language, Key::Trash))</h1>
             <div class="filterbar">
                 <form class="field-box field-box-sort" method="get" action="/trash">
@@ -348,7 +348,7 @@ async fn trash(cx: &Cx) -> Result {
             (refusal_banner(cx, language, &["restore", "purge", "empty"]).await?)
             if !nothing_trashed {
                 <form method="post" action="/api/trash/empty">
-                    <button class="quiet-danger" type="submit">(t(language, Key::EmptyTrash))</button>
+                    <button class="quiet quiet-danger" type="submit">(t(language, Key::EmptyTrash))</button>
                 </form>
             }
             <section class="panel">
@@ -368,7 +368,7 @@ async fn trash(cx: &Cx) -> Result {
                         match row {
                             TrashEntry::Folder(folder) => <div class="dep-row">
                                 <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
-                                <span class="member-name">(folder.name.clone())</span>
+                                <span class="member-name dep-title">(folder.name.clone())</span>
                                 <span class="field-note">(trash_details(language, row))</span>
                                 <div class="spacer"></div>
                                 <form class="pop-row-form" method="post" action="/api/trash/restore">
@@ -384,7 +384,7 @@ async fn trash(cx: &Cx) -> Result {
                             </div>,
                             TrashEntry::File(file) => <div class="dep-row">
                                 (trash_chip(cx, file).await?)
-                                <span class="member-name">(file.name.clone())</span>
+                                <span class="member-name dep-title">(file.name.clone())</span>
                                 <span class="field-note">(trash_details(language, row))</span>
                                 <div class="spacer"></div>
                                 <form class="pop-row-form" method="post" action="/api/trash/restore">

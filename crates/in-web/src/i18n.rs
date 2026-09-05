@@ -198,9 +198,10 @@ pub enum Key {
     KindAll,
     KindFolders,
     KindFiles,
-    // Wave-2 trash/share extras (TrashShareBuild owns this block).
     SortDeleted,
     SortOwner,
+    // Settings limits redesign (SettingsBuild owns this block).
+    UploadLimitHelp,
 }
 
 pub fn t(lang: Lang, key: Key) -> &'static str {
@@ -289,7 +290,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             AdminPanel => "Everyone",
             AllUsers => "Everyone",
             SetQuota => "Set the quota",
-            QuotaBytes => "Quota in bytes",
+            QuotaBytes => "Storage quota",
             DisableUser => "Disable",
             EnableUser => "Enable",
             DisabledBadge => "disabled",
@@ -308,9 +309,9 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             Saved => "Saved.",
             UploadedLabel => "Uploaded",
             DownloadsLabel => "Downloads",
-            UploadLimits => "Upload limits",
+            UploadLimits => "Upload limit",
             CurrentUploadLimit => "Current limit",
-            MaxUploadBytes => "Limit in bytes",
+            MaxUploadBytes => "Upload limit",
             Options => "Options",
             DropFilesToUpload => "Drop files to upload",
             Dismiss => "Dismiss",
@@ -325,6 +326,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             KindFiles => "Files",
             SortDeleted => "Deleted",
             SortOwner => "Owner",
+            UploadLimitHelp => "The most one uploaded file may be. Applies to everyone.",
         },
         Lang::Tr => match key {
             Cancel => "Vazgeç",
@@ -409,7 +411,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             AdminPanel => "Herkes",
             AllUsers => "Herkes",
             SetQuota => "Kotayı ayarla",
-            QuotaBytes => "Bayt olarak kota",
+            QuotaBytes => "Depolama kotası",
             DisableUser => "Devre dışı bırak",
             EnableUser => "Etkinleştir",
             DisabledBadge => "devre dışı",
@@ -428,9 +430,9 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             Saved => "Kaydedildi.",
             UploadedLabel => "Yüklendi",
             DownloadsLabel => "İndirme",
-            UploadLimits => "Yükleme sınırları",
+            UploadLimits => "Yükleme sınırı",
             CurrentUploadLimit => "Geçerli sınır",
-            MaxUploadBytes => "Bayt olarak sınır",
+            MaxUploadBytes => "Yükleme sınırı",
             Options => "Seçenekler",
             DropFilesToUpload => "Yüklemek için dosyaları bırakın",
             Dismiss => "Kapat",
@@ -445,6 +447,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             KindFiles => "Dosyalar",
             SortDeleted => "Silindi",
             SortOwner => "Sahibi",
+            UploadLimitHelp => "Tek bir dosyanın alabileceği en büyük boyut. Herkes için geçerlidir.",
         },
     }
 }

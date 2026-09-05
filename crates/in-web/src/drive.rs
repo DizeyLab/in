@@ -32,7 +32,6 @@ use crate::server::{Refusal, app, back_to, refusal_of, require_user};
 /// the leak the distinction exists to prevent.
 fn store_refusal(error: StoreError) -> Refusal {
     match error {
-        StoreError::NameTaken => Refusal::NameTaken,
         StoreError::QuotaExceeded => Refusal::QuotaExceeded,
         StoreError::NotFound | StoreError::CrossOwner => Refusal::NotFound,
         // A move nesting a folder inside its own descendant.
@@ -426,7 +425,7 @@ async fn drive(cx: &Cx) -> Result {
     view! {
         cx =>
         (topbar(cx, NavPage::Drive, &user, language).await?)
-        <main class="settings-stage">
+        <main class="settings-stage stage-wide">
             <div class="filterbar">
                 if let Some(query) = asked.as_deref() {
                     <p class="detail-quiet">(t(language, Key::SearchResults)) (format!(" “{query}”"))</p>
@@ -515,16 +514,6 @@ async fn drive(cx: &Cx) -> Result {
                     </div>
                 </details>
                 </div>
-            // The persistent notice stack: client-side upload errors and
-            // completions render here and stay until dismissed. The region
-            // itself is server HTML, but every card is client-made
-            // (`__inAdded`) and mirrored in `window.__inNotices`, which the
-            // status script re-renders on every `in:wire` — so the cards
-            // survive both swap paths (the live morph keeps client-made
-            // nodes; the full replace rebuilds them from the array, which
-            // lives on `window` and outlives the body).
-            <div id="in-status" class="in-status-stack" aria-live="polite"
-                data-dismiss-label=(t(language, Key::Dismiss))></div>
             if let Some(refusal) = refusal {
                 <p class="field-error">(refusal.message_in(language))</p>
             }
@@ -540,8 +529,9 @@ async fn drive(cx: &Cx) -> Result {
             // The upload control sits outside the list so the + menu's
             // "Upload files" label and the page-wide drop handler find it on
             // every drive view, folder or search. The input stays hidden via
-            // the file-upload-input rule; the progress list below it carries
-            // the per-upload bars the script builds.
+            // the file-upload-input rule; live progress rows go to the
+            // document shell's `#in-status` corner stack, which every page
+            // carries, so they stay visible across soft navigations.
             <form id="upload-form" class="file-upload" method="post" action="/files"
                 enctype="multipart/form-data" data-hard=""
                 data-failed-label=(t(language, Key::UploadFailed))
@@ -549,7 +539,6 @@ async fn drive(cx: &Cx) -> Result {
                 <input type="hidden" name="folder_id" value=(current_id.clone())>
                 <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
             </form>
-            <div id="upload-progress-list" class="upload-progress-list" aria-live="polite"></div>
             // The full-page drop affordance: hidden until a file drag is
             // over the window, pointer-transparent so it never blocks the
             // drop itself.
@@ -680,7 +669,6 @@ async fn drive(cx: &Cx) -> Result {
         </main>
         (crate::dropdown::dropdown_script(cx).await?)
         (upload_script(cx).await?)
-        (status_script(cx).await?)
     }
 }
 
@@ -715,7 +703,8 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 /// The upload control's client half: files under 8 MiB ride one multipart
 /// post, files at or over it are split into the chunked protocol's calls —
 /// and every upload, small or big, draws the same live progress row (name,
-/// bar, percent) into `#upload-progress-list`.
+/// bar, percent) into the persistent `#in-status` corner stack, which the
+/// document shell renders on every page.
 ///
 /// The form wears `data-hard` so the soft-nav's multipart replay leaves it
 /// alone — two uploaders racing the same bytes would double-insert, and the
@@ -723,9 +712,10 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 /// form posts plainly and the 303 lands back on the folder.
 ///
 /// Failures never append inline notes anymore: they go through
-/// `window.__inNotify` into the persistent stack ([`status_script`]), which
-/// survives the swaps that used to wipe them. Completions announce there
-/// too, then the page navigates to the landing the post answered.
+/// `window.__inNotify` into the persistent stack
+/// ([`crate::layout::status_script`]), which survives the swaps that used to
+/// wipe them. Completions announce there too, then the page navigates to the
+/// landing the post answered.
 ///
 /// The same block carries the `?edit=` row's focus: the rename input the
 /// server renders open gets focused with its name selected on arrival, so a
@@ -748,37 +738,92 @@ async fn upload_script(cx: &Cx) -> Result {
             if (window.__inUpload) { return; } \
             window.__inUpload = true; \
             var LIMIT = 8388608; \
-            function progressList() { return document.getElementById('upload-progress-list'); } \
+            function upBox() { return document.getElementById('in-status'); } \
+            function upSeq() { window.__inUpSeq = (window.__inUpSeq || 0) + 1; return window.__inUpSeq; } \
+            /* Rows are found by walking `[data-upload]` and comparing the \
+               attribute in script: a selector with an interpolated value would \
+               need double quotes inside this Rust string, so it is avoided. */ \
+            function findRow(box, id) { \
+                var rows = box.querySelectorAll('[data-upload]'); \
+                for (var i = 0; i < rows.length; i++) { \
+                    if (rows[i].getAttribute('data-upload') == String(id)) { return rows[i]; } \
+                } \
+                return null; \
+            } \
+            /* The in-flight mirror: progress rows are client-made (`__inAdded`, \
+               so the live morph keeps them) and mirrored here, so the full-replace \
+               path — which rebuilds the body on every soft navigation — re-renders \
+               them from this array on `in:wire` instead of losing sight of the \
+               upload. Progress ticks only ever write the mirror, then paint the \
+               live row if it is still connected; a tick landing mid-swap paints \
+               on the next wire. Full page loads cannot preserve an in-flight bar \
+               — the completion card still announces on landing. */ \
+            function renderUploads() { \
+                var box = upBox(); \
+                if (!box) { return; } \
+                if (!window.__inUploads) { window.__inUploads = []; } \
+                var seen = {}; \
+                window.__inUploads.forEach(function (u) { \
+                    seen[u.id] = true; \
+                    var row = findRow(box, u.id); \
+                    if (!row) { \
+                        row = document.createElement('div'); \
+                        row.className = 'upload-progress-row'; \
+                        row.setAttribute('data-upload', String(u.id)); \
+                        if (u.name) { row.setAttribute('aria-label', u.name); } \
+                        var name = document.createElement('span'); \
+                        name.className = 'upload-progress-name'; \
+                        name.textContent = u.name || ''; \
+                        var track = document.createElement('div'); \
+                        track.className = 'upload-progress'; \
+                        var fill = document.createElement('div'); \
+                        fill.className = 'upload-progress-fill'; \
+                        track.appendChild(fill); \
+                        var pct = document.createElement('span'); \
+                        pct.className = 'upload-progress-pct'; \
+                        row.appendChild(name); \
+                        row.appendChild(track); \
+                        row.appendChild(pct); \
+                        box.appendChild(window.__inAdded(row)); \
+                    } \
+                    var text = Math.min(100, Math.round(u.frac * 100)) + '%'; \
+                    var fillNow = row.querySelector('.upload-progress-fill'); \
+                    var pctNow = row.querySelector('.upload-progress-pct'); \
+                    if (fillNow) { fillNow.style.width = text; } \
+                    if (pctNow) { pctNow.textContent = text; } \
+                }); \
+                box.querySelectorAll('[data-upload]').forEach(function (row) { \
+                    if (!seen[row.getAttribute('data-upload')]) { row.remove(); } \
+                }); \
+            } \
             function bar(label) { \
-                var row = document.createElement('div'); \
-                row.className = 'upload-progress-row'; \
-                var name = document.createElement('span'); \
-                name.className = 'upload-progress-name'; \
-                name.textContent = label || ''; \
-                var track = document.createElement('div'); \
-                track.className = 'upload-progress'; \
-                var fill = document.createElement('div'); \
-                fill.className = 'upload-progress-fill'; \
-                track.appendChild(fill); \
-                var pct = document.createElement('span'); \
-                pct.className = 'upload-progress-pct'; \
-                pct.textContent = '0%'; \
-                row.appendChild(name); \
-                row.appendChild(track); \
-                row.appendChild(pct); \
-                if (label) { row.setAttribute('aria-label', label); } \
-                var list = progressList(); \
-                if (list) { list.appendChild(window.__inAdded(row)); } \
-                return { row: row, fill: fill, pct: pct }; \
+                if (!window.__inUploads) { window.__inUploads = []; } \
+                var u = { id: upSeq(), name: label || '', frac: 0 }; \
+                window.__inUploads.push(u); \
+                renderUploads(); \
+                return u; \
             } \
-            function setProgress(ui, frac) { \
+            function setProgress(u, frac) { \
+                u.frac = frac; \
+                var box = upBox(); \
+                var row = box && findRow(box, u.id); \
+                if (!row) { renderUploads(); return; } \
                 var text = Math.min(100, Math.round(frac * 100)) + '%'; \
-                ui.fill.style.width = text; \
-                ui.pct.textContent = text; \
+                var fill = row.querySelector('.upload-progress-fill'); \
+                var pct = row.querySelector('.upload-progress-pct'); \
+                if (fill) { fill.style.width = text; } \
+                if (pct) { pct.textContent = text; } \
             } \
-            function dropRow(ui) { \
-                if (ui.row.parentNode) { ui.row.parentNode.removeChild(ui.row); } \
+            function dropRow(u) { \
+                if (window.__inUploads) { \
+                    window.__inUploads = window.__inUploads.filter(function (x) { return x.id !== u.id; }); \
+                } \
+                var box = upBox(); \
+                var row = box && findRow(box, u.id); \
+                if (row) { row.remove(); } \
             } \
+            document.addEventListener('in:wire', renderUploads); \
+            renderUploads(); \
             function notify(kind, message) { \
                 if (window.__inNotify) { window.__inNotify(kind, message); } \
             } \
@@ -937,73 +982,6 @@ async fn upload_script(cx: &Cx) -> Result {
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
 
-/// The persistent notice stack's client half: upload errors and completions
-/// that must stay until dismissed.
-///
-/// How the cards survive the swaps: every card is registered through
-/// `__inAdded`, so the live path's morph — which pairs only server-rendered
-/// nodes and leaves client-made ones alone — keeps them where they are. The
-/// full-replace path (navigations, form posts) rebuilds the body and would
-/// drop them, so every notice is also mirrored in `window.__inNotices`,
-/// which lives on the document's `window` and outlives any one body; the
-/// `in:wire` pass `swap()` runs after every paint re-renders the stack from
-/// that array. Dismissing (the ✕, labelled from the stack's
-/// `data-dismiss-label`) drops the notice from both. Nothing here
-/// auto-times out.
-///
-/// The server-rendered `?refusal` banner needs no such route: it rides the
-/// redirect URL the swap just painted, so both paths re-render it from the
-/// server's own bytes.
-async fn status_script(cx: &Cx) -> Result {
-    use topcoat::view::Unescaped;
-    const JS: &str = "\
-        (function () { \
-            if (window.__inStatus) { return; } \
-            window.__inStatus = true; \
-            if (!window.__inNotices) { window.__inNotices = []; } \
-            var seq = 0; \
-            window.__inNotices.forEach(function (n) { if (n.id > seq) { seq = n.id; } }); \
-            function box() { return document.getElementById('in-status'); } \
-            function dismissLabel() { \
-                var b = box(); \
-                return (b && b.getAttribute('data-dismiss-label')) || 'dismiss'; \
-            } \
-            window.__inNotify = function (kind, text) { \
-                seq++; \
-                window.__inNotices.push({ id: seq, kind: kind, text: text }); \
-                render(); \
-            }; \
-            function render() { \
-                var target = box(); \
-                if (!target) { return; } \
-                target.querySelectorAll('[data-notice]').forEach(function (old) { old.remove(); }); \
-                window.__inNotices.forEach(function (n) { \
-                    var card = document.createElement('div'); \
-                    card.className = 'in-status-card in-status-' + n.kind; \
-                    card.setAttribute('data-notice', String(n.id)); \
-                    var text = document.createElement('span'); \
-                    text.className = 'in-status-text'; \
-                    text.textContent = n.text; \
-                    var shut = document.createElement('button'); \
-                    shut.type = 'button'; \
-                    shut.className = 'in-status-dismiss'; \
-                    shut.textContent = '✕'; \
-                    shut.setAttribute('aria-label', dismissLabel()); \
-                    shut.addEventListener('click', function () { \
-                        window.__inNotices = window.__inNotices.filter(function (x) { return x.id !== n.id; }); \
-                        card.remove(); \
-                    }); \
-                    card.appendChild(text); \
-                    card.appendChild(shut); \
-                    target.appendChild(window.__inAdded(card)); \
-                }); \
-            } \
-            document.addEventListener('in:wire', render); \
-            render(); \
-        })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
-}
-
 #[derive(serde::Deserialize)]
 struct CreateFolderForm {
     #[serde(default)]
@@ -1047,10 +1025,9 @@ async fn create_folder(cx: &Cx, Form(input): Form<CreateFolderForm>) -> Redirect
     }
 }
 
-/// The + menu's quick create: the first free generic name, then a 303 to the
-/// folder view with that row in its rename form. The loop is the
-/// collision-suffixing (`New folder 2`, …), bounded so a pathological tree
-/// answers unavailable instead of spinning.
+/// The + menu's quick create: a generic name, then a 303 to the folder view
+/// with that row in its rename form. The store postfixes a colliding name
+/// itself, so one attempt always answers.
 async fn quick_folder(
     cx: &Cx,
     store: &std::sync::Arc<dyn Store>,
@@ -1058,29 +1035,20 @@ async fn quick_folder(
     parent: Option<&str>,
 ) -> Redirect {
     let base = t(lang(cx).await, Key::NewFolder).to_string();
-    for attempt in 0..64u32 {
-        let name = if attempt == 0 {
-            base.clone()
-        } else {
-            format!("{} {}", base, attempt + 1)
-        };
-        match store.create_folder(owner_id, parent, &name).await {
-            Ok(folder) => {
-                let location = match parent {
-                    Some(parent) => format!("/drive?folder={parent}&edit={}", folder.id),
-                    None => format!("/drive?edit={}", folder.id),
-                };
-                return Ok((
-                    StatusCode::SEE_OTHER,
-                    [(header::LOCATION, location)],
-                    Json(None),
-                ));
-            }
-            Err(StoreError::NameTaken) => {}
-            Err(error) => return redirect(cx, Some(store_refusal(error))),
+    match store.create_folder(owner_id, parent, &base).await {
+        Ok(folder) => {
+            let location = match parent {
+                Some(parent) => format!("/drive?folder={parent}&edit={}", folder.id),
+                None => format!("/drive?edit={}", folder.id),
+            };
+            Ok((
+                StatusCode::SEE_OTHER,
+                [(header::LOCATION, location)],
+                Json(None),
+            ))
         }
+        Err(error) => redirect(cx, Some(store_refusal(error))),
     }
-    redirect(cx, Some(Refusal::Unavailable))
 }
 
 #[derive(serde::Deserialize)]

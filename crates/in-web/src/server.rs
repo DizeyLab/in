@@ -194,8 +194,6 @@ pub enum Refusal {
     NotFound,
     /// The bytes would not fit the remaining quota.
     QuotaExceeded,
-    /// A sibling already carries that name.
-    NameTaken,
     /// A folder with children stays until it is emptied.
     FolderNotEmpty,
     /// The target belongs to somebody else. Answered like [`Refusal::NotFound`]
@@ -233,7 +231,6 @@ impl Refusal {
             Refusal::Forbidden => "Not permitted.".to_string(),
             Refusal::NotFound => "No such file or folder.".to_string(),
             Refusal::QuotaExceeded => "Over quota.".to_string(),
-            Refusal::NameTaken => "That name is already taken here.".to_string(),
             Refusal::FolderNotEmpty => "That folder still has files in it.".to_string(),
             // Same sentence as NotFound: a cross-owner probe must not learn
             // the target exists.
@@ -262,7 +259,6 @@ impl Refusal {
             Refusal::Forbidden => "İzin verilmiyor.".to_string(),
             Refusal::NotFound => "Böyle bir dosya ya da klasör yok.".to_string(),
             Refusal::QuotaExceeded => "Kota doldu.".to_string(),
-            Refusal::NameTaken => "Bu ad burada zaten var.".to_string(),
             Refusal::FolderNotEmpty => "Bu klasörde hâlâ dosyalar var.".to_string(),
             Refusal::CrossOwner => "Böyle bir dosya ya da klasör yok.".to_string(),
             Refusal::ShareRevoked => "Bu bağlantı artık çalışmıyor.".to_string(),
@@ -287,7 +283,6 @@ impl Refusal {
             "forbidden" => Refusal::Forbidden,
             "not-found" => Refusal::NotFound,
             "quota-exceeded" => Refusal::QuotaExceeded,
-            "name-taken" => Refusal::NameTaken,
             "folder-not-empty" => Refusal::FolderNotEmpty,
             "cross-owner" => Refusal::CrossOwner,
             "share-revoked" => Refusal::ShareRevoked,
@@ -316,7 +311,6 @@ impl Refusal {
             Refusal::Forbidden => "forbidden",
             Refusal::NotFound => "not-found",
             Refusal::QuotaExceeded => "quota-exceeded",
-            Refusal::NameTaken => "name-taken",
             Refusal::FolderNotEmpty => "folder-not-empty",
             Refusal::CrossOwner => "cross-owner",
             Refusal::ShareRevoked => "share-revoked",

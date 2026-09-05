@@ -169,7 +169,7 @@ async fn quota_and_disablement_round_trip() {
 }
 
 #[tokio::test]
-async fn folders_allow_duplicate_names_among_live_siblings() {
+async fn folders_postfix_onto_live_sibling_names() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
     let root = scratch
@@ -184,18 +184,23 @@ async fn folders_allow_duplicate_names_among_live_siblings() {
         .unwrap();
     assert_eq!(kid.parent_id.as_deref(), Some(root.id.as_str()));
 
-    // A live sibling wearing the name is no refusal: folders share names.
+    // A live sibling wearing the name is no refusal: the second folder
+    // takes the first free postfix, the next one the one after.
     let twin = scratch.store.create_folder(&user.id, None, "root").await.unwrap();
     assert_ne!(twin.id, root.id);
+    assert_eq!(twin.name, "root (2)");
+    let third = scratch.store.create_folder(&user.id, None, "root").await.unwrap();
+    assert_eq!(third.name, "root (3)");
     // Same name in a different directory is a different name, as before.
-    scratch
+    let away = scratch
         .store
         .create_folder(&user.id, Some(&root.id), "root")
         .await
         .unwrap();
+    assert_eq!(away.name, "root");
 
     let listing = scratch.store.list_children(&user.id, None).await.unwrap();
-    assert_eq!(listing.folders.len(), 2);
+    assert_eq!(listing.folders.len(), 3);
     let listing = scratch
         .store
         .list_children(&user.id, Some(&root.id))
@@ -512,13 +517,16 @@ async fn a_trashed_folder_name_restores_beside_a_live_twin() {
     let user = alice(&scratch.store).await;
     let first = scratch.store.create_folder(&user.id, None, "x").await.unwrap();
     scratch.store.delete_folder(&first.id).await.unwrap();
-    // Deleting frees the name, and restoring beside the squatter is fine:
-    // folder names may repeat.
+    // Deleting frees the name, and restoring beside the squatter postfixes
+    // instead of refusing or duplicating.
     scratch.store.create_folder(&user.id, None, "x").await.unwrap();
     scratch.store.restore_folder(&first.id).await.unwrap();
     let listing = scratch.store.list_children(&user.id, None).await.unwrap();
-    assert_eq!(listing.folders.iter().filter(|folder| folder.name == "x").count(), 2);
+    assert_eq!(listing.folders.len(), 2);
+    assert!(listing.folders.iter().any(|folder| folder.name == "x"));
+    assert!(listing.folders.iter().any(|folder| folder.name == "x (2)"));
 }
+
 #[tokio::test]
 async fn used_bytes_counts_trash_and_purge_frees_it() {
     let scratch = Scratch::open().await;
@@ -1215,19 +1223,19 @@ async fn a_second_migration_database_gains_the_preference_columns_on_open() {
 }
 
 #[tokio::test]
-async fn renaming_or_moving_a_folder_onto_a_live_sibling_name_succeeds() {
+async fn renaming_or_moving_a_folder_onto_a_live_sibling_name_postfixes() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
     let parent = scratch.store.create_folder(&user.id, None, "parent").await.unwrap();
     let other = scratch.store.create_folder(&user.id, None, "other").await.unwrap();
 
-    // Renaming onto a live sibling's name lands.
+    // Renaming onto a live sibling's name lands on the first free postfix.
     scratch.store.rename_folder(&other.id, "parent").await.unwrap();
     let back: Folder = scratch.store.folder(&other.id).await.unwrap().unwrap();
-    assert_eq!(back.name, "parent");
+    assert_eq!(back.name, "parent (2)");
 
     // Moving under a parent is refused for strangers and the trashed, but
-    // never for a name: a live child wearing the name is no obstacle.
+    // never for a name: a live child wearing the name is postfixed.
     let kid = scratch
         .store
         .create_folder(&user.id, Some(&parent.id), "kid")
@@ -1237,33 +1245,100 @@ async fn renaming_or_moving_a_folder_onto_a_live_sibling_name_succeeds() {
     scratch.store.move_folder(&kid.id, None).await.unwrap();
     let back: Folder = scratch.store.folder(&kid.id).await.unwrap().unwrap();
     assert_eq!(back.parent_id, None);
+    assert_eq!(back.name, "kid (2)");
     let listing = scratch.store.list_children(&user.id, None).await.unwrap();
-    assert_eq!(listing.folders.iter().filter(|folder| folder.name == "kid").count(), 2);
+    assert_eq!(listing.folders.len(), 4);
+    assert!(listing.folders.iter().any(|folder| folder.name == "kid"));
+    assert!(listing.folders.iter().any(|folder| folder.name == "kid (2)"));
 }
 
 #[tokio::test]
-async fn file_names_stay_unique_among_live_siblings() {
+async fn file_upload_collisions_postfix_at_the_last_dot() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
-    let first = scratch.store.insert_file(&user.id, None, "note", b"one").await.unwrap();
-    // A live sibling wearing the name still refuses: files, unlike folders,
-    // keep one name per directory.
-    assert!(matches!(
-        scratch.store.insert_file(&user.id, None, "note", b"two").await,
-        Err(StoreError::NameTaken)
-    ));
-    let other = scratch.store.insert_file(&user.id, None, "other", b"two").await.unwrap();
-    assert!(matches!(
-        scratch.store.rename_file(&other.id, "note").await,
-        Err(StoreError::NameTaken)
-    ));
-    // Trashing frees the name; restoring onto a squatter still refuses.
+    let first = scratch.store.insert_file(&user.id, None, "report.txt", b"one").await.unwrap();
+    assert_eq!(first.name, "report.txt");
+    // A live sibling wearing the name is no refusal: the postfix splits at
+    // the last dot, and the (2) slot occupied steps on to (3).
+    let second = scratch.store.insert_file(&user.id, None, "report.txt", b"two").await.unwrap();
+    assert_eq!(second.name, "report (2).txt");
+    let third = scratch.store.insert_file(&user.id, None, "report.txt", b"three").await.unwrap();
+    assert_eq!(third.name, "report (3).txt");
+}
+
+#[tokio::test]
+async fn extension_less_file_collisions_postfix_at_the_end() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    scratch.store.insert_file(&user.id, None, "note", b"one").await.unwrap();
+    let second = scratch.store.insert_file(&user.id, None, "note", b"two").await.unwrap();
+    assert_eq!(second.name, "note (2)");
+}
+
+#[tokio::test]
+async fn file_rename_onto_a_sibling_name_postfixes() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    scratch.store.insert_file(&user.id, None, "report.txt", b"one").await.unwrap();
+    scratch.store.insert_file(&user.id, None, "report (2).txt", b"two").await.unwrap();
+    let other = scratch.store.insert_file(&user.id, None, "other.txt", b"three").await.unwrap();
+    // Both the plain name and (2) are taken: the rename steps on to (3).
+    scratch.store.rename_file(&other.id, "report.txt").await.unwrap();
+    let back = scratch.store.file(&other.id).await.unwrap().unwrap();
+    assert_eq!(back.name, "report (3).txt");
+    // Renaming onto a free name keeps it whole.
+    scratch.store.rename_file(&other.id, "fresh.txt").await.unwrap();
+    let back = scratch.store.file(&other.id).await.unwrap().unwrap();
+    assert_eq!(back.name, "fresh.txt");
+}
+
+#[tokio::test]
+async fn file_move_into_a_folder_with_a_name_twin_postfixes() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let folder = scratch.store.create_folder(&user.id, None, "docs").await.unwrap();
+    scratch.store.insert_file(&user.id, Some(&folder.id), "report.txt", b"inside").await.unwrap();
+    let loose = scratch.store.insert_file(&user.id, None, "report.txt", b"loose").await.unwrap();
+    // Same name in a different directory is fine; moving it next to its
+    // twin postfixes instead of refusing.
+    scratch.store.move_file(&loose.id, Some(&folder.id)).await.unwrap();
+    let back = scratch.store.file(&loose.id).await.unwrap().unwrap();
+    assert_eq!(back.folder_id.as_deref(), Some(folder.id.as_str()));
+    assert_eq!(back.name, "report (2).txt");
+}
+
+#[tokio::test]
+async fn file_restore_onto_a_squatter_postfixes() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let first = scratch.store.insert_file(&user.id, None, "note.txt", b"one").await.unwrap();
+    // Trashing frees the name: the next upload takes it plain.
     scratch.store.delete_file(&first.id).await.unwrap();
-    scratch.store.insert_file(&user.id, None, "note", b"three").await.unwrap();
-    assert!(matches!(
-        scratch.store.restore_file(&first.id).await,
-        Err(StoreError::NameTaken)
-    ));
+    let squatter = scratch.store.insert_file(&user.id, None, "note.txt", b"squatter").await.unwrap();
+    assert_eq!(squatter.name, "note.txt");
+    // Restoring onto the squatter postfixes instead of refusing.
+    scratch.store.restore_file(&first.id).await.unwrap();
+    let back = scratch.store.file(&first.id).await.unwrap().unwrap();
+    assert_eq!(back.name, "note (2).txt");
+}
+
+#[tokio::test]
+async fn finish_upload_onto_a_taken_name_postfixes() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    scratch.store.insert_file(&user.id, None, "clip.txt", b"taken").await.unwrap();
+    let bytes = b"arriving";
+    let session = scratch
+        .store
+        .create_upload_session(&user.id, None, "clip.txt", bytes.len() as u64)
+        .await
+        .unwrap();
+    scratch.store.record_chunk(&session.id, 0, bytes).await.unwrap();
+    // The session keeps the user's literal name; the finished file wears
+    // the first free postfix.
+    let file = scratch.store.finish_upload(&session.id).await.unwrap();
+    assert_eq!(file.name, "clip (2).txt");
+    assert_eq!(scratch.store.file_bytes(&file.id).await.unwrap().unwrap(), bytes);
 }
 
 #[tokio::test]

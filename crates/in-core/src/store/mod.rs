@@ -35,9 +35,6 @@ pub use reconcile::{ReconcileOptions, reconcile};
 /// leak the distinction exists to prevent.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    /// The name is already taken among the live siblings.
-    #[error("that name is already taken here")]
-    NameTaken,
     /// The database refused the write or could not be read.
     #[error("database: {0}")]
     Backend(String),
@@ -382,7 +379,9 @@ pub trait Store: 'static + Send + Sync {
     // -- folders -----------------------------------------------------------
 
     /// Creates a folder. A parent of another owner is [`StoreError::CrossOwner`],
-    /// not a refusal — the asker named a thing that is not theirs.
+    /// not a refusal — the asker named a thing that is not theirs. A live
+    /// sibling wearing the name is no refusal either: the folder takes the
+    /// first free `name (2)` postfix instead.
     async fn create_folder(
         &self,
         owner_id: &str,
@@ -394,12 +393,14 @@ pub trait Store: 'static + Send + Sync {
     /// means for its screen.
     async fn folder(&self, id: &str) -> Result<Option<Folder>>;
 
-    /// Renames a folder. Names are labels, never identities: a live sibling
-    /// may already wear the name, and the rename still lands.
+    /// Renames a folder. A live sibling wearing the name is no refusal: the
+    /// rename lands on the first free `name (2)` postfix instead.
     async fn rename_folder(&self, id: &str, name: &str) -> Result<()>;
 
     /// Moves a folder. Into its own descendant is [`StoreError::Cycle`];
-    /// across owners is [`StoreError::CrossOwner`].
+    /// across owners is [`StoreError::CrossOwner`]. A live child of the
+    /// destination wearing the folder's name is no obstacle: the move lands
+    /// on the first free `name (2)` postfix.
     async fn move_folder(&self, id: &str, parent_id: Option<&str>) -> Result<()>;
 
     /// Trashes a folder: the folder, every descendant folder and every file
@@ -415,11 +416,11 @@ pub trait Store: 'static + Send + Sync {
         parent_id: Option<&str>,
     ) -> Result<Listing>;
 
-    // -- files -------------------------------------------------------------
-
     /// Stores small bytes straight through: sanitises the name, checks the
     /// quota, sniffs the mime (never trusting the uploader), writes the
-    /// file, attempts a thumbnail for images and video, and recomputes usage. The
+    /// file, attempts a thumbnail for images and video, and recomputes usage. A
+    /// live sibling wearing the name is no refusal: the file takes the first
+    /// free `stem (2).ext` postfix instead. The
     /// chunked upload's finish is the same pipeline over assembled chunks.
     async fn insert_file(
         &self,
@@ -432,10 +433,13 @@ pub trait Store: 'static + Send + Sync {
     /// One file's row, still without its bytes.
     async fn file(&self, id: &str) -> Result<Option<File>>;
 
-    /// Renames a file. A name a live sibling wears is [`StoreError::NameTaken`].
+    /// Renames a file. A live sibling wearing the name is no refusal: the
+    /// rename lands on the first free `stem (2).ext` postfix instead.
     async fn rename_file(&self, id: &str, name: &str) -> Result<()>;
 
-    /// Moves a file. Across owners is [`StoreError::CrossOwner`].
+    /// Moves a file. Across owners is [`StoreError::CrossOwner`]. A live
+    /// child of the destination wearing the file's name is no obstacle: the
+    /// move lands on the first free `stem (2).ext` postfix.
     async fn move_file(&self, id: &str, folder_id: Option<&str>) -> Result<()>;
 
     /// Trashes a file. The bytes stay on disk — and counting toward quota —
@@ -464,16 +468,18 @@ pub trait Store: 'static + Send + Sync {
     async fn list_trash(&self, owner_id: &str) -> Result<Listing>;
 
     /// Restores a trashed file. Refused with [`StoreError::AncestorTrashed`]
-    /// while any ancestor folder is still trashed, and with
-    /// [`StoreError::NameTaken`] while a live sibling wears its name.
+    /// while any ancestor folder is still trashed. A live sibling wearing
+    /// the name is no refusal: the restore lands on the first free
+    /// `stem (2).ext` postfix instead.
     async fn restore_file(&self, id: &str) -> Result<()>;
 
     /// Restores a trashed folder and everything under it that it took with
     /// it — descendants wearing the folder's own trash timestamp. Anything
     /// trashed individually before the folder keeps its earlier moment and
     /// stays trashed. Refused with [`StoreError::AncestorTrashed`] while any
-    /// ancestor folder is still trashed; a live sibling wearing the name is
-    /// no refusal — folder names may repeat.
+    /// ancestor folder is still trashed. A live sibling wearing the name is
+    /// no refusal: the restored folder takes the first free `name (2)`
+    /// postfix instead.
     async fn restore_folder(&self, id: &str) -> Result<()>;
 
     /// Purges one trashed file for good: the row goes and the bytes and
@@ -612,7 +618,9 @@ pub trait Store: 'static + Send + Sync {
     /// Assembles a session's chunks in order, rechecks the quota, sniffs the
     /// mime (never trusting anything the uploader said), writes the file,
     /// attempts a thumbnail for images and video, inserts the row and marks the session
-    /// done — and returns the file. A session whose chunks do not add up, or
+    /// done — and returns the file. A live sibling wearing the session's
+    /// name is no refusal: the file takes the first free `stem (2).ext`
+    /// postfix instead. A session whose chunks do not add up, or
     /// whose owner filled their quota while it was arriving, is refused with
     /// the chunks still staged for another attempt.
     async fn finish_upload(&self, id: &str) -> Result<File>;

@@ -60,7 +60,6 @@ fn store_refusal(error: StoreError) -> Refusal {
         StoreError::UploadExpired => Refusal::UploadExpired,
         StoreError::BadChunk => Refusal::BadChunk,
         StoreError::NotFound | StoreError::CrossOwner => Refusal::NotFound,
-        StoreError::NameTaken => Refusal::NameTaken,
         _ => Refusal::Unavailable,
     }
 }

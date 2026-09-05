@@ -49,6 +49,49 @@ fn quota_percent(user: &User) -> u8 {
     (user.used_bytes.saturating_mul(100) / user.quota_bytes).min(100) as u8
 }
 
+/// One mebibyte / gibibyte in bytes: the only two units the limit forms speak.
+/// Raw bytes never reach the browser — the panel shows `human_bytes` and the
+/// forms post a decimal amount plus one of these units, converted back here.
+const MIB_BYTES: f64 = 1_048_576.0;
+const GIB_BYTES: f64 = 1_073_741_824.0;
+
+/// The `(amount, unit)` pair a human-unit form field defaults to: gibibytes
+/// once the value reaches one, mebiBytes below it, so `2 GiB` edits as `2`
+/// GiB rather than `2048` MiB, while a small `512 MiB` cap stays addressable.
+fn bytes_as_unit(bytes: u64) -> (String, &'static str) {
+    if bytes >= GIB_BYTES as u64 {
+        (trim_amount(bytes as f64 / GIB_BYTES), "GiB")
+    } else {
+        (trim_amount(bytes as f64 / MIB_BYTES), "MiB")
+    }
+}
+
+/// A form amount for a number input: two decimals at most, trailing zeros
+/// (and a bare point) trimmed, so the field reads `2` and `2.5`, never
+/// `2.00` or `2.5000000001`.
+fn trim_amount(value: f64) -> String {
+    let rounded = (value * 100.0).round() / 100.0;
+    let text = format!("{rounded:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// The bytes an `(amount, unit)` pair names, or `None` when the pair is not
+/// a usable limit: an unknown unit, or an amount that is not a finite
+/// positive number. Callers decide whether zero passes (quota) or not
+/// (upload limit).
+fn unit_bytes(amount: &str, unit: &str) -> Option<u64> {
+    let per = match unit {
+        "MiB" => MIB_BYTES,
+        "GiB" => GIB_BYTES,
+        _ => return None,
+    };
+    let value: f64 = amount.trim().parse().ok()?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some((value * per).round() as u64)
+}
+
 type Redirect = Result<(StatusCode, [(HeaderName, String); 1])>;
 
 /// Back to settings, the refusal (if any) on the query — or `saved=<call>`
@@ -67,51 +110,62 @@ fn redirect_back(cx: &Cx, call: &str, refusal: Option<Refusal>) -> Redirect {
 #[derive(Deserialize)]
 struct QuotaForm {
     user_id: String,
-    quota_bytes: u64,
+    #[serde(default)]
+    quota: String,
+    #[serde(default)]
+    quota_unit: String,
 }
 
-/// Sets one account's byte ceiling. The bytes it already holds are untouched —
-/// a quota lowered under current usage refuses new uploads until the person
-/// frees space, rather than deleting anything.
+/// Sets one account's byte ceiling from a human-unit pair (`quota` amount in
+/// `quota_unit` MiB/GiB), converted to bytes for the store. The bytes already
+/// held are untouched — a quota lowered under current usage refuses new
+/// uploads until the person frees space, rather than deleting anything.
 #[route(POST "/api/settings/quota")]
 async fn set_quota(cx: &Cx, Form(input): Form<QuotaForm>) -> Redirect {
     if let Err(refusal) = require_admin(cx).await {
         return redirect_back(cx, "quota", Some(refusal));
     }
-    match app(cx).store.set_user_quota(&input.user_id, input.quota_bytes).await {
-        Ok(()) => redirect_back(cx, "quota", None),
-        Err(error) => redirect_back(cx, "quota", Some(refusal_of(error))),
+    match unit_bytes(&input.quota, &input.quota_unit) {
+        Some(quota_bytes) => match app(cx).store.set_user_quota(&input.user_id, quota_bytes).await {
+            Ok(()) => redirect_back(cx, "quota", None),
+            Err(error) => redirect_back(cx, "quota", Some(refusal_of(error))),
+        },
+        None => redirect_back(cx, "quota", Some(Refusal::BadLimit)),
     }
 }
 
 #[derive(Deserialize)]
 struct UploadLimitForm {
-    max_upload_bytes: u64,
+    #[serde(default)]
+    max_upload: String,
+    #[serde(default)]
+    max_upload_unit: String,
 }
-
-/// Sets the instance-wide per-file upload ceiling, in bytes — the same unit
-/// the `max_upload_bytes` instance setting stores, so the round trip is
-/// exact: what the panel shows is what a save writes back. The bytes already
-/// held are untouched — a ceiling lowered under an existing file refuses new
-/// uploads past it, rather than deleting anything.
+/// Sets the instance-wide per-file upload ceiling from a human-unit pair
+/// (`max_upload` amount in `max_upload_unit` MiB/GiB), converted to bytes
+/// for the `max_upload_bytes` instance setting — so `2 GiB` stores
+/// `2147483648` and the panel reads it back as `2.0 GiB`. The fallback chain
+/// in [`crate::server::effective_upload_limit`] is untouched, and zero (or
+/// anything unparseable) is refused with `BadLimit`: an install must always
+/// have a positive per-file ceiling.
 #[route(POST "/api/settings/upload-limit")]
 async fn set_upload_limit(cx: &Cx, Form(input): Form<UploadLimitForm>) -> Redirect {
     if let Err(refusal) = require_admin(cx).await {
         return redirect_back(cx, "upload-limit", Some(refusal));
     }
-    if input.max_upload_bytes == 0 {
-        return redirect_back(cx, "upload-limit", Some(Refusal::BadLimit));
-    }
-    match app(cx)
-        .store
-        .set_setting(
-            crate::server::MAX_UPLOAD_SETTING,
-            &input.max_upload_bytes.to_string(),
-        )
-        .await
-    {
-        Ok(()) => redirect_back(cx, "upload-limit", None),
-        Err(error) => redirect_back(cx, "upload-limit", Some(refusal_of(error))),
+    match unit_bytes(&input.max_upload, &input.max_upload_unit) {
+        Some(bytes) if bytes > 0 => match app(cx)
+            .store
+            .set_setting(
+                crate::server::MAX_UPLOAD_SETTING,
+                &bytes.to_string(),
+            )
+            .await
+        {
+            Ok(()) => redirect_back(cx, "upload-limit", None),
+            Err(error) => redirect_back(cx, "upload-limit", Some(refusal_of(error))),
+        },
+        _ => redirect_back(cx, "upload-limit", Some(Refusal::BadLimit)),
     }
 }
 
@@ -244,7 +298,7 @@ async fn settings(cx: &Cx) -> Result {
         cx =>
         (topbar(cx, NavPage::Settings, &fresh, language).await?)
         <div class="settings-shell">
-            <main class="settings-stage">
+            <main class="settings-stage stage-wide">
                 <h1 class="settings-title">(t(language, Key::Settings))</h1>
                 (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences", "upload-limit"]).await?)
                 if let Some(token) = created {
@@ -334,9 +388,14 @@ async fn settings(cx: &Cx) -> Result {
                                 <h2 class="panel-title">(t(language, Key::UploadLimits))</h2>
                             </div>
                             <div class="panel-body">
-                                <p class="field-note">(format!("{}: {}", t(language, Key::CurrentUploadLimit), human_bytes(limit)))</p>
+                                <p class="field-note">(t(language, Key::UploadLimitHelp))</p>
                                 <form class="pop-row-form" method="post" action="/api/settings/upload-limit">
-                                    <input class="field-input" type="number" name="max_upload_bytes" min="1" value=(limit.to_string()) aria-label=(t(language, Key::MaxUploadBytes))>
+                                    <span class="field-note">(format!("{}: {}", t(language, Key::CurrentUploadLimit), human_bytes(limit)))</span>
+                                    <input class="field-input" type="number" name="max_upload" min="0" step="any" value=(bytes_as_unit(limit).0) aria-label=(t(language, Key::MaxUploadBytes))>
+                                    <select class="field-input" name="max_upload_unit" aria-label=(t(language, Key::MaxUploadBytes))>
+                                        <option value="MiB" selected=(bytes_as_unit(limit).1 == "MiB")>"MiB"</option>
+                                        <option value="GiB" selected=(bytes_as_unit(limit).1 == "GiB")>"GiB"</option>
+                                    </select>
                                     <button class="quiet" type="submit">(t(language, Key::Save))</button>
                                 </form>
                             </div>
@@ -376,7 +435,11 @@ async fn settings(cx: &Cx) -> Result {
                                                 <td class="member-col-role">
                                                     <form class="pop-row-form member-quota" method="post" action="/api/settings/quota">
                                                         <input type="hidden" name="user_id" value=(listed.id.clone())>
-                                                        <input class="field-input" type="number" name="quota_bytes" min="0" value=(listed.quota_bytes.to_string()) aria-label=(t(language, Key::QuotaBytes))>
+                                                        <input class="field-input" type="number" name="quota" min="0" step="any" value=(bytes_as_unit(listed.quota_bytes).0) aria-label=(t(language, Key::QuotaBytes))>
+                                                        <select class="field-input" name="quota_unit" aria-label=(t(language, Key::QuotaBytes))>
+                                                            <option value="MiB" selected=(bytes_as_unit(listed.quota_bytes).1 == "MiB")>"MiB"</option>
+                                                            <option value="GiB" selected=(bytes_as_unit(listed.quota_bytes).1 == "GiB")>"GiB"</option>
+                                                        </select>
                                                         <button class="quiet" type="submit">(t(language, Key::SetQuota))</button>
                                                     </form>
                                                     if listed.id != fresh.id {
