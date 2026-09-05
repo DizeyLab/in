@@ -497,29 +497,10 @@ async fn view_file(cx: &Cx) -> Result {
                         Some(ViewerKind::Image) => <img class="viewer-media" src=(src.clone()) alt=(file.name.clone()) draggable="false">,
                         Some(ViewerKind::Video) => <div class="media-player media-player-video">
                             <video class="media-el viewer-video" src=(src.clone()) preload="metadata"></video>
-                            <div class="media-controls">
-                                <button type="button" class="media-play" aria-label=(t(language, Key::Play))
-                                    data-play=(t(language, Key::Play)) data-pause=(t(language, Key::Pause))>
-                                    <svg class="glyph glyph-play" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 3.5v9l7.5-4.5z"></path></svg>
-                                    <svg class="glyph glyph-pause" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9"></path></svg>
-                                </button>
-                                <span class="media-time media-now">"0:00"</span>
-                                <input class="media-seek" type="range" min="0" max="1000" value="0" aria-label=(file.name.clone())>
-                                <span class="media-time media-dur">"0:00"</span>
-                                <button type="button" class="media-full" aria-label=(t(language, Key::Fullscreen))>
-                                    <svg class="glyph" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M6 2H2v4M10 2h4v4M14 10v4h-4M2 10v4h4"></path></svg>
-                                </button>
-                            </div>
+                            <div class="media-controls">(media_controls(cx, language, file.name.clone(), true).await?)</div>
                         </div>,
                         Some(ViewerKind::Audio) => <div class="media-player">
-                            <button type="button" class="media-play" aria-label=(t(language, Key::Play))
-                                data-play=(t(language, Key::Play)) data-pause=(t(language, Key::Pause))>
-                                <svg class="glyph glyph-play" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 3.5v9l7.5-4.5z"></path></svg>
-                                <svg class="glyph glyph-pause" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9"></path></svg>
-                            </button>
-                            <span class="media-time media-now">"0:00"</span>
-                            <input class="media-seek" type="range" min="0" max="1000" value="0" aria-label=(file.name.clone())>
-                            <span class="media-time media-dur">"0:00"</span>
+                            (media_controls(cx, language, file.name.clone(), false).await?)
                             <audio class="media-el" src=(src.clone()) preload="metadata"></audio>
                         </div>,
                         Some(ViewerKind::Pdf) => <object class="viewer-media viewer-pdf" data=(src.clone()) type="application/pdf">
@@ -561,6 +542,35 @@ async fn view_file(cx: &Cx) -> Result {
     }
 }
 
+/// The one controls bar both media players draw: play toggle, clock, seek,
+/// volume (mute + level), a speed cycle, and fullscreen on video. The script
+/// below wires it by class, so the bar stays markup-only.
+async fn media_controls(cx: &Cx, language: crate::i18n::Lang, name: String, video: bool) -> Result {
+    view! {
+        cx =>
+        <button type="button" class="media-play" aria-label=(t(language, Key::Play))
+            data-play=(t(language, Key::Play)) data-pause=(t(language, Key::Pause))>
+            <svg class="glyph glyph-play" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 3.5v9l7.5-4.5z"></path></svg>
+            <svg class="glyph glyph-pause" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5.5 3.5v9M10.5 3.5v9"></path></svg>
+        </button>
+        <span class="media-time media-now">"0:00"</span>
+        <input class="media-seek" type="range" min="0" max="1000" value="0" aria-label=(name)>
+        <span class="media-time media-dur">"0:00"</span>
+        <button type="button" class="media-vol" aria-label=(t(language, Key::Mute))
+            data-mute=(t(language, Key::Mute)) data-unmute=(t(language, Key::Unmute))>
+            <svg class="glyph glyph-vol-on" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 3.5 4 6H2v4h2l3.5 2.5z" fill="currentColor"></path><path d="M10 6a3 3 0 010 4M12 4a6.4 6.4 0 010 8"></path></svg>
+            <svg class="glyph glyph-vol-off" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 3.5 4 6H2v4h2l3.5 2.5z" fill="currentColor"></path><path d="M10 6l4 4M14 6l-4 4"></path></svg>
+        </button>
+        <input class="media-vol-slider" type="range" min="0" max="100" value="100" aria-label=(t(language, Key::Volume))>
+        <button type="button" class="media-speed" aria-label=(t(language, Key::PlaybackSpeed))>"1×"</button>
+        if video {
+            <button type="button" class="media-full" aria-label=(t(language, Key::Fullscreen))>
+                <svg class="glyph" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M6 2H2v4M10 2h4v4M14 10v4h-4M2 10v4h4"></path></svg>
+            </button>
+        }
+    }
+}
+
 /// The house media player: play toggle, clock, seek bar — and a fullscreen
 /// button on video — over a controls-less `<audio>`/`<video>`. Native
 /// controls are the browser's own chrome: they ignore the theme's shape
@@ -584,7 +594,9 @@ async fn media_player_script(cx: &Cx) -> Result {
             var seek = player.querySelector('.media-seek'); \
             var now = player.querySelector('.media-now'); \
             var dur = player.querySelector('.media-dur'); \
-            var full = player.querySelector('.media-full'); \
+            var volBtn = player.querySelector('.media-vol'); \
+            var volSlider = player.querySelector('.media-vol-slider'); \
+            var speed = player.querySelector('.media-speed'); \
             function clock(s) { \
                 if (!isFinite(s)) { return '0:00'; } \
                 var m = Math.floor(s / 60); \
@@ -612,6 +624,25 @@ async fn media_player_script(cx: &Cx) -> Result {
             }); \
             seek.addEventListener('input', function () { \
                 if (media.duration) { media.currentTime = seek.value / 1000 * media.duration; } \
+            }); \
+            volBtn.addEventListener('click', function () { media.muted = !media.muted; }); \
+            media.addEventListener('volumechange', function () { \
+                window.__inOwn(player, ['media-muted'], []); \
+                player.classList.toggle('media-muted', media.muted || media.volume === 0); \
+                if (!media.muted) { volSlider.value = media.volume * 100; } \
+                volBtn.setAttribute('aria-label', volBtn.getAttribute(media.muted ? 'data-unmute' : 'data-mute')); \
+            }); \
+            volSlider.addEventListener('input', function () { \
+                media.muted = false; \
+                media.volume = volSlider.value / 100; \
+            }); \
+            /* The speed button cycles the house ladder; the label is the \
+               current rate, '1×' at the top of a lap. */ \
+            var rates = [0.5, 0.75, 1, 1.25, 1.5, 2]; \
+            speed.addEventListener('click', function () { \
+                var next = rates[(rates.indexOf(media.playbackRate) + 1) % rates.length]; \
+                media.playbackRate = next; \
+                speed.textContent = next + '×'; \
             }); \
             if (full) { \
                 full.addEventListener('click', function () { \

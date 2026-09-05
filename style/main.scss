@@ -1302,8 +1302,8 @@ img.avatar {
 .media-player {
   display: flex;
   align-items: center;
-  gap: 12px;
-  width: min(480px, 80vw);
+  gap: 10px;
+  width: min(560px, 80vw);
   padding: 12px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1373,16 +1373,25 @@ img.avatar {
   min-width: 34px;
   text-align: center;
 }
-
-.media-seek {
-  flex: 1;
+.media-seek, .media-vol-slider {
   appearance: none;
   height: 4px;
   margin: 0;
   background: var(--border);
   border-radius: 2px;
   cursor: pointer;
+}
 
+.media-seek {
+  flex: 1;
+}
+
+.media-vol-slider {
+  width: 64px;
+  flex: none;
+}
+
+.media-seek, .media-vol-slider {
   &::-webkit-slider-thumb {
     appearance: none;
     width: 12px;
@@ -1413,7 +1422,7 @@ img.avatar {
   }
 }
 
-.media-full {
+.media-full, .media-vol {
   display: grid;
   place-items: center;
   width: 28px;
@@ -1423,6 +1432,29 @@ img.avatar {
   border: none;
   border-radius: var(--radius);
   background: none;
+  color: var(--muted);
+  cursor: pointer;
+
+  &:hover { background: var(--row-hover); color: var(--ink); }
+}
+
+.media-vol .glyph-vol-off { display: none; }
+.media-muted .media-vol {
+  .glyph-vol-on { display: none; }
+  .glyph-vol-off { display: block; }
+}
+
+// The speed cycle reads as a value, not an icon: mono, quiet, button-sized.
+.media-speed {
+  flex: none;
+  min-width: 38px;
+  height: 28px;
+  padding: 0 4px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
   color: var(--muted);
   cursor: pointer;
 
@@ -4648,13 +4680,14 @@ input[type="radio"] {
   margin-bottom: 12px;
 }
 
-.viewer-title { overflow-wrap: anywhere; }
+// The title's chip (a thumb or the mime glyph) centers against the name —
+// as a plain block the 24px box hangs off the text's baseline.
+.viewer-title { overflow-wrap: anywhere; display: flex; align-items: center; gap: 10px; }
 
 .viewer-stage {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  width: 100%;
   max-width: min(100%, 960px);
   margin: 16px auto;
   padding: 20px 24px 24px;
