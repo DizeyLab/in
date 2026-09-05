@@ -201,8 +201,9 @@ async fn visible_file(
 
 /// Serves one file's bytes, or the same not-found a stranger would see for
 /// a file that does not exist — never a `403`, which would confirm the id
-/// belongs to somebody else's drive. Only `?dl=1` counts a download: the
-/// viewer reads the same bytes inline, and looking is not downloading.
+/// belongs to somebody else's drive. Inline bytes are the viewer's preview:
+/// anyone who may see the file reads them. Taking the file away is a
+/// different act — `?dl=1` needs the download grant, and only it counts.
 #[route(GET "/file/{id}")]
 async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     let id: &str = path_param::<Id>(cx);
@@ -218,23 +219,23 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> 
     let Some(file) = visible_file(store.as_ref(), &user.id, id).await else {
         return Ok(not_found());
     };
-    // A view-only grant opens the file's page but not its bytes.
-    if file.owner_id != user.id
-        && !store
+    let forced = query_params::<DownloadQuery>(cx)
+        .ok()
+        .and_then(|query| query.dl.clone())
+        .is_some();
+    // A view-only grant previews but never downloads.
+    let may_download = file.owner_id == user.id
+        || store
             .can_download(ShareKind::File, id, &user.id)
             .await
-            .unwrap_or(false)
-    {
+            .unwrap_or(false);
+    if forced && !may_download {
         return Ok(not_found());
     }
     let Ok(Some(bytes)) = store.file_bytes(id).await else {
         return Ok(not_found());
     };
 
-    let forced = query_params::<DownloadQuery>(cx)
-        .ok()
-        .and_then(|query| query.dl.clone())
-        .is_some();
     let inline = !forced && inline_ok(&file.mime);
 
     let mut headers = HeaderMap::new();
@@ -432,11 +433,14 @@ fn is_archive_mime(mime: &str) -> bool {
 
 /// `GET /view/{id}`: one file's viewer page — its name, the inline viewer
 /// for its kind, a download link and its details. Authorization mirrors
-/// trashed files open for nobody. A view-only grant opens the page but not
-/// the bytes: the download link shows only while the reader may download,
-/// and the inline viewer gives way to the unavailable note, since every
-/// viewer element reads the same gated bytes. Bytes for another owner's
-/// file answer 404, not 403.
+/// trashed files open for nobody. Anyone who may see the file gets the
+/// media preview — "view only" means preview, no download: the media
+/// elements carry no save affordance (no download in the controls, no
+/// drag, no context menu — `viewer_guard_script`), the Download link shows
+/// only while the reader may download, and `?dl=1` stays gated on the
+/// byte route. Documents (PDF, text) frame the bytes in the browser's own
+/// chrome, whose toolbar downloads — they preview only under the grant.
+/// Bytes for another owner's file answer 404, not 403.
 #[page("/view/{id}")]
 async fn view_file(cx: &Cx) -> Result {
     let id: &str = path_param::<Id>(cx);
@@ -486,11 +490,13 @@ async fn view_file(cx: &Cx) -> Result {
             <h1 class="settings-title viewer-title">(entry_chip(cx, &file).await?) (file.name.clone())</h1>
             <p class="field-note">(meta)</p>
             <div class="viewer-stage">
-                if may_download {
+                // Media previews for every reader; documents only under the
+                // download grant (their browser chrome saves the file).
+                if matches!(viewer_kind(&file.mime), Some(ViewerKind::Image | ViewerKind::Video | ViewerKind::Audio)) || may_download {
                     match viewer_kind(&file.mime) {
-                        Some(ViewerKind::Image) => <img class="viewer-media" src=(src.clone()) alt=(file.name.clone())>,
-                        Some(ViewerKind::Video) => <video class="viewer-media" src=(src.clone()) controls="" preload="metadata"></video>,
-                        Some(ViewerKind::Audio) => <div class="viewer-audio-wrap"><audio class="viewer-audio" src=(src.clone()) controls="" preload="metadata"></audio></div>,
+                        Some(ViewerKind::Image) => <img class="viewer-media" src=(src.clone()) alt=(file.name.clone()) draggable="false">,
+                        Some(ViewerKind::Video) => <video class="viewer-media" src=(src.clone()) controls="" controlslist="nodownload" preload="metadata"></video>,
+                        Some(ViewerKind::Audio) => <div class="viewer-audio-wrap"><audio class="viewer-audio" src=(src.clone()) controls="" controlslist="nodownload" preload="metadata"></audio></div>,
                         Some(ViewerKind::Pdf) => <object class="viewer-media viewer-pdf" data=(src.clone()) type="application/pdf">
                             <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
                         </object>,
@@ -500,9 +506,6 @@ async fn view_file(cx: &Cx) -> Result {
                         </div>
                     }
                 } else {
-                    // A view-only grant opens the page but not the bytes, so
-                    // the viewer elements — every one reads /file/{id} —
-                    // would only frame a 404. The note instead.
                     <div class="viewer-fallback">
                         <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
                     </div>
@@ -528,7 +531,27 @@ async fn view_file(cx: &Cx) -> Result {
                 </div>
             </section>
         </main>
+        (viewer_guard_script(cx).await?)
     }
+}
+
+/// The preview's save-path cleanup: the media elements already carry no
+/// download affordance (`controlslist="nodownload"`, `draggable="false"`),
+/// and this drops the context menu over the stage, so "save as" never
+/// opens on a preview. A page's bytes on the wire can always be captured —
+/// this keeps the surface from offering it, which is what a view-only
+/// grant promises.
+async fn viewer_guard_script(cx: &Cx) -> Result {
+    use topcoat::view::Unescaped;
+    const JS: &str = "\
+        (function () { \
+        if (window.__inViewerGuard) { return; } \
+        window.__inViewerGuard = true; \
+        document.addEventListener('contextmenu', function (e) { \
+            if (e.target && e.target.closest && e.target.closest('.viewer-stage')) { e.preventDefault(); } \
+        }); \
+        })();";
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
 
 /// Takes the files the drive's upload form carries — one per `file` part,

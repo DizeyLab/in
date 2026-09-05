@@ -1639,6 +1639,60 @@ async fn per_user_share_lands_in_shared_with_me() {
     assert!(!bobs.text().contains("joint.txt"), "{}", bobs.text());
 }
 
+/// View only means preview, no download: the reader sees the media inline
+/// on the viewer page and reads the inline bytes, while `?dl=1` stays dead
+/// and the page never offers the Download link.
+#[tokio::test]
+async fn view_only_reader_previews_media_but_cannot_download() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(
+        &app,
+        &owner,
+        "photo.png",
+        b"\x89PNG\r\n\x1a\n preview bytes",
+    )
+    .await;
+
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("email", "bob@in.test"),
+                ("can_download", "0"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "add refused: {:?}", answer.location);
+
+    // The viewer page renders the media, not the unavailable note, and
+    // offers no download.
+    let page = app.get(&format!("/view/{file}"), Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("viewer-media"), "{}", page.text());
+    assert!(!page.text().contains("No preview"), "{}", page.text());
+    assert!(!page.text().contains("?dl=1"), "{}", page.text());
+
+    // The inline bytes serve for the preview...
+    let inline = app.get(&format!("/file/{file}"), Some(&bob)).await;
+    assert_eq!(inline.status, StatusCode::OK, "{}", inline.text());
+    assert_eq!(inline.bytes, b"\x89PNG\r\n\x1a\n preview bytes");
+    // ...and taking the file away stays the stranger's answer.
+    let taken = app.get(&format!("/file/{file}?dl=1"), Some(&bob)).await;
+    assert_eq!(taken.status, StatusCode::NOT_FOUND, "{}", taken.text());
+
+    // A preview is not a download: the counter never moves.
+    assert_eq!(
+        app.store.file(&file).await.unwrap().unwrap().download_count,
+        0
+    );
+}
+
 // -- trash ------------------------------------------------------------------
 
 #[tokio::test]
