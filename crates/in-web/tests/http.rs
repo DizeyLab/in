@@ -1539,7 +1539,7 @@ async fn search_scopes_to_owner_and_hides_trashed() {
 }
 
 #[tokio::test]
-async fn drive_search_results_replace_the_folder_panels() {
+async fn drive_search_results_merge_into_one_panel() {
     let app = TestApp::build().await;
     let cookie = app.sign_in("sub-search-in-place", "inplace@in.test", "InPlace").await;
     let owner = owner_of(&app, "sub-search-in-place").await;
@@ -1557,21 +1557,30 @@ async fn drive_search_results_replace_the_folder_panels() {
     let page = app.get("/drive?q=holiday", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let body = page.text();
-    // Both hits render in place on the drive, wired to their surfaces.
+    // Both hits render in one shared list, folders first, wired to their surfaces.
     assert!(body.contains("holiday photos"), "{body}");
     assert!(body.contains("holiday report.txt"), "{body}");
     assert!(body.contains(&format!("/drive?folder={folder}")), "{body}");
     assert!(body.contains(&format!("/file/{file}")), "{body}");
-    // One chip per list, like the folder panels they replace.
-    assert_eq!(body.matches("<span class=\"chip\">1</span>").count(), 2, "{body}");
+    let folder_at = body.find("holiday photos").expect("no folder hit");
+    let file_at = body.find("holiday report.txt").expect("no file hit");
+    assert!(folder_at < file_at, "file hit precedes folder hit: {body}");
+    // One panel, no heads or chips.
+    assert_eq!(body.matches("<section class=\"panel\">").count(), 1, "{body}");
+    assert!(!body.contains("panel-head"), "{body}");
+    assert!(!body.contains("class=\"chip\""), "{body}");
+    assert!(!body.contains(">Folders</h2>"), "{body}");
+    assert!(!body.contains(">Files</h2>"), "{body}");
     // The caption names the query and the box keeps it.
     assert!(body.contains("Search results"), "{body}");
     assert!(body.contains("holiday"), "{body}");
     assert!(body.contains("value=\"holiday\""), "{body}");
     assert!(body.contains("name=\"q\""), "{body}");
-    // The folder view is gone: no crumbs, no upload, no row mutations.
+    // The upload control stays in the DOM for the + menu and the drop handler.
+    assert!(body.contains("id=\"upload-form\""), "{body}");
+    assert!(body.contains("id=\"drive-upload-input\""), "{body}");
+    // The folder view is gone: no crumbs, no row mutations.
     assert!(!body.contains("detail-crumbs"), "{body}");
-    assert!(!body.contains("id=\"upload-form\""), "{body}");
     assert!(!body.contains("action=\"/api/folder/rename\""), "{body}");
 }
 
@@ -2380,7 +2389,7 @@ async fn trash_panels_nest_inside_the_stage() {
 }
 
 #[tokio::test]
-async fn drive_search_panels_nest_inside_the_stage() {
+async fn drive_search_panel_nests_inside_the_stage() {
     let app = TestApp::build().await;
     let admin = app.sign_in("sub-stage-search", "stagesearch@in.test", "StageSearch").await;
     let owner = owner_of(&app, "sub-stage-search").await;
@@ -2389,7 +2398,7 @@ async fn drive_search_panels_nest_inside_the_stage() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert_stage_nests(
         &page.text(),
-        &["panel-head", "name=\"q\"", "staged-report.txt"],
+        &["panel-body", "name=\"q\"", "staged-report.txt"],
     );
 }
 
@@ -2705,16 +2714,64 @@ async fn drive_edit_row_renders_the_rename_form() {
 }
 
 #[tokio::test]
-async fn an_empty_files_panel_says_how_to_fill_it() {
+async fn drive_lists_folders_before_files_in_one_panel() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-merged", "merged@in.test", "Merged").await;
+    let owner = owner_of(&app, "sub-merged").await;
+    // The file's name sorts first alphabetically, so order proves folders lead.
+    let file_id = file_id(&app, &owner, "aaa file.txt", b"a").await;
+    let answer = app
+        .post("/api/folder/create", Some(&cookie), &[("parent_id", ""), ("name", "mmm folder")])
+        .await;
+    assert!(answer.accepted(), "setup create refused: {:?}", answer.location);
+
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    // One panel, no heads or chips — just the merged list.
+    assert_eq!(body.matches("<section class=\"panel\">").count(), 1, "{body}");
+    assert!(!body.contains("panel-head"), "{body}");
+    assert!(!body.contains("class=\"chip\""), "{body}");
+    assert!(!body.contains(">Folders</h2>"), "{body}");
+    assert!(!body.contains(">Files</h2>"), "{body}");
+    // Folders first, then files, each wired to its surface.
+    let folder_at = body.find("mmm folder").expect("no folder row");
+    let file_at = body.find("aaa file.txt").expect("no file row");
+    assert!(folder_at < file_at, "file row precedes folder row: {body}");
+    assert!(body.contains("action=\"/api/folder/move\""), "{body}");
+    // File rename follows the folder pattern: an edit link on the plain
+    // view, the form only on the edit view.
+    assert!(
+        body.contains(&format!("/drive?edit={file_id}")),
+        "file row has no edit entry: {body}"
+    );
+    let edit_page = app
+        .get(&format!("/drive?edit={file_id}"), Some(&cookie))
+        .await;
+    assert!(
+        edit_page.text().contains("action=\"/api/file/rename\""),
+        "{}",
+        edit_page.text()
+    );
+    // A non-empty list carries no empty state.
+    assert!(!body.contains("This folder is empty"), "{body}");
+}
+
+#[tokio::test]
+async fn an_empty_folder_says_how_to_fill_it() {
     let app = TestApp::build().await;
     let cookie = app.sign_in("sub-empty", "empty@in.test", "Empty").await;
     let page = app.get("/drive", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    // The single empty state names both ways to fill the folder.
     assert!(
-        page.text().contains("Nothing here yet"),
-        "no empty-state hint: {}",
-        page.text()
+        body.contains("This folder is empty. Press + to create or upload, or drop files on this page."),
+        "no empty-state hint: {body}"
     );
-    // And the drop handler the hint promises is on the page.
-    assert!(page.text().contains("__inDrop"), "{}", page.text());
+    assert_eq!(body.matches("<section class=\"panel\">").count(), 1, "{body}");
+    assert!(!body.contains("panel-head"), "{body}");
+    // And the upload control plus the drop handler the hint promises are on the page.
+    assert!(body.contains("id=\"upload-form\""), "{body}");
+    assert!(body.contains("__inDrop"), "{body}");
 }

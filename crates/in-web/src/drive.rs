@@ -8,7 +8,7 @@
 //! itself is refused. Anything naming another owner's tree answers 404,
 //! never 403.
 //!
-//! `GET /drive?q=<text>` keeps the same page and swaps the folder panels
+//! `GET /drive?q=<text>` keeps the same page and swaps the folder list
 //! for library-wide name hits — the filterbar's search box, submitted as a
 //! plain GET form. The old `GET /search?q=` address 303s here, so old links
 //! keep working.
@@ -250,7 +250,6 @@ async fn drive(cx: &Cx) -> Result {
                         </nav>
                     }
                 }
-                <div class="spacer"></div>
                 <form class="field-box-search" method="get" action="/drive">
                     <input
                         class="field-input"
@@ -284,44 +283,38 @@ async fn drive(cx: &Cx) -> Result {
                     </div>
                 </section>
             }
+            // The upload control sits outside the list so the + menu's
+            // "Upload files" label and the page-wide drop handler find it on
+            // every drive view, folder or search. The input stays hidden via
+            // the file-upload-input rule.
+            <form id="upload-form" class="file-upload" method="post" action="/files"
+                enctype="multipart/form-data" data-hard="" data-failed-label=(t(language, Key::UploadFailed))>
+                <input type="hidden" name="folder_id" value=(current_id.clone())>
+                <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
+            </form>
             if let Some(hits) = hits {
                 if hits.folders.is_empty() && hits.files.is_empty() {
                     <p class="detail-quiet">(t(language, Key::NoResults))</p>
-                }
-                if !hits.folders.is_empty() {
-                    <section class="panel">
-                        <div class="panel-head">
-                            <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
-                            <span class="chip">(format!("{}", hits.folders.len()))</span>
-                        </div>
-                        <div class="panel-body">
-                            for folder in &hits.folders {
-                                <p><a href=(format!("/drive?folder={}", folder.id))>(folder.name.clone())</a></p>
-                            }
-                        </div>
-                    </section>
-                }
-                if !hits.files.is_empty() {
-                    <section class="panel">
-                        <div class="panel-head">
-                            <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
-                            <span class="chip">(format!("{}", hits.files.len()))</span>
-                        </div>
-                        <div class="panel-body">
-                            for file in &hits.files {
-                                <p><a href=(format!("/file/{}", file.id))>(file.name.clone())</a></p>
-                            }
-                        </div>
-                    </section>
+                } else {
+                <section class="panel">
+                    <div class="panel-body">
+                        for folder in &hits.folders {
+                            <div class="dep-row">
+                                <a class="dep-link" href=(format!("/drive?folder={}", folder.id))>(folder.name.clone())</a>
+                            </div>
+                        }
+                        for file in &hits.files {
+                            <div class="dep-row">
+                                <a class="dep-link" href=(format!("/file/{}", file.id))>(file.name.clone())</a>
+                            </div>
+                        }
+                    </div>
+                </section>
                 }
             } else {
             <section class="panel">
-                <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::FoldersHeading))</h2>
-                    <span class="chip">(format!("{}", listing.folders.len()))</span>
-                </div>
                 <div class="panel-body">
-                    if listing.folders.is_empty() {
+                    if listing.folders.is_empty() && listing.files.is_empty() {
                         <p class="detail-quiet">(t(language, Key::EmptyFolder))</p>
                     }
                     for folder in listing.folders.iter() {
@@ -359,59 +352,47 @@ async fn drive(cx: &Cx) -> Result {
                             }
                         </div>
                     }
-                </div>
-            </section>
-            <section class="panel">
-                <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::FilesHeading))</h2>
-                    <span class="chip">(format!("{}", listing.files.len()))</span>
-                </div>
-                <div class="panel-body">
-                    <form id="upload-form" class="file-upload" method="post" action="/files"
-                        enctype="multipart/form-data" data-hard="" data-failed-label=(t(language, Key::UploadFailed))>
-                        <input type="hidden" name="folder_id" value=(current_id.clone())>
-                        // No visible chooser here: the + menu's "Upload files"
-                        // label targets this input. It stays in the DOM, display-
-                        // none via the file-upload-input rule.
-                        <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
-                    </form>
-                    if listing.files.is_empty() {
-                        <p class="detail-quiet">(t(language, Key::EmptyFiles))</p>
-                    }
-                    <div class="file-list">
-                        for file in listing.files.iter() {
-                            <div class="dep-row">
-                                if file.thumb_state == ThumbState::Ready {
-                                    <img class="file-chip" src=(format!("/thumb/{}", file.id)) alt="">
-                                } else {
-                                    <span class="file-chip" aria-hidden="true">"▦"</span>
-                                }
-                                <a class="dep-link" href=(format!("/file/{}", file.id))>(file.name.clone())</a>
-                                <span class="file-chip-size">(human_size(file.size_bytes))</span>
-                                <div class="spacer"></div>
+                    for file in listing.files.iter() {
+                        <div class="dep-row">
+                            if file.thumb_state == ThumbState::Ready {
+                                <img class="file-chip" src=(format!("/thumb/{}", file.id)) alt="">
+                            } else {
+                                <span class="file-chip" aria-hidden="true">"▦"</span>
+                            }
+                            if edit_id.as_deref() == Some(file.id.as_str()) {
                                 <form class="pop-row-form" method="post" action="/api/file/rename">
                                     <input type="hidden" name="id" value=(file.id.clone())>
                                     <input class="field-input" type="text" name="name" maxlength="255"
-                                        value=(file.name.clone()) required="" aria-label=(t(language, Key::RenameFile))>
+                                        value=(file.name.clone()) required="" data-edit-focus=""
+                                        aria-label=(t(language, Key::RenameFile))>
                                     <button class="quiet" type="submit">(t(language, Key::Rename))</button>
+                                    <a class="quiet" href=(here.clone())>(t(language, Key::Cancel))</a>
                                 </form>
-                                <form class="pop-row-form" method="post" action="/api/file/move">
-                                    <input type="hidden" name="id" value=(file.id.clone())>
-                                    <select class="field-input" name="folder_id" aria-label=(t(language, Key::MoveFile))>
-                                        <option value="">(t(language, Key::Drive))</option>
-                                        for dest in destinations.iter() {
-                                            <option value=(dest.0.clone())>(dest.1.clone())</option>
-                                        }
-                                    </select>
-                                    <button class="quiet" type="submit">(t(language, Key::Move))</button>
-                                </form>
-                                <form class="detail-delete-form" method="post" action="/api/file/delete">
-                                    <input type="hidden" name="id" value=(file.id.clone())>
-                                    <button class="quiet" type="submit">(t(language, Key::Delete))</button>
-                                </form>
-                            </div>
-                        }
-                    </div>
+                            } else {
+                            <a class="dep-link" href=(format!("/file/{}", file.id))>(file.name.clone())</a>
+                            }
+                            <span class="file-chip-size">(human_size(file.size_bytes))</span>
+                            <div class="spacer"></div>
+                            if edit_id.as_deref() != Some(file.id.as_str()) {
+                            <a class="quiet" href=(format!("{here}{edit_sep}edit={}", file.id))
+                                aria-label=(t(language, Key::RenameFile))>(t(language, Key::Rename))</a>
+                            <form class="pop-row-form" method="post" action="/api/file/move">
+                                <input type="hidden" name="id" value=(file.id.clone())>
+                                <select class="field-input" name="folder_id" aria-label=(t(language, Key::MoveFile))>
+                                    <option value="">(t(language, Key::Drive))</option>
+                                    for dest in destinations.iter() {
+                                        <option value=(dest.0.clone())>(dest.1.clone())</option>
+                                    }
+                                </select>
+                                <button class="quiet" type="submit">(t(language, Key::Move))</button>
+                            </form>
+                            <form class="detail-delete-form" method="post" action="/api/file/delete">
+                                <input type="hidden" name="id" value=(file.id.clone())>
+                                <button class="quiet" type="submit">(t(language, Key::Delete))</button>
+                            </form>
+                            }
+                        </div>
+                    }
                 </div>
             </section>
             }
