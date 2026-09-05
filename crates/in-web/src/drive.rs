@@ -260,6 +260,7 @@ async fn drive(cx: &Cx) -> Result {
                         aria-label=(t(language, Key::SearchPlaceholder))
                     >
                 </form>
+                <div class="spacer"></div>
                 <details class="user-menu drive-add">
                     <summary class="quiet drive-add-trigger" aria-label=(t(language, Key::NewFolder))>"+ "</summary>
                     <div class="user-menu-panel">
