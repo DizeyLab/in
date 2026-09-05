@@ -2703,3 +2703,18 @@ async fn drive_edit_row_renders_the_rename_form() {
     assert!(body.contains("value=\"plans\""), "rename input is not pre-filled");
     assert!(body.contains("__inEditFocus"), "no edit focus script");
 }
+
+#[tokio::test]
+async fn an_empty_files_panel_says_how_to_fill_it() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-empty", "empty@in.test", "Empty").await;
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(
+        page.text().contains("Nothing here yet"),
+        "no empty-state hint: {}",
+        page.text()
+    );
+    // And the drop handler the hint promises is on the page.
+    assert!(page.text().contains("__inDrop"), "{}", page.text());
+}

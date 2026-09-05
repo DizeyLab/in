@@ -375,6 +375,9 @@ async fn drive(cx: &Cx) -> Result {
                         // none via the file-upload-input rule.
                         <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
                     </form>
+                    if listing.files.is_empty() {
+                        <p class="detail-quiet">(t(language, Key::EmptyFiles))</p>
+                    }
                     <div class="file-list">
                         for file in listing.files.iter() {
                             <div class="dep-row">
@@ -560,6 +563,23 @@ async fn upload_script(cx: &Cx) -> Result {
                 } \
                 focusIt(); \
                 document.addEventListener('in:wire', focusIt); \
+            })(); \
+            (function () { \
+                if (window.__inDrop) { return; } \
+                window.__inDrop = true; \
+                function uploadForm() { return document.getElementById('upload-form'); } \
+                document.addEventListener('dragover', function (e) { \
+                    if (uploadForm() && e.dataTransfer && e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1) { e.preventDefault(); } \
+                }); \
+                document.addEventListener('drop', function (e) { \
+                    var form = uploadForm(); \
+                    if (!form || !e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) { return; } \
+                    e.preventDefault(); \
+                    var input = form.querySelector('.file-upload-input'); \
+                    if (!input) { return; } \
+                    input.files = e.dataTransfer.files; \
+                    input.dispatchEvent(new Event('change', { bubbles: true })); \
+                }); \
             })(); \
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
