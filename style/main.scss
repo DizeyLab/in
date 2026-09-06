@@ -5034,6 +5034,11 @@ div.member-row + div.member-row {
 // holding the entry's menu. Everything here is token-painted, so the skins
 // carry it without their own rules.
 
+// The bar's halves: the search field leads from the left and the listing
+// controls hold the right edge — the search carries the spring. Shared by
+// the drive, trash and shared bars, which all lead with the search form.
+.filterbar .field-box-search { margin-right: auto; }
+
 // The bar: the search field stretches, the sort/kind boxes hug their content,
 // and the + (now `.primary`) is the bar's one loud act.
 .drive-bar {

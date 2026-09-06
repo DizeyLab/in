@@ -998,6 +998,19 @@ async fn shared(cx: &Cx) -> Result {
         <main class="settings-stage stage-wide">
             <h1 class="settings-title">(t(language, Key::SharedWithMe))</h1>
             <div class="filterbar">
+                <form class="field-box field-box-search" method="get" action="/shared">
+                    <span class="field-text">(t(language, Key::NavSearch))</span>
+                    <input
+                        class="dd-search"
+                        type="search"
+                        name="q"
+                        value=(box_text.clone())
+                        placeholder=(t(language, Key::SearchPlaceholder))
+                        aria-label=(t(language, Key::SearchPlaceholder))
+                    >
+                    <input type="hidden" name="sort" value=(sort.to_string())>
+                    <input type="hidden" name="kind" value=(kind.to_string())>
+                </form>
                 <form class="field-box field-box-sort" method="get" action="/shared">
                     <span class="field-text">(t(language, Key::Sort))</span>
                     <select class="status-select" name="sort" data-autosubmit="" data-nosearch="" aria-label=(t(language, Key::Sort))>
@@ -1022,19 +1035,6 @@ async fn shared(cx: &Cx) -> Result {
                     </select>
                     <input type="hidden" name="sort" value=(sort.to_string())>
                     <input type="hidden" name="q" value=(box_text.clone())>
-                </form>
-                <form class="field-box field-box-search" method="get" action="/shared">
-                    <span class="field-text">(t(language, Key::NavSearch))</span>
-                    <input
-                        class="dd-search"
-                        type="search"
-                        name="q"
-                        value=(box_text.clone())
-                        placeholder=(t(language, Key::SearchPlaceholder))
-                        aria-label=(t(language, Key::SearchPlaceholder))
-                    >
-                    <input type="hidden" name="sort" value=(sort.to_string())>
-                    <input type="hidden" name="kind" value=(kind.to_string())>
                 </form>
             </div>
             <section class="panel">

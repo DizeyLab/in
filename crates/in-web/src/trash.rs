@@ -326,6 +326,19 @@ async fn trash(cx: &Cx) -> Result {
         <main class="settings-stage stage-wide">
             <h1 class="settings-title">(t(language, Key::Trash))</h1>
             <div class="filterbar">
+                <form class="field-box field-box-search" method="get" action="/trash">
+                    <span class="field-text">(t(language, Key::NavSearch))</span>
+                    <input
+                        class="dd-search"
+                        type="search"
+                        name="q"
+                        value=(box_text.clone())
+                        placeholder=(t(language, Key::SearchPlaceholder))
+                        aria-label=(t(language, Key::SearchPlaceholder))
+                    >
+                    <input type="hidden" name="sort" value=(sort_value.clone())>
+                    <input type="hidden" name="kind" value=(kind.to_string())>
+                </form>
                 <form class="field-box field-box-sort" method="get" action="/trash">
                     <span class="field-text">(t(language, Key::Sort))</span>
                     <select class="status-select" name="sort" data-autosubmit="" data-nosearch="" aria-label=(t(language, Key::Sort))>
@@ -350,19 +363,6 @@ async fn trash(cx: &Cx) -> Result {
                     </select>
                     <input type="hidden" name="sort" value=(sort_value.clone())>
                     <input type="hidden" name="q" value=(box_text.clone())>
-                </form>
-                <form class="field-box field-box-search" method="get" action="/trash">
-                    <span class="field-text">(t(language, Key::NavSearch))</span>
-                    <input
-                        class="dd-search"
-                        type="search"
-                        name="q"
-                        value=(box_text.clone())
-                        placeholder=(t(language, Key::SearchPlaceholder))
-                        aria-label=(t(language, Key::SearchPlaceholder))
-                    >
-                    <input type="hidden" name="sort" value=(sort_value.clone())>
-                    <input type="hidden" name="kind" value=(kind.to_string())>
                 </form>
             </div>
             (refusal_banner(cx, language, &["restore", "purge", "empty"]).await?)
