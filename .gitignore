@@ -9,3 +9,4 @@ in.key
 CLAUDE.md
 /crates/in-web/assets
 *.db.backup-*
+/.pi
