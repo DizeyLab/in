@@ -566,7 +566,7 @@ async fn drive(cx: &Cx) -> Result {
         cx =>
         (topbar(cx, NavPage::Drive, &user, language).await?)
         <main class="settings-stage stage-wide">
-            <div class="filterbar">
+            <div class="filterbar drive-bar">
                 if let Some(query) = asked.as_deref() {
                     <p class="detail-quiet">(t(language, Key::SearchResults)) (format!(" “{query}”"))</p>
                 } else {
@@ -581,7 +581,6 @@ async fn drive(cx: &Cx) -> Result {
                     }
                 }
                 <form class="field-box field-box-search" method="get" action="/drive">
-                    <span class="field-text">(t(language, Key::NavSearch))</span>
                     <input
                         class="dd-search"
                         type="search"
@@ -598,9 +597,7 @@ async fn drive(cx: &Cx) -> Result {
         <input type="hidden" name="kind" value=(kind.as_str())>
     }
                 </form>
-                <div class="spacer"></div>
                 <form class="field-box field-box-sort" method="get" action="/drive">
-                    <span class="field-text">(t(language, Key::Sort))</span>
     <select class="status-select" name="sort" data-autosubmit="" data-nosearch="" aria-label=(t(language, Key::Sort))>
         <option value="name:asc" selected=(sort_value == "name:asc")>(t(language, Key::SortNameAZ))</option>
         <option value="name:desc" selected=(sort_value == "name:desc")>(t(language, Key::SortNameZA))</option>
@@ -619,7 +616,6 @@ async fn drive(cx: &Cx) -> Result {
     <button class="quiet" type="submit" aria-label=(t(language, Key::Sort))>"→"</button>
     </form>
                 <form class="field-box field-box-sort" method="get" action="/drive">
-                    <span class="field-text">(t(language, Key::Kind))</span>
                     <select class="status-select" name="kind" data-autosubmit="" aria-label=(t(language, Key::Kind))>
                         <option value="all" selected=(kind == KindFilter::All)>(t(language, Key::KindAll))</option>
                         <option value="folders" selected=(kind == KindFilter::Folders)>(t(language, Key::KindFolders))</option>
@@ -633,7 +629,7 @@ async fn drive(cx: &Cx) -> Result {
                     <button class="quiet" type="submit" aria-label=(t(language, Key::Kind))>"→"</button>
                 </form>
                 <details class="user-menu drive-add">
-                    <summary class="quiet drive-add-trigger" aria-label=(t(language, Key::NewFolder))>"+ "</summary>
+                    <summary class="primary drive-add-trigger" aria-label=(t(language, Key::NewFolder))>"+ "</summary>
                     <div class="user-menu-panel">
                         <form class="user-menu-item-form" method="post" action="/api/folder/create">
                             <input type="hidden" name="parent_id" value=(current_id.clone())>
@@ -678,32 +674,73 @@ async fn drive(cx: &Cx) -> Result {
             </div>
             if let Some(hits) = hits {
                 if hits.folders.is_empty() && hits.files.is_empty() {
-                    <p class="detail-quiet">(t(language, Key::NoResults))</p>
+                    <section class="panel drive-panel">
+                        <div class="drive-empty">
+                            <span class="drive-empty-glyph" aria-hidden="true">"▤"</span>
+                            <p class="drive-empty-text">(t(language, Key::NoResults))</p>
+                        </div>
+                    </section>
                 } else {
-                <section class="panel">
-                    <div class="panel-body">
+                <section class="panel drive-panel">
+                    <div class="drive-head">
+                        <span class="drive-cols">
+                            <span class="drive-col-ico" aria-hidden="true"></span>
+                            <span>(t(language, Key::NameColumn))</span>
+                            <span class="drive-col-num drive-col-size">(t(language, Key::SizeColumn))</span>
+                            <span class="drive-col-date">(t(language, Key::ModifiedColumn))</span>
+                            <span class="drive-col-num drive-col-dl">(t(language, Key::DownloadsLabel))</span>
+                        </span>
+                        <span class="drive-head-options" aria-hidden="true"></span>
+                    </div>
+                    <div class="drive-list">
                         for folder in &hits.folders {
-                            <div class="dep-row">
-                                <a class="dep-link" href=(format!("/drive?folder={}", folder.id))>(folder.name.clone())</a>
+                            <div class="drive-row">
+                                <a class="drive-open" href=(format!("/drive?folder={}", folder.id))>
+                                    <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                                    <span class="dep-title">(folder.name.clone())</span>
+                                    <span class="drive-meta" aria-hidden="true"></span>
+                                    <span class="drive-meta drive-date">(folder.created_at.date().to_string())</span>
+                                    <span class="drive-meta" aria-hidden="true"></span>
+                                </a>
                             </div>
                         }
                         for file in &hits.files {
-                            <div class="dep-row">
-                                <a class="dep-link" href=(format!("/view/{}", file.id))>(file.name.clone())</a>
+                            <div class="drive-row">
+                                <a class="drive-open" href=(format!("/view/{}", file.id))>
+                                    (crate::files::entry_chip(cx, file).await?)
+                                    <span class="dep-title">(file.name.clone())</span>
+                                    <span class="drive-meta drive-size">(human_size(file.size_bytes))</span>
+                                    <span class="drive-meta drive-date">(file.created_at.date().to_string())</span>
+                                    <span class="drive-meta drive-dl">(file.download_count.to_string())</span>
+                                </a>
                             </div>
                         }
                     </div>
                 </section>
                 }
             } else {
-            <section class="panel">
-                <div class="panel-body">
-                    if listing.folders.is_empty() && listing.files.is_empty() {
-                        <p class="detail-quiet">(t(language, Key::EmptyFolder))</p>
-                    }
+            <section class="panel drive-panel">
+                if listing.folders.is_empty() && listing.files.is_empty() {
+                    <div class="drive-empty">
+                        <span class="drive-empty-glyph" aria-hidden="true">"▤"</span>
+                        <p class="drive-empty-text">(t(language, Key::EmptyFolder))</p>
+                    </div>
+                } else {
+                <div class="drive-head">
+                    <span class="drive-cols">
+                        <span class="drive-col-ico" aria-hidden="true"></span>
+                        <span>(t(language, Key::NameColumn))</span>
+                        <span class="drive-col-num drive-col-size">(t(language, Key::SizeColumn))</span>
+                        <span class="drive-col-date">(t(language, Key::ModifiedColumn))</span>
+                        <span class="drive-col-num drive-col-dl">(t(language, Key::DownloadsLabel))</span>
+                    </span>
+                    <span class="drive-head-options" aria-hidden="true"></span>
+                </div>
+                <div class="drive-list">
                     for folder in listing.folders.iter() {
-                        <div class="dep-row">
+                        <div class="drive-row">
                             if edit_id.as_deref() == Some(folder.id.as_str()) {
+                                <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
                                 <form class="dep-edit-form" method="post" action="/api/folder/rename">
                                     <input type="hidden" name="id" value=(folder.id.clone())>
                                     <input class="field-input" type="text" name="name" maxlength="255"
@@ -714,13 +751,15 @@ async fn drive(cx: &Cx) -> Result {
                                     <a class="quiet" href=(here.clone())>(t(language, Key::Cancel))</a>
                                 </form>
                             } else {
-                            <a class="dep-link" href=(format!("/drive?folder={}", folder.id))>
+                            <a class="drive-open" href=(format!("/drive?folder={}", folder.id))>
+                                <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
                                 <span class="dep-title">(folder.name.clone())</span>
+                                <span class="drive-meta" aria-hidden="true"></span>
+                                <span class="drive-meta drive-date">(folder.created_at.date().to_string())</span>
+                                <span class="drive-meta" aria-hidden="true"></span>
                             </a>
-                            <span class="dep-note">(t(language, Key::UploadedLabel))" "(folder.created_at.date().to_string())</span>
-                            <div class="spacer"></div>
                             <details class="user-menu entry-options">
-                                <summary class="quiet entry-options-trigger">(t(language, Key::Options))" ▾"</summary>
+                                <summary class="quiet entry-options-trigger" aria-label=(t(language, Key::Options))>"⋯"</summary>
                                 <div class="user-menu-panel">
                                     <a class="user-menu-item"
                                         href=(format!("{here}{edit_sep}edit={}", folder.id))>(t(language, Key::Rename))</a>
@@ -738,9 +777,9 @@ async fn drive(cx: &Cx) -> Result {
                         </div>
                     }
                     for file in listing.files.iter() {
-                        <div class="dep-row">
-                            (crate::files::entry_chip(cx, file).await?)
+                        <div class="drive-row">
                             if edit_id.as_deref() == Some(file.id.as_str()) {
+                                (crate::files::entry_chip(cx, file).await?)
                                 <form class="dep-edit-form" method="post" action="/api/file/rename">
                                     <input type="hidden" name="id" value=(file.id.clone())>
                                     <input class="field-input" type="text" name="name" maxlength="255"
@@ -751,15 +790,15 @@ async fn drive(cx: &Cx) -> Result {
                                     <a class="quiet" href=(here.clone())>(t(language, Key::Cancel))</a>
                                 </form>
                             } else {
-                            <a class="dep-link" href=(format!("/view/{}", file.id))>
+                            <a class="drive-open" href=(format!("/view/{}", file.id))>
+                                (crate::files::entry_chip(cx, file).await?)
                                 <span class="dep-title">(file.name.clone())</span>
+                                <span class="drive-meta drive-size">(human_size(file.size_bytes))</span>
+                                <span class="drive-meta drive-date">(file.created_at.date().to_string())</span>
+                                <span class="drive-meta drive-dl">(file.download_count.to_string())</span>
                             </a>
-                            <span class="file-chip-size">(human_size(file.size_bytes))</span>
-                            <span class="file-chip-note">(t(language, Key::UploadedLabel))" "(file.created_at.date().to_string())</span>
-                            <span class="file-chip-note">(t(language, Key::DownloadsLabel))" "(file.download_count.to_string())</span>
-                            <div class="spacer"></div>
                             <details class="user-menu entry-options">
-                                <summary class="quiet entry-options-trigger">(t(language, Key::Options))" ▾"</summary>
+                                <summary class="quiet entry-options-trigger" aria-label=(t(language, Key::Options))>"⋯"</summary>
                                 <div class="user-menu-panel">
                                     <a class="user-menu-item"
                                         href=(format!("{here}{edit_sep}edit={}", file.id))>(t(language, Key::Rename))</a>
@@ -782,6 +821,7 @@ async fn drive(cx: &Cx) -> Result {
                         </div>
                     }
                 </div>
+                }
             </section>
             }
         </main>

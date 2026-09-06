@@ -1902,7 +1902,8 @@ async fn drive_search_results_merge_into_one_panel() {
     assert!(folder_at < file_at, "file hit precedes folder hit: {body}");
     // One panel, no heads or chips.
     assert_eq!(
-        body.matches("<section class=\"panel\">").count(),
+        body.matches("<section class=\"panel drive-panel\">")
+            .count(),
         1,
         "{body}"
     );
@@ -2803,7 +2804,7 @@ async fn drive_search_panel_nests_inside_the_stage() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert_stage_nests(
         &page.text(),
-        &["panel-body", "name=\"q\"", "staged-report.txt"],
+        &["drive-panel", "name=\"q\"", "staged-report.txt"],
     );
 }
 
@@ -2833,7 +2834,7 @@ async fn drive_root_hides_crumbs_while_a_subfolder_shows_them() {
     assert!(!page.text().contains("detail-crumbs"), "{}", page.text());
     // The filterbar itself stays, holding the search box and the create form.
     assert!(
-        page.text().contains("class=\"filterbar\""),
+        page.text().contains("class=\"filterbar drive-bar\""),
         "{}",
         page.text()
     );
@@ -3262,7 +3263,8 @@ async fn drive_lists_folders_before_files_in_one_panel() {
     let body = page.text();
     // One panel, no heads or chips — just the merged list.
     assert_eq!(
-        body.matches("<section class=\"panel\">").count(),
+        body.matches("<section class=\"panel drive-panel\">")
+            .count(),
         1,
         "{body}"
     );
@@ -3338,7 +3340,8 @@ async fn an_empty_folder_says_how_to_fill_it() {
         "no empty-state hint: {body}"
     );
     assert_eq!(
-        body.matches("<section class=\"panel\">").count(),
+        body.matches("<section class=\"panel drive-panel\">")
+            .count(),
         1,
         "{body}"
     );

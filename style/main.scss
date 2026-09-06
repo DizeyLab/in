@@ -743,7 +743,7 @@ a {
   padding: 0;
   border-top: none;
 }
-// The drive's + menu trigger is a details summary wearing the quiet button
+// The drive's + menu trigger is a details summary wearing the primary button
 // skin; the disclosure marker stays hidden, the '+' is literal text. The
 // open panel is the house `.user-menu-panel` — no bar-local rules, no script.
 .drive-add-trigger {
@@ -2709,12 +2709,6 @@ img.avatar {
   white-space: nowrap;
 }
 
-.dep-note {
-  flex: none;
-  font-size: 11px;
-  color: var(--muted-soft);
-}
-
 // The dependency row's way in, the subtask row's own shape (`subtask-open`):
 // tag, key, title and note are one target, so the whole stretch between the
 // row's edges and the X is one anchor — `flex: 1` keeps the note at the row's
@@ -4536,12 +4530,6 @@ input[type="radio"] {
   }
 }
 
-// Row details keep the chip-note voice: muted, small, single line. The
-// dep-note never wraps mid-row; the name's ellipsis absorbs the pressure.
-.dep-row > .dep-note {
-  white-space: nowrap;
-}
-
 // Upload progress rows in the corner stack: name, bar, percent. The track is
 // the house upload-progress rule freed of its upload-box geometry (it was
 // absolutely positioned into a box the drive form never renders) — here it
@@ -5047,3 +5035,170 @@ div.member-row + div.member-row {
   font-weight: 500;
 }
 .share-expiry { width: 90px; flex: none; }
+
+// -- drive listing redesign ----------------------------------------------------
+// The drive reads as one calm list now, not a stack of cards: a column head,
+// hairline rules between rows, the whole row as the way in, and a quiet ⋯
+// holding the entry's menu. Everything here is token-painted, so the skins
+// carry it without their own rules.
+
+// The bar: the search field stretches, the sort/kind boxes hug their content,
+// and the + (now `.primary`) is the bar's one loud act.
+.drive-bar {
+  gap: 10px;
+
+  .field-box-search {
+    flex: 1 1 240px;
+    max-width: 460px;
+  }
+
+  .field-box-sort { flex: none; }
+}
+
+// The column head: same grid as the rows beneath it, so the labels sit over
+// their numbers exactly. The trailing spacer mirrors the ⋯ trigger's box.
+.drive-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+}
+
+.drive-cols,
+.drive-open {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 76px 110px 88px;
+  gap: 12px;
+  align-items: center;
+}
+
+.drive-head .drive-cols > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-cols {
+  flex: 1;
+  min-width: 0;
+}
+
+.drive-col-num { text-align: right; }
+
+.drive-head-options {
+  flex: none;
+  width: 28px;
+}
+
+.drive-list {
+  display: flex;
+  flex-direction: column;
+}
+
+// One row: hairline underneath, a hover tint, and nothing boxed of its own.
+.drive-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 13px;
+  transition: background-color var(--dur-fast) var(--ease);
+
+  &:last-child { border-bottom: none; }
+  &:hover { background: var(--row-hover); }
+}
+
+// The row's way in: icon, name and every meta cell inside the anchor, so the
+// full stretch of the row opens the entry instead of just the word.
+.drive-open {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  color: inherit;
+  text-decoration: none;
+
+  &:hover .dep-title { text-decoration: underline; }
+}
+
+.drive-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+  text-align: right;
+}
+
+// The ⋯ trigger: a small unboxed button that keeps its hover ring. Border and
+// ground come off so a long list is not a column of little rectangles.
+.drive-row .entry-options-trigger {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+  background: transparent;
+  border-color: transparent;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--muted);
+
+  &:hover {
+    background: var(--surface);
+    border-color: var(--border-strong);
+    color: var(--ink);
+  }
+}
+
+// An open menu keeps its trigger visible against the tinted row.
+.drive-row .entry-options[open] > .entry-options-trigger {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+// The empty states (empty folder, no search hits): centred, quiet, one glyph.
+.drive-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 56px 24px;
+  text-align: center;
+}
+
+.drive-empty-glyph {
+  font-size: 26px;
+  color: var(--muted-soft);
+}
+
+.drive-empty-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+// Narrow viewports keep icon, name and size; the date and downloads columns
+// fold away instead of crushing the name.
+@media (max-width: 620px) {
+  .drive-cols,
+  .drive-open {
+    grid-template-columns: 40px minmax(0, 1fr) 72px;
+  }
+
+  .drive-col-date,
+  .drive-col-dl,
+  .drive-date,
+  .drive-dl {
+    display: none;
+  }
+}
