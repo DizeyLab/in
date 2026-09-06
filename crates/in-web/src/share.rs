@@ -969,7 +969,6 @@ async fn shared(cx: &Cx) -> Result {
         cx =>
         (topbar(cx, NavPage::Shared, &user, language).await?)
         <main class="settings-stage stage-wide">
-            <h1 class="settings-title">(t(language, Key::SharedWithMe))</h1>
             <div class="filterbar">
                 <form class="field-box field-box-search" method="get" action="/shared">
                     <span class="field-text">(t(language, Key::NavSearch))</span>

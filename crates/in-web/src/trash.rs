@@ -305,7 +305,6 @@ async fn trash(cx: &Cx) -> Result {
         cx =>
         (topbar(cx, NavPage::Trash, &user, language).await?)
         <main class="settings-stage stage-wide">
-            <h1 class="settings-title">(t(language, Key::Trash))</h1>
             <div class="filterbar">
                 <form class="field-box field-box-search" method="get" action="/trash">
                     <span class="field-text">(t(language, Key::NavSearch))</span>
