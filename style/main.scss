@@ -5092,7 +5092,9 @@ div.member-row + div.member-row {
   min-width: 0;
 }
 
-.drive-col-num { text-align: right; }
+// Right-aligned like the values beneath: a label hugging the left of its
+// column while its dates hold the right reads as two columns, not one.
+.drive-col-num, .drive-col-date { text-align: right; }
 
 .drive-head-options {
   flex: none;
