@@ -3421,4 +3421,3 @@ async fn an_empty_folder_says_how_to_fill_it() {
     assert!(body.contains("id=\"upload-form\""), "{body}");
     assert!(body.contains("__inDrop"), "{body}");
 }
-

@@ -2229,6 +2229,9 @@ img.avatar {
     height: auto;
     margin-bottom: 0;
     padding: 0;
+    // The panel hairline the base rule draws under the typing area reads as
+    // a stray underline inside the bordered box; the box is the frame.
+    border-bottom: none;
   }
 }
 
