@@ -426,16 +426,27 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
                 var mine = [], theirs = [], n; \
                 for (n = from.firstChild; n; n = n.nextSibling) { if (!clientMade(n)) { mine.push(n); } } \
                 for (n = to.firstChild; n; n = n.nextSibling) { theirs.push(n); } \
-                var i; \
-                for (i = 0; i < theirs.length; i++) { \
+                /* Positional pairing with one node of lookahead: a child that \
+                   appears or vanishes between modes (a caption, a crumbs nav) \
+                   is inserted or removed where it stands instead of shifting \
+                   every later sibling one slot — the plain positional pass \
+                   once morphed the sort form into the search box because the \
+                   search caption pushed both one position over. Identity is \
+                   kept whenever the tags line up one step either way. */ \
+                var i = 0, j = 0; \
+                while (j < theirs.length) { \
                     if (i < mine.length) { \
-                        if (pairable(mine[i], theirs[i])) { morph(mine[i], theirs[i]); } \
-                        else { mine[i].replaceWith(document.importNode(theirs[i], true)); } \
+                        if (pairable(mine[i], theirs[j])) { morph(mine[i], theirs[j]); i++; j++; } \
+                        else if (i + 1 < mine.length && pairable(mine[i + 1], theirs[j])) { \
+                            from.insertBefore(document.importNode(theirs[j], true), mine[i]); j++; \
+                        } else if (j + 1 < theirs.length && pairable(mine[i], theirs[j + 1])) { \
+                            mine[i].remove(); i++; \
+                        } else { mine[i].replaceWith(document.importNode(theirs[j], true)); i++; j++; } \
                     } else { \
-                        from.appendChild(document.importNode(theirs[i], true)); \
+                        from.appendChild(document.importNode(theirs[j], true)); j++; \
                     } \
                 } \
-                for (i = theirs.length; i < mine.length; i++) { mine[i].remove(); } \
+                while (i < mine.length) { mine[i].remove(); i++; } \
             } \
             window.__inNav = 0; \
             function navStep() { return ++window.__inNav; } \

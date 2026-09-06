@@ -5085,6 +5085,16 @@ div.member-row + div.member-row {
   white-space: nowrap;
 }
 
+// The search mode tell, inside the panel rather than the bar: a quiet line
+// over the column head, out of the way of the controls.
+.drive-results-note {
+  margin: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .drive-cols {
   flex: 1;
   min-width: 0;

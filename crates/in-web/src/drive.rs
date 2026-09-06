@@ -454,6 +454,12 @@ async fn drive(cx: &Cx) -> Result {
         None => None,
     };
     let box_text = asked.clone().unwrap_or_default();
+    // The search mode tell: rendered inside the results panel, never in the
+    // filterbar — the bar keeps one shape whether the list below is a folder
+    // or hits, so typing in the box never reshuffles the controls around it.
+    let caption = asked
+        .as_deref()
+        .map(|query| format!("{} “{query}”", t(language, Key::SearchResults)));
     let current = current_folder(store.as_ref(), &user.id, wanted.as_deref()).await?;
     let crumbs = breadcrumbs(store.as_ref(), current.as_ref()).await;
     let mut listing = match store
@@ -567,18 +573,18 @@ async fn drive(cx: &Cx) -> Result {
         (topbar(cx, NavPage::Drive, &user, language).await?)
         <main class="settings-stage stage-wide">
             <div class="filterbar drive-bar">
-                if let Some(query) = asked.as_deref() {
-                    <p class="detail-quiet">(t(language, Key::SearchResults)) (format!(" “{query}”"))</p>
-                } else {
-                    if current.is_some() {
-                        <nav class="detail-crumbs" aria-label=(current_name.clone())>
-                            <a class="detail-crumb" href="/drive">(t(language, Key::Drive))</a>
-                            for crumb in crumbs.iter() {
-                                <span class="detail-crumb-sep">"/"</span>
-                                <a class="detail-crumb" href=(format!("/drive?folder={}", crumb.id))>(crumb.name.clone())</a>
-                            }
-                        </nav>
-                    }
+                // The bar's children stay the same set in every mode — a
+                // leading element that comes and goes would shift the morph's
+                // positional pairing and shuffle the forms into each other.
+                // The search caption lives in the results panel instead.
+                if asked.is_none() && current.is_some() {
+                    <nav class="detail-crumbs" aria-label=(current_name.clone())>
+                        <a class="detail-crumb" href="/drive">(t(language, Key::Drive))</a>
+                        for crumb in crumbs.iter() {
+                            <span class="detail-crumb-sep">"/"</span>
+                            <a class="detail-crumb" href=(format!("/drive?folder={}", crumb.id))>(crumb.name.clone())</a>
+                        }
+                    </nav>
                 }
                 <form class="field-box field-box-search" method="get" action="/drive">
                     <input
@@ -675,6 +681,7 @@ async fn drive(cx: &Cx) -> Result {
             if let Some(hits) = hits {
                 if hits.folders.is_empty() && hits.files.is_empty() {
                     <section class="panel drive-panel">
+                        <p class="drive-results-note">(caption.clone().unwrap_or_default())</p>
                         <div class="drive-empty">
                             <span class="drive-empty-glyph" aria-hidden="true">"▤"</span>
                             <p class="drive-empty-text">(t(language, Key::NoResults))</p>
@@ -682,6 +689,7 @@ async fn drive(cx: &Cx) -> Result {
                     </section>
                 } else {
                 <section class="panel drive-panel">
+                    <p class="drive-results-note">(caption.clone().unwrap_or_default())</p>
                     <div class="drive-head">
                         <span class="drive-cols">
                             <span class="drive-col-ico" aria-hidden="true"></span>
