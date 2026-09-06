@@ -282,7 +282,6 @@ impl TestApp {
             live_seconds: 300,
             purge_after_days: 30,
             default_quota_bytes: 10 * 1024 * 1024 * 1024,
-            max_upload_bytes: 1024 * 1024 * 1024,
             oidc: OidcConfig {
                 issuer: fake.url(),
                 client_id: "in-test".to_string(),
@@ -589,6 +588,10 @@ impl Raw {
     fn text(&self) -> String {
         String::from_utf8(self.bytes.clone()).unwrap()
     }
+
+    fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.text()).unwrap()
+    }
 }
 
 /// Form encoding, enough for the names these tests send.
@@ -885,6 +888,74 @@ async fn chunked_upload_round_trip() {
     assert_eq!(row.owner_id, user.id);
 }
 
+#[tokio::test]
+async fn an_interrupted_upload_resumes_from_its_staged_chunks() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-resume", "resume@in.test", "Resume").await;
+
+    // Two chunks: stage the first, ask the status what a resume may skip,
+    // then land the second and finish.
+    let total = 8 * 1024 * 1024 + 100;
+    let mut bytes = Vec::with_capacity(total);
+    for i in 0..total {
+        bytes.push((i % 251) as u8);
+    }
+    let answer = app
+        .post_json(
+            "/api/upload/start",
+            Some(&cookie),
+            serde_json::json!({"folder_id": null, "name": "resume.bin", "size_bytes": total}),
+        )
+        .await;
+    let session = answer.json()["ok"]["id"]
+        .as_str()
+        .expect("start was refused")
+        .to_string();
+
+    app.put_bytes(
+        &format!("/api/upload/{session}/0"),
+        Some(&cookie),
+        &bytes[..8 * 1024 * 1024],
+    )
+    .await;
+
+    let status = app
+        .get(&format!("/api/upload/{session}"), Some(&cookie))
+        .await;
+    assert_eq!(status.status, StatusCode::OK, "{}", status.text());
+    let body = status.json();
+    assert_eq!(body["ok"]["size_bytes"].as_u64(), Some(total as u64));
+    assert_eq!(body["ok"]["chunk_size"].as_u64(), Some(8 * 1024 * 1024));
+    assert_eq!(body["ok"]["name"].as_str(), Some("resume.bin"));
+    assert_eq!(body["ok"]["uploaded"], serde_json::json!([0]));
+
+    // Another owner's probe of the same id is not found, not forbidden.
+    let other = app.sign_in("sub-nosey", "nosey@in.test", "Nosey").await;
+    let status = app
+        .get(&format!("/api/upload/{session}"), Some(&other))
+        .await;
+    assert_eq!(status.json()["err"].as_str(), Some("NotFound"));
+
+    app.put_bytes(
+        &format!("/api/upload/{session}/1"),
+        Some(&cookie),
+        &bytes[8 * 1024 * 1024..],
+    )
+    .await;
+    let answer = app
+        .post_json(
+            &format!("/api/upload/{session}/finish"),
+            Some(&cookie),
+            serde_json::json!({}),
+        )
+        .await;
+    let file_id = answer.json()["ok"]
+        .as_str()
+        .expect("finish was refused")
+        .to_string();
+    let got = app.get(&format!("/file/{file_id}"), Some(&cookie)).await;
+    assert_eq!(got.bytes, bytes);
+}
 #[tokio::test]
 async fn range_request_serves_a_slice() {
     let app = TestApp::build().await;
@@ -3350,3 +3421,4 @@ async fn an_empty_folder_says_how_to_fill_it() {
     assert!(body.contains("id=\"upload-form\""), "{body}");
     assert!(body.contains("__inDrop"), "{body}");
 }
+

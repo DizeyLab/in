@@ -187,10 +187,6 @@ pub enum Key {
     // File viewer.
     UploadedLabel,
     DownloadsLabel,
-    // Wave-1 upload limits.
-    UploadLimits,
-    CurrentUploadLimit,
-    MaxUploadBytes,
     // Wave-2 drive additions (DriveBuild owns this block).
     Options,
     DropFilesToUpload,
@@ -337,9 +333,6 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             Saved => "Saved.",
             UploadedLabel => "Uploaded",
             DownloadsLabel => "Downloads",
-            UploadLimits => "Upload limit",
-            CurrentUploadLimit => "Current limit",
-            MaxUploadBytes => "Upload limit",
             Options => "Options",
             DropFilesToUpload => "Drop files to upload",
             Dismiss => "Dismiss",
@@ -480,9 +473,6 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             Saved => "Kaydedildi.",
             UploadedLabel => "Yüklendi",
             DownloadsLabel => "İndirme",
-            UploadLimits => "Yükleme sınırı",
-            CurrentUploadLimit => "Geçerli sınır",
-            MaxUploadBytes => "Yükleme sınırı",
             Options => "Seçenekler",
             DropFilesToUpload => "Yüklemek için dosyaları bırakın",
             Dismiss => "Kapat",

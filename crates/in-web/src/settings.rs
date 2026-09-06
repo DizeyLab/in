@@ -4,13 +4,11 @@
 //! quota usage bar beside it, and the reader's own live share links with
 //! their revoke buttons — including the copy-once banner after a creation
 //! (`?created=<token>` on the query, rendered once and never stored).
-//! Admins additionally see every account with its quota and disabled flag,
-//! plus the instance-wide per-file upload limit in the same Everyone panel.
-//! `POST /api/settings/quota|disable|upload-limit` are admin-only: the first
-//! sets a user's byte quota, the second disables or re-enables them (a disabled
-//! account reads as signed-out everywhere, the im session untouched, and
-//! disabling yourself is refused), and the third sets the per-file ceiling
-//! for the whole install.
+//! Admins additionally see every account with its quota and disabled flag in
+//! the Everyone panel. `POST /api/settings/quota|disable` are admin-only:
+//! the first sets a user's byte quota, the second disables or re-enables
+//! them (a disabled account reads as signed-out everywhere, the im session
+//! untouched, and disabling yourself is refused).
 
 use in_core::store::{ShareKind, User};
 use serde::Deserialize;
@@ -78,9 +76,8 @@ fn trim_amount(value: f64) -> String {
 }
 
 /// The bytes an `(amount, unit)` pair names, or `None` when the pair is not
-/// a usable limit: an unknown unit, or an amount that is not a finite
-/// positive number. Callers decide whether zero passes (quota) or not
-/// (upload limit).
+/// a usable quota: an unknown unit, or an amount that is not a finite
+/// positive number.
 fn unit_bytes(amount: &str, unit: &str) -> Option<u64> {
     let per = match unit {
         "MiB" => MIB_BYTES,
@@ -137,38 +134,6 @@ async fn set_quota(cx: &Cx, Form(input): Form<QuotaForm>) -> Redirect {
             Err(error) => redirect_back(cx, "quota", Some(refusal_of(error))),
         },
         None => redirect_back(cx, "quota", Some(Refusal::BadLimit)),
-    }
-}
-
-#[derive(Deserialize)]
-struct UploadLimitForm {
-    #[serde(default)]
-    max_upload: String,
-    #[serde(default)]
-    max_upload_unit: String,
-}
-/// Sets the instance-wide per-file upload ceiling from a human-unit pair
-/// (`max_upload` amount in `max_upload_unit` MiB/GiB), converted to bytes
-/// for the `max_upload_bytes` instance setting — so `2 GiB` stores
-/// `2147483648` and the panel reads it back as `2.0 GiB`. The fallback chain
-/// in [`crate::server::effective_upload_limit`] is untouched, and zero (or
-/// anything unparseable) is refused with `BadLimit`: an install must always
-/// have a positive per-file ceiling.
-#[route(POST "/api/settings/upload-limit")]
-async fn set_upload_limit(cx: &Cx, Form(input): Form<UploadLimitForm>) -> Redirect {
-    if let Err(refusal) = require_admin(cx).await {
-        return redirect_back(cx, "upload-limit", Some(refusal));
-    }
-    match unit_bytes(&input.max_upload, &input.max_upload_unit) {
-        Some(bytes) if bytes > 0 => match app(cx)
-            .store
-            .set_setting(crate::server::MAX_UPLOAD_SETTING, &bytes.to_string())
-            .await
-        {
-            Ok(()) => redirect_back(cx, "upload-limit", None),
-            Err(error) => redirect_back(cx, "upload-limit", Some(refusal_of(error))),
-        },
-        _ => redirect_back(cx, "upload-limit", Some(Refusal::BadLimit)),
     }
 }
 
@@ -307,13 +272,6 @@ async fn settings(cx: &Cx) -> Result {
     } else {
         Vec::new()
     };
-    // The live per-file ceiling, read once for the Everyone panel below. Only
-    // admins see it, so only they pay the extra setting read.
-    let upload_limit = if fresh.admin {
-        Some(crate::server::effective_upload_limit(cx).await)
-    } else {
-        None
-    };
     let created = created_token(uri(cx).query().unwrap_or(""));
     let origin = app(cx).config.listen_url();
     view! {
@@ -322,7 +280,7 @@ async fn settings(cx: &Cx) -> Result {
         <div class="settings-shell">
             <main class="settings-stage stage-wide">
                 <h1 class="settings-title">(t(language, Key::Settings))</h1>
-                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences", "upload-limit"]).await?)
+                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences"]).await?)
                 if let Some(token) = created {
                     <section class="panel">
                         <div class="panel-head">
@@ -465,23 +423,6 @@ async fn settings(cx: &Cx) -> Result {
                                     </tbody>
                                 </table>
                             </div>
-    if let Some(limit) = upload_limit {
-        // The instance-wide limit, one labeled row under the member table —
-        // same compact amount+unit form the per-user quota cells use.
-        <div class="upload-limit">
-            <span class="field-label">(t(language, Key::MaxUploadBytes))</span>
-            <span class="field-note">(format!("{}: {}", t(language, Key::CurrentUploadLimit), human_bytes(limit)))</span>
-            <div class="spacer"></div>
-            <form class="pop-row-form member-quota" method="post" action="/api/settings/upload-limit">
-                <input class="field-input" type="number" name="max_upload" min="0" step="any" value=(bytes_as_unit(limit).0) aria-label=(t(language, Key::MaxUploadBytes))>
-                <select class="field-input" name="max_upload_unit" aria-label=(t(language, Key::MaxUploadBytes))>
-                    <option value="MiB" selected=(bytes_as_unit(limit).1 == "MiB")>"MiB"</option>
-                    <option value="GiB" selected=(bytes_as_unit(limit).1 == "GiB")>"GiB"</option>
-                </select>
-                <button class="quiet" type="submit">(t(language, Key::Save))</button>
-            </form>
-        </div>
-    }
                         </div>
                     </section>
                 }

@@ -635,6 +635,13 @@ pub trait Store: 'static + Send + Sync {
     /// active and unexpired, is refused.
     async fn record_chunk(&self, id: &str, index: u64, bytes: &[u8]) -> Result<UploadSession>;
 
+    /// The indexes of a session's staged chunks, sorted ascending, read off
+    /// the chunk files on disk — exactly what a resuming uploader may skip
+    /// re-sending. An unknown session is [`StoreError::NotFound`]; the
+    /// session's state is not checked, so an expired one still answers what
+    /// it holds.
+    async fn uploaded_chunks(&self, id: &str) -> Result<Vec<u64>>;
+
     /// Assembles a session's chunks in order, rechecks the quota, sniffs the
     /// mime (never trusting anything the uploader said), writes the file,
     /// attempts a thumbnail for images and video, inserts the row and marks the session

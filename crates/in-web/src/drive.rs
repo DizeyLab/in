@@ -1035,15 +1035,54 @@ async fn upload_script(cx: &Cx) -> Result {
                 if (!answer.ok) { throw new Error(answer.err || 'start'); } \
                 return answer.ok; \
             } \
+            /* A cut upload resumes: the session id waits in localStorage \
+               under the file's identity, and a re-send of the same file \
+               asks the server which chunks it already holds instead of \
+               starting over. The store is best-effort — private windows may \
+               refuse it, and an upload without it just cannot resume. */ \
+            function resumeKey(folder, file) { return 'in-upload:' + (folder || '') + ':' + file.name + ':' + file.size; } \
+            function saveResume(key, id) { try { window.localStorage.setItem(key, id); } catch (err) {} } \
+            function loadResume(key) { try { return window.localStorage.getItem(key); } catch (err) { return null; } } \
+            function dropResume(key) { try { window.localStorage.removeItem(key); } catch (err) {} } \
+            /* A backoff the cancel button still interrupts: the flag is \
+               polled, so a cancel during a wait does not ride out the \
+               delay. */ \
+            function wait(ms, u) { \
+                return new Promise(function (resolve, reject) { \
+                    var timer = setTimeout(done, ms); \
+                    var watch = u ? setInterval(function () { if (u.cancelled) { cleanup(); reject(canceledErr()); } }, 100) : null; \
+                    function done() { cleanup(); resolve(); } \
+                    function cleanup() { clearTimeout(timer); if (watch) { clearInterval(watch); } } \
+                }); \
+            } \
             async function sendBig(file, folder, onProgress, u) { \
-                var session = await startChunked(folder, file.name, file.size); \
+                var key = resumeKey(folder, file); \
+                var session = null; \
+                var staged = {}; \
+                var saved = loadResume(key); \
+                if (saved) { \
+                    var probe = await fetch('/api/upload/' + saved, { headers: { accept: 'application/json' } }); \
+                    var status = await probe.json(); \
+                    if (status.ok && status.ok.size_bytes === file.size && status.ok.chunk_size === LIMIT && status.ok.name === file.name) { \
+                        session = { id: saved }; \
+                        (status.ok.uploaded || []).forEach(function (index) { staged[index] = true; }); \
+                    } else { \
+                        dropResume(key); \
+                    } \
+                } \
+                if (!session) { \
+                    session = await startChunked(folder, file.name, file.size); \
+                    saveResume(key, session.id); \
+                } \
                 /* The session id lives on the mirror entry, so the row's \
                    cancel control still reaches the abort endpoint after a \
                    soft navigation rebuilt the page around it. A cancel that \
                    landed during the start flight aborts the fresh session \
-                   straight away instead of leaking it. */ \
+                   straight away instead of leaking it. Cancel also drops \
+                   the resume key: a deliberate cancel is not resumable. */ \
                 if (u) { \
                     if (u.cancelled) { \
+                        dropResume(key); \
                         fetch('/api/upload/' + session.id + '/abort', { method: 'POST' }); \
                         throw canceledErr(); \
                     } \
@@ -1051,38 +1090,69 @@ async fn upload_script(cx: &Cx) -> Result {
                     u.cancel = function () { \
                         u.cancelled = true; \
                         try { u.abortChunk(); } catch (err) {} \
+                        dropResume(key); \
                         fetch('/api/upload/' + session.id + '/abort', { method: 'POST' }); \
                     }; \
                 } \
                 var total = Math.max(1, file.size); \
-                var index = 0; \
                 var flight = null; \
                 if (u) { \
                     u.abortChunk = function () { if (flight) { try { flight.abort(); } catch (err) {} } }; \
                 } \
-                for (var off = 0; off < file.size; off += LIMIT, index++) { \
+                /* A chunk that meets a network cut is retried in place with \
+                   a backoff; only after three misses does the upload fail — \
+                   and even then the resume key stays, so picking the file \
+                   again carries on where it stopped. An expired session \
+                   restarts the walk once against a fresh session; a second \
+                   expiry fails like any other error. */ \
+                var restarted = false; \
+                walk: for (var off = 0, index = 0; off < file.size; off += LIMIT, index++) { \
                     if (u && u.cancelled) { throw canceledErr(); } \
                     var piece = file.slice(off, Math.min(file.size, off + LIMIT)); \
-                    flight = new AbortController(); \
-                    var r; \
-                    try { \
-                        r = await fetch('/api/upload/' + session.id + '/' + index, { \
-                            method: 'PUT', \
-                            headers: { 'content-type': 'application/octet-stream' }, \
-                            body: piece, \
-                            signal: flight.signal \
-                        }); \
-                    } catch (err) { \
+                    if (staged[index]) { onProgress((off + piece.size) / total); continue; } \
+                    var sent = false; \
+                    for (var attempt = 0; attempt < 3 && !sent; attempt++) { \
                         if (u && u.cancelled) { throw canceledErr(); } \
-                        throw err; \
+                        if (attempt > 0) { await wait(1000 * attempt, u); } \
+                        flight = new AbortController(); \
+                        var r; \
+                        try { \
+                            r = await fetch('/api/upload/' + session.id + '/' + index, { \
+                                method: 'PUT', \
+                                headers: { 'content-type': 'application/octet-stream' }, \
+                                body: piece, \
+                                signal: flight.signal \
+                            }); \
+                        } catch (err) { \
+                            if (u && u.cancelled) { throw canceledErr(); } \
+                            continue; \
+                        } \
+                        if (!r.ok) { continue; } \
+                        var answer = await r.json(); \
+                        if (answer.ok) { sent = true; } \
+                        else if (answer.err === 'UploadExpired' && !restarted) { \
+                            restarted = true; \
+                            dropResume(key); \
+                            session = await startChunked(folder, file.name, file.size); \
+                            saveResume(key, session.id); \
+                            if (u) { u.sessionId = session.id; } \
+                            staged = {}; \
+                            off = -LIMIT; \
+                            index = -1; \
+                            continue walk; \
+                        } \
+                        else { throw new Error(answer.err || 'chunk'); } \
                     } \
-                    if (!r.ok) { throw new Error('chunk'); } \
+                    if (!sent) { throw new Error('chunk'); } \
                     onProgress((off + piece.size) / total); \
                 } \
                 if (u && u.cancelled) { throw canceledErr(); } \
                 var done = await fetch('/api/upload/' + session.id + '/finish', { method: 'POST' }); \
                 var fin = await done.json(); \
+                /* A refused finish keeps the chunks staged, so the key stays \
+                   too: picking the file again resumes into another finish. */ \
                 if (!fin.ok) { throw new Error((fin.err) || 'finish'); } \
+                dropResume(key); \
                 onProgress(1); \
             } \
             function sendSmall(action, folder, files, onProgress, u) { \

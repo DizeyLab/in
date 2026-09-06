@@ -216,10 +216,8 @@ pub enum Refusal {
     BadTheme,
     /// The language field was not one of the values the form offers.
     BadLanguage,
-    /// One file carries more bytes than the instance upload ceiling allows.
-    UploadTooLarge,
-    /// The admin's upload-limit form named zero, which would refuse every upload.
-    /// (The form speaks bytes, so nothing can overflow; zero is the only refusal.)
+    /// The admin's quota form named something unusable — unparseable, or a
+    /// unit the form does not offer.
     BadLimit,
 }
 
@@ -243,7 +241,6 @@ impl Refusal {
             Refusal::BadUi => "That interface choice is not offered.".to_string(),
             Refusal::BadTheme => "That is not a theme.".to_string(),
             Refusal::BadLanguage => "That is not a language.".to_string(),
-            Refusal::UploadTooLarge => "That file is larger than the upload limit.".to_string(),
             Refusal::BadLimit => "That limit is not usable.".to_string(),
         }
     }
@@ -269,7 +266,6 @@ impl Refusal {
             Refusal::BadUi => "Bu arayüz seçeneği sunulmuyor.".to_string(),
             Refusal::BadTheme => "Bu bir tema değil.".to_string(),
             Refusal::BadLanguage => "Bu bir dil değil.".to_string(),
-            Refusal::UploadTooLarge => "Bu dosya yükleme sınırından büyük.".to_string(),
             Refusal::BadLimit => "Bu sınır kullanılamaz.".to_string(),
         }
     }
@@ -293,7 +289,6 @@ impl Refusal {
             "bad-ui" => Refusal::BadUi,
             "bad-theme" => Refusal::BadTheme,
             "bad-language" => Refusal::BadLanguage,
-            "upload-too-large" => Refusal::UploadTooLarge,
             "bad-limit" => Refusal::BadLimit,
             _ => return None,
         })
@@ -321,35 +316,8 @@ impl Refusal {
             Refusal::BadUi => "bad-ui",
             Refusal::BadTheme => "bad-theme",
             Refusal::BadLanguage => "bad-language",
-            Refusal::UploadTooLarge => "upload-too-large",
             Refusal::BadLimit => "bad-limit",
         }
-    }
-}
-
-/// The instance setting holding the per-file upload ceiling, in bytes.
-/// Written by the admin's upload-limit form; read here.
-pub(crate) const MAX_UPLOAD_SETTING: &str = "max_upload_bytes";
-
-/// The per-file upload ceiling in force for this request: the
-/// [`MAX_UPLOAD_SETTING`] instance setting first, then the
-/// `max_upload_bytes` key from `config/in.toml`, then 1 GiB when neither
-/// names one.
-///
-/// A setting that is missing, unreadable, unparseable or zero falls through
-/// to the config default — the save form only ever writes positive integers,
-/// so anything else is a hand-edited row, not a choice. Quota is untouched:
-/// this caps one file's size, quota caps an account's total.
-pub(crate) async fn effective_upload_limit(cx: &Cx) -> u64 {
-    let ctx = app(cx);
-    match ctx.store.get_setting(MAX_UPLOAD_SETTING).await {
-        Ok(Some(raw)) => raw
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|limit| *limit > 0)
-            .unwrap_or(ctx.config.max_upload_bytes),
-        Ok(None) | Err(_) => ctx.config.max_upload_bytes,
     }
 }
 

@@ -761,6 +761,35 @@ async fn an_empty_upload_finishes_an_empty_file() {
 }
 
 #[tokio::test]
+async fn uploaded_chunks_names_what_a_resume_may_skip() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let session = scratch
+        .store
+        .create_upload_session(&user.id, None, "resume.bin", CHUNK_SIZE + 4)
+        .await
+        .unwrap();
+    assert_eq!(
+        scratch.store.uploaded_chunks(&session.id).await.unwrap(),
+        Vec::<u64>::new()
+    );
+    // Out of order on purpose: the answer is read off the chunk files on
+    // disk and comes back sorted, whatever order the calls arrived in.
+    scratch.store.record_chunk(&session.id, 1, b"tail").await.unwrap();
+    assert_eq!(scratch.store.uploaded_chunks(&session.id).await.unwrap(), vec![1]);
+    scratch
+        .store
+        .record_chunk(&session.id, 0, &vec![7u8; CHUNK_SIZE as usize])
+        .await
+        .unwrap();
+    assert_eq!(scratch.store.uploaded_chunks(&session.id).await.unwrap(), vec![0, 1]);
+    assert!(matches!(
+        scratch.store.uploaded_chunks("no-such-session").await,
+        Err(StoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
 async fn uploads_abort_and_prune() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;

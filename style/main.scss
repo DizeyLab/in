@@ -4801,17 +4801,6 @@ input[type="radio"] {
   flex: none;
 }
 
-// The instance-wide upload limit: one labeled row under the register, the
-// same compact amount+unit form the quota cells use.
-.upload-limit {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
 .member-table .member-col-address {
   min-width: 26ch;
 }

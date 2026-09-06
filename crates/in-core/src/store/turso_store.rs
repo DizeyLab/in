@@ -596,6 +596,21 @@ fn staged_received(storage: &std::path::Path, id: &str) -> u64 {
     }
     total
 }
+
+/// The indexes of the chunk files a session holds, unsorted — the same
+/// on-disk truth `staged_received` sums.
+fn staged_indexes(storage: &std::path::Path, id: &str) -> Vec<u64> {
+    let dir = session_dir(storage, id);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u64>().ok())
+        .collect()
+}
 /// Creates the storage tree — the root and one directory per payload kind —
 /// and locks each to 0700 on unix. Every writer past `open` assumes the tree
 /// is there.
@@ -2373,6 +2388,13 @@ impl Store for TursoStore {
         drop(rows);
         drop(conn);
         Ok(session)
+    }
+
+    async fn uploaded_chunks(&self, id: &str) -> Result<Vec<u64>> {
+        self.upload_session(id).await?.ok_or(StoreError::NotFound)?;
+        let mut indexes = staged_indexes(&self.storage, id);
+        indexes.sort_unstable();
+        Ok(indexes)
     }
 
     async fn finish_upload(&self, id: &str) -> Result<File> {

@@ -1,11 +1,12 @@
 //! The chunked-upload protocol.
 //!
-//! Four owner-only JSON calls, all UTF-8: `POST /api/upload/start`
+//! Five owner-only JSON calls, all UTF-8: `POST /api/upload/start`
 //! `{folder_id, name, size_bytes}` answers `{id, chunk_size}` with the
 //! server-fixed 8 MiB chunk size (`Refusal::QuotaExceeded` when the quota
-//! says no, `Refusal::UploadTooLarge` past the instance upload ceiling);
-//! `PUT /api/upload/{id}/{index}` takes one raw chunk (32 MiB cap, layered
-//! in `main.rs` — the real per-file ceiling lives in the start handler);
+//! says no — the account quota is the only size limit); `GET /api/upload/{id}`
+//! answers the session with the indexes already staged, so an interrupted
+//! upload resumes instead of starting over; `PUT /api/upload/{id}/{index}`
+//! takes one raw chunk (32 MiB cap, layered in `main.rs`);
 //! `POST /api/upload/{id}/finish` assembles the
 //! staged chunks, sniffs the mime, moves the bytes to `files/<new file id>`
 //! and answers with the created file id; `POST /api/upload/{id}/abort`
@@ -110,12 +111,6 @@ async fn start(cx: &Cx, Json(input): Json<StartIn>) -> Result<Json<Answer<StartO
             Err(_) => return Ok(Json(Answer::Err(Refusal::Unavailable))),
         }
     }
-    // The instance ceiling is checked against the declared total before a
-    // single chunk is sent: chunks can never add past the declared total
-    // (the store refuses that), so this one check caps the whole session.
-    if input.size_bytes > crate::server::effective_upload_limit(cx).await {
-        return Ok(Json(Answer::Err(Refusal::UploadTooLarge)));
-    }
     match store
         .create_upload_session(&user.id, folder, &input.name, input.size_bytes)
         .await
@@ -158,6 +153,42 @@ async fn chunk(cx: &Cx, body: Bytes) -> Result<Json<Answer<ChunkOut>>> {
         Ok(session) => Ok(Json(Answer::Ok(ChunkOut {
             received_bytes: session.received_bytes,
             size_bytes: session.size_bytes,
+        }))),
+        Err(error) => Ok(Json(Answer::Err(store_refusal(error)))),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct StatusOut {
+    id: String,
+    chunk_size: u64,
+    size_bytes: u64,
+    name: String,
+    folder_id: Option<String>,
+    uploaded: Vec<u64>,
+}
+
+/// The session and the indexes already staged, for a resuming uploader:
+/// the client skips every index in `uploaded` and sends only what is
+/// missing. An expired session still answers — the chunks it holds are
+/// real until the sweep takes them — so the client reads the expiry off
+/// `chunk`'s refusal, not here.
+#[route(GET "/api/upload/{id}")]
+async fn status(cx: &Cx) -> Result<Json<Answer<StatusOut>>> {
+    let id: &str = path_param::<Id>(cx);
+    let session = match owned_session(cx, id).await {
+        Ok(session) => session,
+        Err(refusal) => return Ok(Json(Answer::Err(refusal))),
+    };
+    let store = app(cx).store.clone();
+    match store.uploaded_chunks(&session.id).await {
+        Ok(uploaded) => Ok(Json(Answer::Ok(StatusOut {
+            id: session.id,
+            chunk_size: session.chunk_size,
+            size_bytes: session.size_bytes,
+            name: session.name,
+            folder_id: session.folder_id,
+            uploaded,
         }))),
         Err(error) => Ok(Json(Answer::Err(store_refusal(error)))),
     }

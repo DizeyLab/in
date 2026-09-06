@@ -150,11 +150,11 @@ async fn main() {
     let router = in_client::mount(
         Router::builder()
             .discover()
-            // BodyLimit is only a memory guard here, not the upload policy: the
-            // real per-file ceiling is the admin-controlled limit enforced in
-            // the handlers (`effective_upload_limit`). `/files` takes whole
-            // multipart bodies, so its guard sits at a hard 2 GiB; `/api/upload`
-            // carries single 8 MiB chunks, so 32 MiB leaves ample headroom.
+            // BodyLimit is only a memory guard here, not the upload policy:
+            // the account quota, enforced in the store at start and finish,
+            // is the only size limit. `/files` takes whole multipart bodies,
+            // so its guard sits at a hard 2 GiB; `/api/upload` carries single
+            // 8 MiB chunks, so 32 MiB leaves ample headroom.
             .layer(BodyLimit::max(32 * 1024 * 1024).at("/api/upload"))
             .layer(BodyLimit::max(2usize * 1024 * 1024 * 1024).at("/files"))
             .cookies()

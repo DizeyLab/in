@@ -784,16 +784,8 @@ async fn upload(
         return Ok(back_to_folder(folder_id.as_deref(), None));
     }
 
-    let limit = crate::server::effective_upload_limit(cx).await;
-
     let mut refusal: Option<Refusal> = None;
     for (name, bytes) in files {
-        // One file may not pass the instance ceiling; oversize files never
-        // reach the store.
-        if bytes.len() as u64 > limit {
-            refusal = Some(Refusal::UploadTooLarge);
-            break;
-        }
         // The store sanitises the label, sniffs the mime off the bytes,
         // checks the quota, writes the file and attempts the thumbnail.
         if let Err(error) = store
