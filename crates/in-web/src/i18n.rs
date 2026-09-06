@@ -109,6 +109,7 @@ pub enum Key {
     NameColumn,
     SizeColumn,
     ModifiedColumn,
+    OwnerColumn,
     // Upload.
     Upload,
     UploadFile,
@@ -263,6 +264,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             NameColumn => "Name",
             SizeColumn => "Size",
             ModifiedColumn => "Changed",
+            OwnerColumn => "Owner",
             Upload => "Upload",
             UploadFile => "Upload files",
             UploadFiles => "Upload files",
@@ -403,6 +405,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             NameColumn => "Ad",
             SizeColumn => "Boyut",
             ModifiedColumn => "Değişiklik",
+            OwnerColumn => "Sahip",
             Upload => "Yükle",
             UploadFile => "Dosya yükle",
             UploadFiles => "Dosya yükle",

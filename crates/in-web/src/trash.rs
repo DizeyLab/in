@@ -19,7 +19,7 @@ use topcoat::router::{HeaderName, StatusCode, header, page, query_params, route}
 use topcoat::view::view;
 
 use crate::files::entry_chip;
-use crate::i18n::{Key, Lang, lang, t};
+use crate::i18n::{Key, lang, t};
 use crate::layout::{NavPage, topbar};
 use crate::server::{Refusal, app, back_to, require_user};
 use crate::share::{refusal_banner, refusal_of};
@@ -237,25 +237,6 @@ impl TrashEntry<'_> {
     }
 }
 
-/// The muted line under each trashed name: the trash date, the upload date,
-/// and the size for files.
-fn trash_details(language: Lang, row: &TrashEntry) -> String {
-    let mut out = format!(
-        "{} {} · {} {}",
-        t(language, Key::DeletedLabel),
-        row.deleted().date(),
-        t(language, Key::UploadedLabel),
-        row.uploaded().date()
-    );
-    if let TrashEntry::File(file) = row {
-        out.push_str(&format!(
-            " · {}",
-            crate::settings::human_bytes(file.size_bytes)
-        ));
-    }
-    out
-}
-
 /// The reader's trash: folders and files in one list, each row carrying its
 /// way back and its way gone, plus the button that destroys them all.
 #[page("/trash")]
@@ -371,56 +352,69 @@ async fn trash(cx: &Cx) -> Result {
                     <button class="quiet quiet-danger" type="submit">(t(language, Key::EmptyTrash))</button>
                 </form>
             }
-            <section class="panel">
-                <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::Trash))</h2>
-                    <span class="chip">(rows.len().to_string())</span>
+            <section class="panel drive-panel">
+                if rows.is_empty() {
+                    <div class="drive-empty">
+                        <span class="drive-empty-glyph" aria-hidden="true">"▤"</span>
+                        <p class="drive-empty-text">(t(language, if nothing_trashed { Key::TrashEmpty } else { Key::NoResults }))</p>
+                    </div>
+                } else {
+                <div class="drive-head">
+                    <span class="drive-cols">
+                        <span class="drive-col-ico" aria-hidden="true"></span>
+                        <span>(t(language, Key::NameColumn))</span>
+                        <span class="drive-col-num drive-col-size">(t(language, Key::SizeColumn))</span>
+                        <span class="drive-col-date">(t(language, Key::DeletedLabel))</span>
+                        <span class="drive-col-num drive-col-dl">(t(language, Key::DownloadsLabel))</span>
+                    </span>
+                    <span class="drive-head-options" aria-hidden="true"></span>
                 </div>
-                <div class="panel-body">
-                    if rows.is_empty() {
-                        if nothing_trashed {
-                            <p class="field-note">(t(language, Key::TrashEmpty))</p>
-                        } else {
-                            <p class="field-note">(t(language, Key::NoResults))</p>
-                        }
-                    }
+                <div class="drive-list">
                     for row in &rows {
-                        match row {
-                            TrashEntry::Folder(folder) => <div class="dep-row">
-                                <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
-                                <span class="member-name dep-title">(folder.name.clone())</span>
-                                <span class="field-note">(trash_details(language, row))</span>
-                                <div class="spacer"></div>
-                                <form class="pop-row-form" method="post" action="/api/trash/restore">
-                                    <input type="hidden" name="kind" value="folder">
-                                    <input type="hidden" name="id" value=(folder.id.clone())>
-                                    <button class="quiet" type="submit">(t(language, Key::Restore))</button>
-                                </form>
-                                <form class="pop-row-form" method="post" action="/api/trash/purge">
-                                    <input type="hidden" name="kind" value="folder">
-                                    <input type="hidden" name="id" value=(folder.id.clone())>
-                                    <button class="quiet quiet-danger" type="submit">(t(language, Key::DeleteForever))</button>
-                                </form>
-                            </div>,
-                            TrashEntry::File(file) => <div class="dep-row">
-                                (trash_chip(cx, file).await?)
-                                <span class="member-name dep-title">(file.name.clone())</span>
-                                <span class="field-note">(trash_details(language, row))</span>
-                                <div class="spacer"></div>
-                                <form class="pop-row-form" method="post" action="/api/trash/restore">
-                                    <input type="hidden" name="kind" value="file">
-                                    <input type="hidden" name="id" value=(file.id.clone())>
-                                    <button class="quiet" type="submit">(t(language, Key::Restore))</button>
-                                </form>
-                                <form class="pop-row-form" method="post" action="/api/trash/purge">
-                                    <input type="hidden" name="kind" value="file">
-                                    <input type="hidden" name="id" value=(file.id.clone())>
-                                    <button class="quiet quiet-danger" type="submit">(t(language, Key::DeleteForever))</button>
-                                </form>
-                            </div>,
-                        }
+                        // Trashed entries open nothing — the row is a fact,
+                        // not a way in; the ⋯ holds the way back and the way
+                        // gone. The grid is `.drive-cols`, the same columns
+                        // the drive's anchors wear.
+                        <div class="drive-row">
+                            <div class="drive-cols">
+                                match row {
+                                    TrashEntry::Folder(folder) => {
+                                        <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                                        <span class="dep-title">(folder.name.clone())</span>
+                                        <span class="drive-meta" aria-hidden="true"></span>
+                                    }
+                                    TrashEntry::File(file) => {
+                                        (trash_chip(cx, file).await?)
+                                        <span class="dep-title">(file.name.clone())</span>
+                                        <span class="drive-meta drive-size">(crate::drive::human_size(file.size_bytes))</span>
+                                    }
+                                }
+                                <span class="drive-meta drive-date">(row.deleted().date().to_string())</span>
+                                if let TrashEntry::File(file) = row {
+                                    <span class="drive-meta drive-dl">(file.download_count.to_string())</span>
+                                } else {
+                                    <span class="drive-meta" aria-hidden="true"></span>
+                                }
+                            </div>
+                            <details class="user-menu entry-options">
+                                <summary class="quiet entry-options-trigger" aria-label=(t(language, Key::Options))>"⋯"</summary>
+                                <div class="user-menu-panel">
+                                    <form class="user-menu-item-form" method="post" action="/api/trash/restore">
+                                        <input type="hidden" name="kind" value=(match row { TrashEntry::Folder(_) => "folder", TrashEntry::File(_) => "file" })>
+                                        <input type="hidden" name="id" value=(row.id().to_string())>
+                                        <button class="user-menu-item" type="submit">(t(language, Key::Restore))</button>
+                                    </form>
+                                    <form class="user-menu-item-form" method="post" action="/api/trash/purge">
+                                        <input type="hidden" name="kind" value=(match row { TrashEntry::Folder(_) => "folder", TrashEntry::File(_) => "file" })>
+                                        <input type="hidden" name="id" value=(row.id().to_string())>
+                                        <button class="user-menu-item quiet quiet-danger" type="submit">(t(language, Key::DeleteForever))</button>
+                                    </form>
+                                </div>
+                            </details>
+                        </div>
                     }
                 </div>
+                }
             </section>
         </main>
         (crate::dropdown::dropdown_script(cx).await?)

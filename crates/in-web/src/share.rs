@@ -852,33 +852,6 @@ impl SharedRow {
     }
 }
 
-/// The muted line at each shared row's right edge: what the grant opens,
-/// who opened it, when the target went up — and the size and download
-/// count for files.
-fn shared_details(language: Lang, row: &SharedRow) -> String {
-    let owner = if row.owner_name.is_empty() {
-        String::new()
-    } else {
-        format!(" · {}", row.owner_name)
-    };
-    let mut out = format!(
-        "{}{} · {} {}",
-        access_chip(language, row.item.can_download),
-        owner,
-        t(language, Key::UploadedLabel),
-        row.uploaded.date()
-    );
-    if row.item.kind == ShareKind::File {
-        out.push_str(&format!(
-            " · {} · {} {}",
-            crate::settings::human_bytes(row.size()),
-            row.downloads(),
-            t(language, Key::DownloadsLabel)
-        ));
-    }
-    out
-}
-
 /// Everything others shared with the reader, folders and files in one
 /// list. The reader's own library never appears here.
 #[page("/shared")]
@@ -1037,36 +1010,52 @@ async fn shared(cx: &Cx) -> Result {
                     <input type="hidden" name="q" value=(box_text.clone())>
                 </form>
             </div>
-            <section class="panel">
-                <div class="panel-head">
-                    <h2 class="panel-title">(t(language, Key::SharedWithMe))</h2>
-                    <span class="chip">(rows.len().to_string())</span>
+            <section class="panel drive-panel">
+                if rows.is_empty() {
+                    <div class="drive-empty">
+                        <span class="drive-empty-glyph" aria-hidden="true">"▤"</span>
+                        <p class="drive-empty-text">(t(language, if nothing_shared { Key::NoSharedItems } else { Key::NoResults }))</p>
+                    </div>
+                } else {
+                <div class="drive-head">
+                    <span class="drive-cols">
+                        <span class="drive-col-ico" aria-hidden="true"></span>
+                        <span>(t(language, Key::NameColumn))</span>
+                        <span class="drive-col-num drive-col-size">(t(language, Key::SizeColumn))</span>
+                        <span class="drive-col-date">(t(language, Key::ModifiedColumn))</span>
+                        <span class="drive-col-num drive-col-dl">(t(language, Key::OwnerColumn))</span>
+                    </span>
                 </div>
-                <div class="panel-body">
-                    if rows.is_empty() {
-                        if nothing_shared {
-                            <p class="field-note">(t(language, Key::NoSharedItems))</p>
-                        } else {
-                            <p class="field-note">(t(language, Key::NoResults))</p>
-                        }
-                    }
+                <div class="drive-list">
                     for row in &rows {
-                        <div class="dep-row">
-                            if row.item.kind == ShareKind::Folder {
-                                <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
-                                <a class="dep-link" href=(format!("/drive?folder={}", row.item.target_id))><span class="dep-title">(row.item.name.clone())</span></a>
-                            } else {
-                                match &row.file {
-                                    Some(file) => (shared_chip(cx, file).await?),
-                                    None => <span class="file-chip file-chip-generic" aria-hidden="true">"▦"</span>,
+                        // The grant's facts ride the whole row: the last cell
+                        // names who opened it and how far the opening goes.
+                        <div class="drive-row">
+                            <a class="drive-open" href=(match row.item.kind {
+                                ShareKind::Folder => format!("/drive?folder={}", row.item.target_id),
+                                ShareKind::File => format!("/view/{}", row.item.target_id),
+                            })>
+                                if row.item.kind == ShareKind::Folder {
+                                    <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                                } else {
+                                    match &row.file {
+                                        Some(file) => (shared_chip(cx, file).await?),
+                                        None => <span class="file-chip file-chip-generic" aria-hidden="true">"▦"</span>,
+                                    }
                                 }
-                                <a class="dep-link" href=(format!("/view/{}", row.item.target_id))><span class="dep-title">(row.item.name.clone())</span></a>
-                            }
-                            <div class="spacer"></div>
-                            <span class="field-note">(shared_details(language, row))</span>
+                                <span class="dep-title">(row.item.name.clone())</span>
+                                if row.item.kind == ShareKind::File {
+                                    <span class="drive-meta drive-size">(crate::drive::human_size(row.size()))</span>
+                                } else {
+                                    <span class="drive-meta" aria-hidden="true"></span>
+                                }
+                                <span class="drive-meta drive-date">(row.uploaded.date().to_string())</span>
+                                <span class="drive-meta drive-dl">(format!("{} · {}", row.owner_name, access_chip(language, row.item.can_download)))</span>
+                            </a>
                         </div>
                     }
                 </div>
+                }
             </section>
         </main>
         (crate::dropdown::dropdown_script(cx).await?)

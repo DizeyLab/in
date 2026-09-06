@@ -2835,10 +2835,7 @@ async fn shared_lists_nest_inside_the_stage() {
     assert!(answer.accepted(), "add refused: {:?}", answer.location);
     let page = app.get("/shared", Some(&bob)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
-    assert_stage_nests(
-        &page.text(),
-        &["panel-head", "panel-title", "staged.txt", "class=\"chip\""],
-    );
+    assert_stage_nests(&page.text(), &["drive-panel", "drive-head", "staged.txt"]);
 }
 
 #[tokio::test]
@@ -2855,7 +2852,8 @@ async fn trash_panels_nest_inside_the_stage() {
     assert_stage_nests(
         &page.text(),
         &[
-            "panel-head",
+            "drive-panel",
+            "drive-head",
             "staged-trash.txt",
             "action=\"/api/trash/restore\"",
             "action=\"/api/trash/empty\"",
