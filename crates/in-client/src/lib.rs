@@ -44,6 +44,13 @@ pub struct Config {
     pub cookie_name: String,
     /// 32 bytes, generated once per app and kept out of the repository.
     pub cookie_key: [u8; 32],
+    /// The app's public origin — `base_url` when the file sets one, else
+    /// the address bound, derived the way the app derives its public links.
+    /// After clearing the local cookie, `/auth/logout` walks the browser on
+    /// to im's `/logout?back={logout_back}/`, so the central session ends
+    /// and the person lands back at this app's front door. Empty is legal —
+    /// im catches a stray `back` on its own `/` — but a real app sets it.
+    pub logout_back: String,
 }
 
 /// The registered state: the config, one HTTP client, and the JWKS cache.
@@ -534,12 +541,24 @@ async fn in_callback(cx: &Cx) -> Result<Response, topcoat::Error> {
     }
 }
 
-/// Signs out of the app only. To end the central session too, post to im's
-/// `/logout` — a link there is a silent re-login, by design.
+/// Signs out of the app, then out of im: the local cookie is cleared
+/// first — this app forgets the person even if the central hop never
+/// lands — and the browser is sent on to im's `/logout` with this app's
+/// public address as `back`. im revokes the central session and returns
+/// them here. The hop is a top-level navigation (the user menu's sign-out
+/// link carries `data-hard`), never a fetch.
 #[route(GET "/auth/logout")]
 async fn in_logout(cx: &Cx) -> Result<Response, topcoat::Error> {
-    clear_cookie(cx, &client(cx).config.cookie_name);
-    see(cx, "/")
+    let state = client(cx);
+    clear_cookie(cx, &state.config.cookie_name);
+    see(
+        cx,
+        &format!(
+            "{}/logout?back={}",
+            state.config.issuer,
+            urlencoded(&format!("{}/", state.config.logout_back)),
+        ),
+    )
 }
 
 fn urlencoded(raw: &str) -> String {
@@ -859,6 +878,7 @@ mod tests {
             redirect_uri: "http://app.test/auth/callback".into(),
             cookie_name: "in_session".into(),
             cookie_key: [7u8; 32],
+            logout_back: String::new(),
         };
         assert_eq!(introspect_path(), "/introspect");
         let exp = OffsetDateTime::now_utc() + time::Duration::hours(1);
@@ -916,6 +936,27 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn logout_clears_the_cookie_and_walks_to_the_issuer() {
+        let router = test_router(test_config("http://im.test".into()));
+        let res = TestResponse::of(
+            router
+                .handle(get("/auth/logout", Some(&session_cookie("tok-1"))))
+                .await,
+        )
+        .await;
+        assert_eq!(res.status, http::StatusCode::SEE_OTHER);
+        assert_eq!(
+            res.location.as_deref(),
+            Some("http://im.test/logout?back=http%3A%2F%2Fapp.test%2F"),
+            "{}",
+            res.text()
+        );
+        // This app forgets the person on the very answer, whatever im then
+        // does with the central session.
+        assert!(res.clears_session());
+    }
+
     #[route(GET "/whoami")]
     async fn whoami(cx: &Cx) -> Result<Response, topcoat::Error> {
         match current_user(cx).await {
@@ -932,6 +973,7 @@ mod tests {
             redirect_uri: "http://app.test/auth/callback".into(),
             cookie_name: "in_session".into(),
             cookie_key: [7u8; 32],
+            logout_back: "http://app.test".into(),
         }
     }
 

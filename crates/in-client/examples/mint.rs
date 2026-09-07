@@ -29,6 +29,7 @@ fn main() {
         redirect_uri: String::new(),
         cookie_name,
         cookie_key: key,
+        logout_back: String::new(),
     };
     let exp = time::OffsetDateTime::now_utc() + time::Duration::days(1);
     println!("{}", in_client::mint_session_cookie(&config, &token, exp));

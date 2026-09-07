@@ -302,6 +302,10 @@ pub struct Config {
     /// banners that mint them — when the file sets one. `None` follows the
     /// address bound.
     pub base_url: Option<String>,
+    /// The suite the signed-in chrome's switcher links to, from the
+    /// `[[services]]` tables. An empty list is a file silent about any
+    /// suite, and the chrome stays exactly as it has always been.
+    pub services: Vec<ServiceConfig>,
     /// The OIDC provider In trusts.
     pub oidc: OidcConfig,
     /// Keys the file sets that nothing here reads, in the order the file
@@ -478,6 +482,22 @@ impl Config {
             })?;
         }
 
+        // The suite the chrome's switcher links to. A silent list keeps the
+        // single-app chrome; an entry present must be whole, because a
+        // wordmark pointing nowhere is worse than none — and its url must
+        // be joinable to a link for the same reason `base_url` must.
+        let mut services = Vec::new();
+        for (i, entry) in toml.services.unwrap_or_default().into_iter().enumerate() {
+            let key = value(entry.key)
+                .ok_or_else(|| service_error(i, "its key is missing or empty".into()))?;
+            let name = value(entry.name)
+                .ok_or_else(|| service_error(i, "its name is missing or empty".into()))?;
+            let url = value(entry.url)
+                .ok_or_else(|| service_error(i, "its url is missing or empty".into()))?;
+            Config::validate_base_url(&url).map_err(|why| service_error(i, why))?;
+            services.push(ServiceConfig { key, name, url });
+        }
+
         let oidc_toml = toml.oidc.ok_or(ConfigError::Missing("[oidc]"))?;
         let issuer = value(oidc_toml.issuer).ok_or(ConfigError::Missing("oidc.issuer"))?;
         let client_id = value(oidc_toml.client_id).ok_or(ConfigError::Missing("oidc.client_id"))?;
@@ -501,6 +521,7 @@ impl Config {
             purge_after_days,
             default_quota_bytes,
             base_url,
+            services,
             oidc: OidcConfig {
                 issuer,
                 client_id,
@@ -578,6 +599,15 @@ fn listen_url_of(listen: &SocketAddr) -> String {
     match listen.port() {
         80 => format!("http://{host}"),
         port => format!("http://{host}:{port}"),
+    }
+}
+
+/// The boot error for a `[[services]]` entry that is not whole. Entries are
+/// numbered from one, so the message names the offender a human can find.
+fn service_error(index: usize, why: String) -> ConfigError {
+    ConfigError::Invalid {
+        key: "services",
+        why: format!("entry {}: {why}", index + 1),
     }
 }
 
@@ -915,6 +945,78 @@ redirect_uri = "https://files.example.com/auth/callback"
             scratch.load().unwrap_err(),
             ConfigError::Invalid { key: "base_url", .. }
         ));
+    }
+
+    /// The switcher is off until the file names a suite: a `[[services]]`-less
+    /// file is the chrome as it has always been, no half-rendered trio.
+    #[test]
+    fn a_file_without_services_leaves_the_switcher_off() {
+        let scratch = Scratch::new();
+        scratch.write(FULL);
+        let config = scratch.load().unwrap();
+        assert!(config.services.is_empty());
+    }
+
+    #[test]
+    fn services_parse_in_the_order_the_file_gives_them() {
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace(
+            "[oidc]",
+            "[[services]]\n\
+             key = \"in\"\n\
+             name = \"Files\"\n\
+             url = \"https://files.example.com\"\n\
+             \n\
+             [[services]]\n\
+             key = \"im\"\n\
+             name = \"Account\"\n\
+             url = \"https://id.example.com\"\n\
+             [oidc]",
+        ));
+        let config = scratch.load().unwrap();
+        assert_eq!(
+            config.services,
+            vec![
+                ServiceConfig {
+                    key: "in".into(),
+                    name: "Files".into(),
+                    url: "https://files.example.com".into(),
+                },
+                ServiceConfig {
+                    key: "im".into(),
+                    name: "Account".into(),
+                    url: "https://id.example.com".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_service_url_without_a_scheme_is_refused() {
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace(
+            "[oidc]",
+            "[[services]]\nkey = \"im\"\nname = \"Account\"\nurl = \"id.example.com\"\n[oidc]",
+        ));
+        assert!(matches!(
+            scratch.load().unwrap_err(),
+            ConfigError::Invalid { key: "services", .. }
+        ));
+    }
+
+    #[test]
+    fn an_incomplete_service_entry_names_the_offender() {
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace(
+            "[oidc]",
+            "[[services]]\nkey = \"im\"\nname = \"\"\nurl = \"https://id.example.com\"\n[oidc]",
+        ));
+        let err = scratch.load().unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid { key: "services", .. }
+        ));
+        assert!(err.to_string().contains("entry 1"), "{err}");
     }
 
     #[test]

@@ -9,14 +9,13 @@
 //!
 //! New HTTP tests belong in this file rather than a new `tests/*.rs`: one
 //! test binary links and runs once.
-
+use in_core::{Config, OidcConfig, ServiceConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use http::{HeaderValue, Request, StatusCode, header};
 use in_core::store::{ShareKind, Store, TursoStore};
-use in_core::{Config, OidcConfig};
 use in_web::server::App;
 use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
 use topcoat::cookie::RouterBuilderCookieExt;
@@ -316,12 +315,13 @@ struct TestApp {
 
 impl TestApp {
     async fn build() -> Self {
-        Self::build_with(None).await
+        Self::build_with(None, Vec::new()).await
     }
 
     /// The same workspace with a config `base_url` set — the key that
-    /// decides where the public links are told to point.
-    async fn build_with(base_url: Option<&str>) -> Self {
+    /// decides where the public links are told to point — and optional
+    /// `[[services]]` entries, the suite the topbar's switcher links to.
+    async fn build_with(base_url: Option<&str>, services: Vec<ServiceConfig>) -> Self {
         let dir = std::env::temp_dir().join(format!("in-http-{}", Ulid::new()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("in.db");
@@ -339,6 +339,7 @@ impl TestApp {
             redirect_uri: "http://127.0.0.1:7655/auth/callback".to_string(),
             cookie_name: "in_session".to_string(),
             cookie_key: [7u8; 32],
+            logout_back: "http://127.0.0.1:7655".to_string(),
         };
         let config = Config {
             database: db.to_str().unwrap().to_string(),
@@ -348,6 +349,7 @@ impl TestApp {
             purge_after_days: 30,
             default_quota_bytes: 10 * 1024 * 1024 * 1024,
             base_url: base_url.map(str::to_string),
+            services,
             r2: None,
             oidc: OidcConfig {
                 issuer: fake.url(),
@@ -2693,6 +2695,55 @@ async fn topbar_nav_has_no_search_link() {
     assert!(!nav.contains("Search"), "search leaked into the nav: {nav}");
 }
 
+#[tokio::test]
+async fn the_suite_switcher_renders_when_services_are_set() {
+    // No [[services]]: no switcher — the chrome as it always was.
+    let bare = TestApp::build().await;
+    let cookie = bare
+        .sign_in("sub-switch0", "switch0@in.test", "Switch0")
+        .await;
+    let page = bare.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(!page.text().contains("app-switcher"), "{}", page.text());
+
+    let app = TestApp::build_with(
+        None,
+        vec![
+            ServiceConfig {
+                key: "in".into(),
+                name: "Files".into(),
+                url: "https://files.example.com".into(),
+            },
+            ServiceConfig {
+                key: "im".into(),
+                name: "Account".into(),
+                url: "https://id.example.com".into(),
+            },
+            ServiceConfig {
+                key: "iz".into(),
+                name: "Board".into(),
+                url: "https://board.example.com".into(),
+            },
+        ],
+    )
+    .await;
+    let cookie = app.sign_in("sub-switch", "switch@in.test", "Switch").await;
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    let nav_start = body.find("app-switcher").expect("no switcher");
+    let nav_end = body[nav_start..]
+        .find("</nav>")
+        .expect("switcher never closes");
+    let nav = &body[nav_start..nav_start + nav_end];
+    assert!(nav.contains("href=\"https://files.example.com/\""), "{nav}");
+    assert!(nav.contains("href=\"https://id.example.com/\""), "{nav}");
+    assert!(nav.contains("href=\"https://board.example.com/\""), "{nav}");
+    assert!(nav.contains("title=\"Files\""), "{nav}");
+    // Exactly the app the reader is already in is marked.
+    assert_eq!(nav.matches("aria-current").count(), 1, "{nav}");
+}
+
 // -- settings ---------------------------------------------------------------
 
 #[tokio::test]
@@ -2791,7 +2842,7 @@ async fn settings_quota_and_disable_guards() {
 /// `base_url`.
 #[tokio::test]
 async fn share_links_carry_the_configured_base_url() {
-    let app = TestApp::build_with(Some("https://files.example.com")).await;
+    let app = TestApp::build_with(Some("https://files.example.com"), Vec::new()).await;
     let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
     let owner = owner_of(&app, "sub-admin").await;
     let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
@@ -3118,7 +3169,7 @@ async fn server_address_setting_drives_share_links() {
 /// file sets one: the setting wins only while it is non-empty.
 #[tokio::test]
 async fn cleared_setting_falls_back_to_the_configured_base_url() {
-    let app = TestApp::build_with(Some("https://cfg.example.com")).await;
+    let app = TestApp::build_with(Some("https://cfg.example.com"), Vec::new()).await;
     let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
     let owner = owner_of(&app, "sub-admin").await;
     let file = file_id(&app, &owner, "notes.txt", b"hello in").await;

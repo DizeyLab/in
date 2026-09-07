@@ -207,6 +207,9 @@ async fn main() {
         redirect_uri: config.oidc.redirect_uri.clone(),
         cookie_name: "in_session".to_string(),
         cookie_key,
+        // Where im's `/logout` sends the browser after the central
+        // sign-out: the same origin public links carry.
+        logout_back: config.public_origin(),
     };
 
     // Told when the process is stopping, so the live streams end instead of

@@ -221,14 +221,51 @@ pub async fn topbar_nav(cx: &Cx, active: NavPage, lang: Lang) -> Result {
     }
 }
 
-/// The signed-in chrome: the monogram, the page nav, the identity menu.
-/// Wave-2 pages render their content under this.
+/// This app's key in the `[[services]]` list: the entry matching it is the
+/// one marked as where the reader already is.
+const SELF_KEY: &str = "in";
+
+/// The topbar's suite switcher: every `[[services]]` entry as its wordmark,
+/// beside the page nav, the current one marked. Rendered only when the file
+/// names a suite — a file silent about the others keeps the chrome exactly
+/// as it has always been. The links point at the services' own addresses,
+/// so the cross-origin ones navigate the browser natively; this app's entry
+/// lands where a soft-nav swap would have gone anyway.
+async fn app_switcher(cx: &Cx) -> Result {
+    let empty = app(cx).config.services.is_empty();
+    view! {
+        cx =>
+        if !empty {
+            <nav class="app-switcher">
+                for service in &app(cx).config.services {
+                    <a
+                        class=(if service.key == SELF_KEY {
+                            "app-switcher-mark app-switcher-here"
+                        } else {
+                            "app-switcher-mark"
+                        })
+                        href=(format!("{}/", service.url))
+                        title=(service.name.clone())
+                        aria-current=((service.key == SELF_KEY).then_some("page"))
+                    >
+                        (service.key.clone())
+                    </a>
+                }
+            </nav>
+            <span class="topbar-divider"></span>
+        }
+    }
+}
+
+/// The signed-in chrome: the monogram, the page nav, the suite switcher,
+/// the identity menu. Wave-2 pages render their content under this.
 pub async fn topbar(cx: &Cx, active: NavPage, user: &User, lang: Lang) -> Result {
     view! {
         cx =>
         <header class="topbar">
             (mark(cx).await?)
             (topbar_nav(cx, active, lang).await?)
+            (app_switcher(cx).await?)
             (user_menu(cx, user, lang).await?)
         </header>
         (avatar_script(cx).await?)

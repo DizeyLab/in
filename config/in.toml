@@ -20,16 +20,70 @@ base_url = ""
 # created on boot. Not written here: it defaults to beside the database file,
 # and the boot completes this file with the value it resolved.
 
+# The suite the signed-in chrome's switcher links to: one [[services]]
+# table per app — `key` the word the switcher renders, `name` its hover
+# label, `url` the address the link points at (scheme and host, no
+# trailing slash). In names itself among them so the switcher can mark
+# where the reader is. Production sets these on the deploy side as
+# https://<key>.dizey.sh; this committed copy carries only the
+# development addresses.
+# Where drive files, thumbnails and staged upload chunks live as files, created on boot.
+storage = "/home/tahinli/Documents/Code/Rust/in/storage"
+
+[[services]]
+key = "in"
+name = "Files"
+url = "http://127.0.0.1:7655"
+
+[[services]]
+key = "im"
+name = "Account"
+url = "http://127.0.0.1:7650"
+
+[[services]]
+key = "iz"
+name = "Board"
+url = "http://127.0.0.1:7654"
+
 [oidc]
 # The provider that signs people in. Required: no default is guessed.
-issuer = ""
+issuer = "http://127.0.0.1:7650"
 # The client id In presents to the provider. Required.
-client_id = ""
+client_id = "in-dev-capture"
 # The client secret In presents to the provider. Required. Filled in only on
 # the machine that runs the server — the committed copy stays empty.
-client_secret = ""
+client_secret = "in-dev-secret"
 # Where the provider sends the browser back after sign-in. Not written here:
 # it defaults from `listen` on every boot, so moving the address never leaves
 # a stale callback behind. Set it only when the public address differs from
 # the bind address (a proxy in front, for instance).
 # redirect_uri = "http://127.0.0.1:7655/auth/callback"
+
+# Where the file bytes themselves live. With no [storage.r2] table, the
+# bytes stay on local disk in the `storage` tree (files/ and thumbs/ beside
+# the database) — the default, and the only shape every other key here
+# describes.
+#
+# Setting [storage.r2] moves the file and thumbnail bytes into a Cloudflare
+# R2 bucket. The database keeps every row, quota and piece of metadata —
+# only the bytes move. `storage` still names the local tree either way:
+# upload chunks stage there, then stream up to the bucket.
+#
+# [storage.r2]
+# account_id — the R2 account id; the endpoint becomes
+#   https://<account_id>.r2.cloudflarestorage.com
+# bucket — the bucket the blobs land in, under files/ and thumbs/ — the same
+#   layout the local tree uses, so an rclone maps one onto the other.
+# key_file — a path (resolved against this config directory) to a file with
+#   two lines: the R2 access key id on the first, the secret on the second.
+#   Create it readable only by the user the server runs as (0600); it is
+#   read once at boot and never logged:
+#     (umask 077 && printf '%s\n%s\n' '<access key id>' '<secret>' > config/r2.keys)
+#
+# Absence is meaningful: no table, no bucket, local bytes. Nothing here is
+# ever completed into the file for you.
+#
+# Migrating an existing deployment's bytes into the bucket — database and
+# storage tree stay where they are; run once with the server stopped:
+#   rclone copy <storage>/files :r2,account=<id>,key=<id>:<bucket>/files
+#   rclone copy <storage>/thumbs :r2,account=<id>,key=<id>:<bucket>/thumbs

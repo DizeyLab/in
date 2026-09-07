@@ -479,6 +479,34 @@ a {
   }
 }
 
+// The suite switcher: the other apps of the family, as their wordmarks,
+// beside the page nav. Rendered only when `[[services]]` is set; the app
+// the reader is already in is marked the way the page nav marks itself.
+.app-switcher {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  // The trio keeps its width at every width: the page nav beside it is the
+  // region that pans under the finger, this never squishes.
+  flex: none;
+
+  &-mark {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: var(--muted);
+    text-decoration: none;
+
+    &:hover { color: var(--ink); }
+  }
+  // The current app, spelled out — `&` stays at the head of a compound
+  // selector here, so the pair of classes cannot ride the ampersand.
+  .app-switcher-mark.app-switcher-here {
+    color: var(--ink);
+    box-shadow: inset 0 -2px 0 var(--ink);
+  }
+}
 .scaffold-note {
   margin: 24px;
   padding: 20px 24px;
@@ -4318,6 +4346,8 @@ input[type="radio"] {
     &::-webkit-scrollbar { display: none; }
   }
 
+  .app-switcher { gap: 10px; }
+
   // The avatar says who is signed in at this width; the name is the menu's.
   .user-menu-trigger-name { display: none; }
 
@@ -4330,6 +4360,8 @@ input[type="radio"] {
     }
 
     .topbar-nav-links { gap: 10px; }
+
+    .app-switcher { gap: 8px; }
   }
 
   // -- board -----------------------------------------------------------------
