@@ -223,10 +223,17 @@ struct CreateLinkForm {
 async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
     let user = match require_user(cx).await {
         Ok(user) => user,
-        Err(refusal) => return redirect_back(cx, "/settings?section=links", "create", Some(refusal)),
+        Err(refusal) => {
+            return redirect_back(cx, "/settings?section=links", "create", Some(refusal));
+        }
     };
     let Some(kind) = parse_kind(&input.kind) else {
-        return redirect_back(cx, "/settings?section=links", "create", Some(Refusal::NotFound));
+        return redirect_back(
+            cx,
+            "/settings?section=links",
+            "create",
+            Some(Refusal::NotFound),
+        );
     };
     if let Err(refusal) = owned_target(app(cx).store.as_ref(), &user, kind, &input.target_id).await
     {
@@ -234,7 +241,9 @@ async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
     }
     let expires_at = match parse_expiry(input.expires_in_days.as_deref()) {
         Ok(expires_at) => expires_at,
-        Err(refusal) => return redirect_back(cx, "/settings?section=links", "create", Some(refusal)),
+        Err(refusal) => {
+            return redirect_back(cx, "/settings?section=links", "create", Some(refusal));
+        }
     };
     // An optional password on the link: a trimmed empty field is no
     // password at all. Argon2id is CPU-slow on purpose, so the hash runs
@@ -244,7 +253,14 @@ async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
         Some(password) => {
             match tokio::task::spawn_blocking(move || hash_link_password(&password)).await {
                 Ok(Ok(hash)) => Some(hash),
-            _ => return redirect_back(cx, "/settings?section=links", "create", Some(Refusal::Unavailable)),
+                _ => {
+                    return redirect_back(
+                        cx,
+                        "/settings?section=links",
+                        "create",
+                        Some(Refusal::Unavailable),
+                    );
+                }
             }
         }
         None => None,
@@ -280,7 +296,12 @@ async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
             let location = format!("{back}{separator}created={}", minted.token);
             Ok((StatusCode::SEE_OTHER, [(header::LOCATION, location)]))
         }
-        Err(error) => redirect_back(cx, "/settings?section=links", "create", Some(refusal_of(error))),
+        Err(error) => redirect_back(
+            cx,
+            "/settings?section=links",
+            "create",
+            Some(refusal_of(error)),
+        ),
     }
 }
 
@@ -295,7 +316,9 @@ struct RevokeLinkForm {
 async fn revoke_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
     let user = match require_user(cx).await {
         Ok(user) => user,
-        Err(refusal) => return redirect_back(cx, "/settings?section=links", "revoke", Some(refusal)),
+        Err(refusal) => {
+            return redirect_back(cx, "/settings?section=links", "revoke", Some(refusal));
+        }
     };
     let store = app(cx).store;
     let mine = store
@@ -303,13 +326,23 @@ async fn revoke_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
         .await
         .map_err(|_| Refusal::Unavailable);
     let Ok(links) = mine else {
-        return redirect_back(cx, "/settings?section=links", "revoke", Some(Refusal::Unavailable));
+        return redirect_back(
+            cx,
+            "/settings?section=links",
+            "revoke",
+            Some(Refusal::Unavailable),
+        );
     };
     if !links
         .iter()
         .any(|link| link.id == input.id && link.created_by == user.id)
     {
-        return redirect_back(cx, "/settings?section=links", "revoke", Some(Refusal::NotFound));
+        return redirect_back(
+            cx,
+            "/settings?section=links",
+            "revoke",
+            Some(Refusal::NotFound),
+        );
     }
     match store.revoke_share_link(&input.id).await {
         Ok(()) => {
@@ -322,12 +355,20 @@ async fn revoke_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
                 .await
             {
                 Ok(()) => redirect_back(cx, "/settings?section=links", "revoke", None),
-                Err(error) => {
-                    redirect_back(cx, "/settings?section=links", "revoke", Some(refusal_of(error)))
-                }
+                Err(error) => redirect_back(
+                    cx,
+                    "/settings?section=links",
+                    "revoke",
+                    Some(refusal_of(error)),
+                ),
             }
         }
-        Err(error) => redirect_back(cx, "/settings?section=links", "revoke", Some(refusal_of(error))),
+        Err(error) => redirect_back(
+            cx,
+            "/settings?section=links",
+            "revoke",
+            Some(refusal_of(error)),
+        ),
     }
 }
 
@@ -473,7 +514,10 @@ fn has_flag(query: &str, key: &str) -> bool {
 /// `/s` surface stays a `#[route]` and wraps its views itself — in
 /// `document_shell`, the same shell every `#[page]` under `/` wears, never
 /// a hand-copied head.
-async fn public_page(cx: &Cx, page: Result) -> topcoat::Result<topcoat::router::response::Response> {
+async fn public_page(
+    cx: &Cx,
+    page: Result,
+) -> topcoat::Result<topcoat::router::response::Response> {
     Ok(document_shell(cx, page).await?.into_response(cx)?)
 }
 
@@ -1317,7 +1361,7 @@ async fn shared(cx: &Cx) -> Result {
                         <div class="drive-row">
                             <a class="drive-open" href=(match row.item.kind {
                                 ShareKind::Folder => format!("/drive?folder={}", row.item.target_id),
-                                ShareKind::File => format!("/view/{}", row.item.target_id),
+                                ShareKind::File => format!("/view/{}?from=shared", row.item.target_id),
                             })>
                                 if row.item.kind == ShareKind::Folder {
                                     <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>

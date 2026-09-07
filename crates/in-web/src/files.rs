@@ -173,6 +173,15 @@ struct DownloadQuery {
     dl: Option<String>,
 }
 
+/// The viewer's origin: `from` is `shared` when the shared page's row sent
+/// the reader over, and anything else — absent included — is a drive
+/// opening. The back link names the page you came from; an unknown value
+/// keeps the standing drive answer, never a refusal.
+#[query_params]
+struct ViewQuery {
+    from: Option<String>,
+}
+
 /// The file row this account may open: its owner may, and anyone holding a
 /// live grant onto it may. Trashed files open for nobody here — the trash
 /// has its own screen. `None` folds "no such file" and "not shared" into
@@ -474,7 +483,9 @@ fn is_archive_mime(mime: &str) -> bool {
 /// only while the reader may download, and `?dl=1` stays gated on the
 /// byte route. Documents (PDF, text) frame the bytes in the browser's own
 /// chrome, whose toolbar downloads — they preview only under the grant.
-/// Bytes for another owner's file answer 404, not 403.
+/// Bytes for another owner's file answer 404, not 403. The head's back
+/// link names the origin: `?from=shared`, the pair the shared page's rows
+/// carry, returns there; anything else back to the drive.
 #[page("/view/{id}")]
 async fn view_file(cx: &Cx) -> Result {
     let id: &str = path_param::<Id>(cx);
@@ -491,6 +502,10 @@ async fn view_file(cx: &Cx) -> Result {
         }
     };
     let language = lang(cx).await;
+    let from_shared = query_params::<ViewQuery>(cx)
+        .ok()
+        .and_then(|query| query.from.clone())
+        .is_some_and(|from| from == "shared");
 
     let store = app(cx).store.clone();
     let Some(file) = visible_file(store.as_ref(), &user.id, id).await else {
@@ -515,7 +530,9 @@ async fn view_file(cx: &Cx) -> Result {
         (topbar(cx, NavPage::Drive, &user, language).await?)
         <main class="settings-stage stage-wide">
             <div class="viewer-head">
-                <a class="quiet" href="/drive">(t(language, Key::BackToDrive))</a>
+                <a class="quiet" href=(if from_shared { "/shared" } else { "/drive" })>
+                    (t(language, if from_shared { Key::BackToShared } else { Key::BackToDrive }))
+                </a>
                 <div class="spacer"></div>
                 if may_download {
                     <a class="primary" href=(download_href) download="">(t(language, Key::Download))</a>

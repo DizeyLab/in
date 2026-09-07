@@ -1868,6 +1868,13 @@ async fn per_user_share_lands_in_shared_with_me() {
     let bobs = app.get("/shared", Some(&bob)).await;
     assert_eq!(bobs.status, StatusCode::OK, "{}", bobs.text());
     assert!(bobs.text().contains("joint.txt"), "{}", bobs.text());
+    // The row opens the viewer marked with its origin, so the back link
+    // can name the shared page.
+    assert!(
+        bobs.text().contains(&format!("/view/{file}?from=shared")),
+        "{}",
+        bobs.text()
+    );
 
     let caras = app.get("/shared", Some(&cara)).await;
     assert_eq!(caras.status, StatusCode::OK, "{}", caras.text());
@@ -2018,7 +2025,11 @@ async fn created_link_is_revisible_and_copyable_everywhere() {
         .post(
             "/api/share/link/create",
             Some(&ada),
-            &[("kind", "file"), ("target_id", &file), ("can_download", "1")],
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+            ],
         )
         .await;
     assert!(answer.accepted(), "create refused: {:?}", answer.location);
@@ -2179,7 +2190,11 @@ async fn drive_marks_shared_rows() {
             &[("parent_id", ""), ("name", "Dossier")],
         )
         .await;
-    assert!(answer.accepted(), "folder create refused: {:?}", answer.location);
+    assert!(
+        answer.accepted(),
+        "folder create refused: {:?}",
+        answer.location
+    );
     let folder = folder_id(&app, &owner, None, "Dossier").await;
 
     // A live public link onto the file, another onto the folder.
@@ -2264,6 +2279,24 @@ async fn view_only_reader_previews_media_but_cannot_download() {
     assert!(page.text().contains("viewer-media"), "{}", page.text());
     assert!(!page.text().contains("No preview"), "{}", page.text());
     assert!(!page.text().contains("?dl=1"), "{}", page.text());
+    // The back link names the origin: opened from the shared page (the
+    // `from=shared` its rows carry) it returns there, a plain opening to
+    // the drive.
+    let from_shared = app
+        .get(&format!("/view/{file}?from=shared"), Some(&bob))
+        .await;
+    assert_eq!(from_shared.status, StatusCode::OK, "{}", from_shared.text());
+    assert!(
+        from_shared.text().contains("Back to shared"),
+        "{}",
+        from_shared.text()
+    );
+    assert!(
+        !from_shared.text().contains("Back to the drive"),
+        "{}",
+        from_shared.text()
+    );
+    assert!(page.text().contains("Back to the drive"), "{}", page.text());
 
     // The inline bytes serve for the preview...
     let inline = app.get(&format!("/file/{file}"), Some(&bob)).await;
@@ -2477,13 +2510,14 @@ async fn drive_search_results_merge_into_one_panel() {
     let file = file_id(&app, &owner, "holiday report.txt", b"sun").await;
 
     let page = app.get("/drive?q=holiday", Some(&cookie)).await;
-    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let body = page.text();
     // Both hits render in one shared list, folders first, wired to their surfaces.
     assert!(body.contains("holiday photos"), "{body}");
     assert!(body.contains("holiday report.txt"), "{body}");
     assert!(body.contains(&format!("/drive?folder={folder}")), "{body}");
     assert!(body.contains(&format!("/view/{file}")), "{body}");
+    // Drive rows stay unmarked: only the shared page names an origin.
+    assert!(!body.contains("from=shared"), "{body}");
     let folder_at = body.find("holiday photos").expect("no folder hit");
     let file_at = body.find("holiday report.txt").expect("no file hit");
     assert!(folder_at < file_at, "file hit precedes folder hit: {body}");
@@ -2728,7 +2762,10 @@ async fn share_links_carry_the_configured_base_url() {
 
     // The banner the mint redirects back to.
     let page = app
-        .get(&format!("/settings?section=links&created={token}"), Some(&admin))
+        .get(
+            &format!("/settings?section=links&created={token}"),
+            Some(&admin),
+        )
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(
@@ -2789,7 +2826,10 @@ async fn share_links_follow_the_bind_without_a_base_url() {
     // No `base_url`: the links say the address bound, as they always
     // have.
     let page = app
-        .get(&format!("/settings?section=links&created={token}"), Some(&admin))
+        .get(
+            &format!("/settings?section=links&created={token}"),
+            Some(&admin),
+        )
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(
@@ -2883,26 +2923,38 @@ async fn admin_settings_sections_render_alone() {
         .await
         .unwrap();
 
-    let body = app.get("/settings?section=profile", Some(&admin)).await.text();
+    let body = app
+        .get("/settings?section=profile", Some(&admin))
+        .await
+        .text();
     assert!(body.contains("name=\"ui\""), "{body}");
     assert!(!body.contains("/api/share/link/revoke"), "{body}");
     assert!(!body.contains("member-table"), "{body}");
     assert!(!body.contains("/api/settings/base_url"), "{body}");
 
-    let body = app.get("/settings?section=links", Some(&admin)).await.text();
+    let body = app
+        .get("/settings?section=links", Some(&admin))
+        .await
+        .text();
     assert!(body.contains("action=\"/api/share/link/revoke\""), "{body}");
     assert!(!body.contains("name=\"ui\""), "{body}");
     assert!(!body.contains("member-table"), "{body}");
     assert!(!body.contains("/api/settings/base_url"), "{body}");
 
-    let body = app.get("/settings?section=everyone", Some(&admin)).await.text();
+    let body = app
+        .get("/settings?section=everyone", Some(&admin))
+        .await
+        .text();
     assert!(body.contains("member-table"), "{body}");
     assert!(body.contains("ada@in.test"), "{body}");
     assert!(!body.contains("name=\"ui\""), "{body}");
     assert!(!body.contains("/api/share/link/revoke"), "{body}");
     assert!(!body.contains("/api/settings/base_url"), "{body}");
 
-    let body = app.get("/settings?section=server", Some(&admin)).await.text();
+    let body = app
+        .get("/settings?section=server", Some(&admin))
+        .await
+        .text();
     assert!(body.contains("action=\"/api/settings/base_url\""), "{body}");
     // The effective origin shows before anything is stored: the bind.
     assert!(body.contains("http://127.0.0.1:7655"), "{body}");
@@ -2965,8 +3017,7 @@ async fn server_address_setting_drives_share_links() {
         )
         .await;
     assert!(
-        page
-            .text()
+        page.text()
             .contains(&format!("https://files.example.com/s/{token}")),
         "{}",
         page.text()
@@ -3038,8 +3089,7 @@ async fn cleared_setting_falls_back_to_the_configured_base_url() {
         )
         .await;
     assert!(
-        page
-            .text()
+        page.text()
             .contains(&format!("https://override.example.com/s/{token}")),
         "{}",
         page.text()
@@ -3071,7 +3121,11 @@ async fn revoke_redirects_land_on_the_links_section() {
     let app = TestApp::build().await;
     let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
     let answer = app
-        .post("/api/share/link/revoke", Some(&admin), &[("id", "never-real")])
+        .post(
+            "/api/share/link/revoke",
+            Some(&admin),
+            &[("id", "never-real")],
+        )
         .await;
     assert!(
         answer
@@ -3096,7 +3150,10 @@ async fn the_settings_revoke_button_sits_inline_in_its_row() {
         .await
         .unwrap();
 
-    let body = app.get("/settings?section=links", Some(&admin)).await.text();
+    let body = app
+        .get("/settings?section=links", Some(&admin))
+        .await
+        .text();
     let row_at = body
         .find("<div class=\"member-row\">")
         .expect("no share-link row");
@@ -4699,4 +4756,3 @@ async fn an_empty_folder_says_how_to_fill_it() {
     assert!(body.contains("id=\"upload-form\""), "{body}");
     assert!(body.contains("__inDrop"), "{body}");
 }
-

@@ -83,6 +83,7 @@ pub enum Key {
     SomethingWentWrong,
     NothingAtThisAddress,
     BackToDrive,
+    BackToShared,
     // Landing.
     WelcomeTitle,
     WelcomeBlurb,
@@ -255,6 +256,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             SomethingWentWrong => "Something went wrong.",
             NothingAtThisAddress => "There is nothing at this address.",
             BackToDrive => "Back to the drive",
+            BackToShared => "Back to shared",
             WelcomeTitle => "In: your files",
             WelcomeBlurb => "Your folders and files, shared on your terms.",
             SignIn => "Sign in",
@@ -390,9 +392,13 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             ServerAddress => "Server address",
             EffectiveOrigin => "Effective origin",
             BaseUrlLabel => "Public base URL",
-            BaseUrlNote => "The origin share links carry: a saved value wins, an empty one falls back to the configured base_url, then the bind address.",
+            BaseUrlNote => {
+                "The origin share links carry: a saved value wins, an empty one falls back to the configured base_url, then the bind address."
+            }
             Shared => "Shared",
-            LegacyLinkNote => "This link predates re-viewable addresses — revoke and mint a new one to carry it forward.",
+            LegacyLinkNote => {
+                "This link predates re-viewable addresses — revoke and mint a new one to carry it forward."
+            }
         },
         Lang::Tr => match key {
             Cancel => "Vazgeç",
@@ -409,6 +415,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             SomethingWentWrong => "Bir şeyler ters gitti.",
             NothingAtThisAddress => "Bu adreste bir şey yok.",
             BackToDrive => "Sürücüye dön",
+            BackToShared => "Paylaşılanlara dön",
             WelcomeTitle => "In: dosyaların",
             WelcomeBlurb => "Klasörlerin ve dosyaların, senin kurallarınla.",
             SignIn => "Oturum aç",
@@ -492,7 +499,9 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             EnableUser => "Etkinleştir",
             DisabledBadge => "devre dışı",
             LinkCreated => "Bağlantı oluşturuldu.",
-            CopyLinkOnce => "Şimdi kopyala. Tam adres, Paylaşım bağlantıları panelinde de görünür kalır.",
+            CopyLinkOnce => {
+                "Şimdi kopyala. Tam adres, Paylaşım bağlantıları panelinde de görünür kalır."
+            }
             ExpiresLabel => "Bitiş",
             NeverExpires => "Süresiz",
             ViewOnly => "Yalnızca görüntüleme: önizleme, indirme yok",
@@ -544,9 +553,13 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             ServerAddress => "Sunucu adresi",
             EffectiveOrigin => "Etkin kök adres",
             BaseUrlLabel => "Herkese açık kök adres",
-            BaseUrlNote => "Paylaşım bağlantılarının taşıdığı kök adres: kaydedilen değer önceliklidir, boş bırakılırsa yapılandırılmış base_url'e, sonra bağlanılan adrese dönülür.",
+            BaseUrlNote => {
+                "Paylaşım bağlantılarının taşıdığı kök adres: kaydedilen değer önceliklidir, boş bırakılırsa yapılandırılmış base_url'e, sonra bağlanılan adrese dönülür."
+            }
             Shared => "Paylaşılmış",
-            LegacyLinkNote => "Bu bağlantı, adreslerin yeniden görüntülenebildiği dönemden önce oluşturuldu — devam ettirmek için iptal edip yeni bir tane oluşturun.",
+            LegacyLinkNote => {
+                "Bu bağlantı, adreslerin yeniden görüntülenebildiği dönemden önce oluşturuldu — devam ettirmek için iptal edip yeni bir tane oluşturun."
+            }
         },
     }
 }
