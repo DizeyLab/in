@@ -559,9 +559,7 @@ async fn drive(cx: &Cx) -> Result {
     // owned and live opens nothing.
     let share_pair = params.as_ref().and_then(|query| query.share.as_deref());
     let share_dialog = match share_pair.and_then(|pair| pair.split_once(':')) {
-        Some((kind, id)) => {
-            crate::share::share_modal(cx, kind, id, &here, created.clone()).await?
-        }
+        Some((kind, id)) => crate::share::share_modal(cx, kind, id, &here, created.clone()).await?,
         None => None,
     };
     // The move picker: `?move=kind:id` renders the destination modal over
@@ -915,6 +913,12 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 /// so the row's ✕ keeps working across soft navigations — then the row
 /// drops and the canceled card announces through `window.__inNotify`.
 ///
+/// A finished upload keeps its row — at 100 percent, without the ✕ (there
+/// is nothing left to cancel once the bytes have landed) — and the row
+/// itself becomes the dismissal: pressing it anywhere (click, Enter, Space)
+/// drops it from the stack and the mirror, so the record lingers exactly
+/// as long as the reader wants it.
+///
 /// The form wears `data-hard` so the soft-nav's multipart replay leaves it
 /// alone — two uploaders racing the same bytes would double-insert, and the
 /// progress the soft-nav draws knows nothing of chunks. Without script the
@@ -990,20 +994,40 @@ async fn upload_script(cx: &Cx) -> Result {
                         track.appendChild(fill); \
                         var pct = document.createElement('span'); \
                         pct.className = 'upload-progress-pct'; \
-                        var shut = document.createElement('button'); \
-                        shut.type = 'button'; \
-                        shut.className = 'upload-progress-cancel'; \
-                        shut.textContent = '✕'; \
-                        if (u.cancelLabel) { shut.setAttribute('aria-label', u.cancelLabel); } \
-                        shut.addEventListener('click', function () { \
-                            shut.disabled = true; \
-                            if (u.cancel) { u.cancel(); } \
-                        }); \
+                        if (!u.done) { \
+                            var shut = document.createElement('button'); \
+                            shut.type = 'button'; \
+                            shut.className = 'upload-progress-cancel'; \
+                            shut.textContent = '✕'; \
+                            if (u.cancelLabel) { shut.setAttribute('aria-label', u.cancelLabel); } \
+                            shut.addEventListener('click', function () { \
+                                shut.disabled = true; \
+                                if (u.cancel) { u.cancel(); } \
+                            }); \
+                            row.appendChild(shut); \
+                        } \
                         row.appendChild(name); \
                         row.appendChild(track); \
                         row.appendChild(pct); \
-                        row.appendChild(shut); \
                         box.appendChild(window.__inAdded(row)); \
+                    } \
+                    /* A finished upload turns its row into the completion \
+                       notice: nothing is left to cancel — the bytes already \
+                       landed — so the ✕ goes and the row's own press \
+                       clears it. The flag on the node keeps a re-render \
+                       from stacking handlers on one survivor. */ \
+                    if (u.done && !row.__inDone) { \
+                        row.__inDone = true; \
+                        row.classList.add('upload-progress-done'); \
+                        var old = row.querySelector('.upload-progress-cancel'); \
+                        if (old) { old.remove(); } \
+                        row.setAttribute('role', 'button'); \
+                        row.setAttribute('tabindex', '0'); \
+                        row.setAttribute('title', box.getAttribute('data-dismiss-label') || 'dismiss'); \
+                        row.addEventListener('click', function () { dropRow(u); }); \
+                        row.addEventListener('keydown', function (ev) { \
+                            if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); dropRow(u); } \
+                        }); \
                     } \
                     var text = Math.min(100, Math.round(u.frac * 100)) + '%'; \
                     var fillNow = row.querySelector('.upload-progress-fill'); \
@@ -1048,6 +1072,11 @@ async fn upload_script(cx: &Cx) -> Result {
                 var row = box && findRow(box, u.id); \
                 if (row) { row.remove(); } \
             } \
+            /* Completion keeps the row as a record instead of dropping it: \
+               the flag re-renders it read-only (no ✕) and press-clears, so \
+               a landed upload announces itself exactly as long as the \
+               reader wants it on screen. */ \
+            function finishRow(u) { u.done = true; renderUploads(); } \
             document.addEventListener('in:wire', renderUploads); \
             renderUploads(); \
             function notify(kind, message) { \
@@ -1244,13 +1273,14 @@ async fn upload_script(cx: &Cx) -> Result {
                             var ui = bar(title); \
                             rows.push(ui); \
                             var url = await sendSmall(form.getAttribute('action'), folder, small, function (frac) { setProgress(ui, frac); }, ui); \
+                            finishRow(ui); \
                             if (url) { landing = url; } \
                         } \
                         for (var i = 0; i < big.length; i++) { \
                             await (function (file) { \
                                 var ui2 = bar(file.name); \
                                 rows.push(ui2); \
-                                return sendBig(file, folder, function (frac) { setProgress(ui2, frac); }, ui2); \
+                                return sendBig(file, folder, function (frac) { setProgress(ui2, frac); }, ui2).then(function () { finishRow(ui2); }); \
                             })(big[i]); \
                         } \
                     } catch (err) { \

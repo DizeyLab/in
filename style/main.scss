@@ -4653,6 +4653,16 @@ input[type="radio"] {
   color: var(--muted-soft);
 }
 
+// A finished row is its own dismissal: no cancel control is drawn (nothing
+// is left to cancel), so the press of the row has to read as the way out —
+// a pointer, and a hover that lifts the muted name to ink. The shared
+// `[tabindex]` ring rule covers keyboard focus.
+.upload-progress-done {
+  cursor: pointer;
+
+  &:hover .upload-progress-name { color: var(--ink); }
+}
+
 // The full-page drop affordance: a fixed veil with the invitation centred,
 // pointer-transparent so it never blocks the drop it announces.
 .drop-overlay {
