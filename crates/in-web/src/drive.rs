@@ -572,6 +572,7 @@ async fn drive(cx: &Cx) -> Result {
         cx =>
         (topbar(cx, NavPage::Drive, &user, language).await?)
         <main class="settings-stage stage-wide">
+            <h1 class="settings-title">(t(language, Key::Drive))</h1>
             <div class="filterbar drive-bar">
                 // The bar's children stay the same set in every mode — a
                 // leading element that comes and goes would shift the morph's
