@@ -42,6 +42,7 @@ struct FakeIm {
     addr: std::net::SocketAddr,
     tokens: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     photos: Arc<Mutex<HashMap<String, (Vec<u8>, String)>>>,
+    directory: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
 impl FakeIm {
@@ -52,8 +53,10 @@ impl FakeIm {
             Arc::new(Mutex::new(HashMap::new()));
         let photos: Arc<Mutex<HashMap<String, (Vec<u8>, String)>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let directory: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
         let map = tokens.clone();
         let pmap = photos.clone();
+        let dmap = directory.clone();
         tokio::spawn(async move {
             loop {
                 let Ok((socket, _)) = listener.accept().await else {
@@ -61,6 +64,7 @@ impl FakeIm {
                 };
                 let map = map.clone();
                 let pmap = pmap.clone();
+                let dmap = dmap.clone();
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut socket = socket;
@@ -100,16 +104,22 @@ impl FakeIm {
                         let (status, content_type, payload) =
                             match photo_answer(&pmap, &head, &first) {
                                 Some(photo) => photo,
-                                None => match answer_for(&map, &first, &body) {
-                                    Some(answer) => (
-                                        "200 OK",
-                                        "application/json".to_string(),
-                                        serde_json::to_vec(&answer).unwrap(),
-                                    ),
-                                    // Anything but the introspection route is
-                                    // nothing at all, the way the real im 404s
-                                    // unknown paths rather than answering them.
-                                    None => ("404 Not Found", "text/plain".to_string(), Vec::new()),
+                                None => match directory_answer(&dmap, &head, &first) {
+                                    Some(members) => members,
+                                    None => match answer_for(&map, &first, &body) {
+                                        Some(answer) => (
+                                            "200 OK",
+                                            "application/json".to_string(),
+                                            serde_json::to_vec(&answer).unwrap(),
+                                        ),
+                                        // Anything but the photo and directory
+                                        // routes is nothing at all, the way the
+                                        // real im 404s unknown paths rather than
+                                        // answering them.
+                                        None => {
+                                            ("404 Not Found", "text/plain".to_string(), Vec::new())
+                                        }
+                                    },
                                 },
                             };
                         let response = format!(
@@ -130,6 +140,7 @@ impl FakeIm {
             addr,
             tokens,
             photos,
+            directory,
         }
     }
 
@@ -145,10 +156,18 @@ impl FakeIm {
             .unwrap()
             .insert(user_id.to_string(), (bytes, mime.to_string()));
     }
+
+    /// Stages the members `GET /directory` answers with — the people im
+    /// knows. Unset, the route is simply not there, as for an app im has
+    /// not registered.
+    fn set_directory(&self, members: &[serde_json::Value]) {
+        *self.directory.lock().unwrap() = members.to_vec();
+    }
 }
 
-/// The Basic credential the app presents for `GET /photo/*`: `in-test:s3cr3t`.
-const PHOTO_BASIC: &str = "Basic aW4tdGVzdDpzM2NyM3Q=";
+/// The Basic credential the app presents for `GET /photo/*` and
+/// `GET /directory`: `in-test:s3cr3t`.
+const APP_BASIC: &str = "Basic aW4tdGVzdDpzM2NyM3Q=";
 
 /// Answers `GET /photo/{id}` from the photo map — the app's Basic credential
 /// or nothing, a missing photo exactly like a missing person. `None` for
@@ -175,7 +194,7 @@ fn photo_answer(
         .lines()
         .filter_map(|line| line.split_once(':'))
         .any(|(name, value)| {
-            name.trim().eq_ignore_ascii_case("authorization") && value.trim() == PHOTO_BASIC
+            name.trim().eq_ignore_ascii_case("authorization") && value.trim() == APP_BASIC
         });
     if !authed {
         return Some(("404 Not Found", "text/plain".to_string(), Vec::new()));
@@ -184,6 +203,46 @@ fn photo_answer(
         Some((bytes, mime)) => Some(("200 OK", mime.clone(), bytes.clone())),
         None => Some(("404 Not Found", "text/plain".to_string(), Vec::new())),
     }
+}
+
+/// Answers `GET /directory` with the staged members — the app's Basic
+/// credential or nothing, and with nothing staged no route at all. `None`
+/// for anything else, which stays the introspection JSON.
+fn directory_answer(
+    directory: &Arc<Mutex<Vec<serde_json::Value>>>,
+    head: &str,
+    request_line: &str,
+) -> Option<(&'static str, String, Vec<u8>)> {
+    let mut parts = request_line.split_whitespace();
+    if parts.next() != Some("GET") {
+        return None;
+    }
+    let target = parts.next().unwrap_or("");
+    let path = target
+        .split_once('?')
+        .map(|(path, _)| path)
+        .unwrap_or(target);
+    if path != "/directory" {
+        return None;
+    }
+    let authed = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("authorization") && value.trim() == APP_BASIC
+        });
+    if !authed {
+        return Some(("404 Not Found", "text/plain".to_string(), Vec::new()));
+    }
+    let members = directory.lock().unwrap();
+    if members.is_empty() {
+        return Some(("404 Not Found", "text/plain".to_string(), Vec::new()));
+    }
+    Some((
+        "200 OK",
+        "application/json".to_string(),
+        serde_json::to_vec(&*members).unwrap(),
+    ))
 }
 
 fn headers_end(req: &[u8]) -> Option<usize> {
@@ -1708,6 +1767,104 @@ async fn per_user_share_lands_in_shared_with_me() {
     assert!(answer.accepted(), "remove refused: {:?}", answer.location);
     let bobs = app.get("/shared", Some(&bob)).await;
     assert!(!bobs.text().contains("joint.txt"), "{}", bobs.text());
+}
+
+/// The share modal picks people from im's directory: a member who has
+/// never signed in here is offered — the render itself mirrors her into a
+/// local row — the owner is not, and granting the picked address lands her
+/// under Who has access.
+#[tokio::test]
+async fn share_modal_offers_the_im_directory() {
+    let app = TestApp::build().await;
+    app.fake.set_directory(&[
+        serde_json::json!({"sub": "sub-ember", "email": "ember@in.test", "name": "Ember", "admin": false}),
+        serde_json::json!({"sub": "sub-bora", "email": "bora@in.test", "name": "Bora", "admin": false}),
+        // The owner as im knows her: never offered to share with herself.
+        serde_json::json!({"sub": "sub-admin", "email": "ada@in.test", "name": "Ada", "admin": true}),
+        // Valid in im but disabled here: sharing with her is sharing with
+        // nobody, so the dropdown never offers her.
+        serde_json::json!({"sub": "sub-gonca", "email": "gonca@in.test", "name": "Gonca", "admin": false}),
+    ]);
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    app.sign_in("sub-gonca", "gonca@in.test", "Gonca").await;
+    let gonca = app
+        .store
+        .user_by_email("gonca@in.test")
+        .await
+        .unwrap()
+        .unwrap();
+    app.store.set_user_disabled(&gonca.id, true).await.unwrap();
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "pick.txt", b"pick").await;
+
+    let page = app
+        .get(&format!("/drive?share=file:{file}"), Some(&admin))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let text = page.text();
+    assert!(
+        text.contains("<select class=\"field-input share-add-email\" name=\"email\""),
+        "modal kept the typed address: {text}"
+    );
+    assert!(
+        text.contains("Pick a person"),
+        "no placeholder option: {text}"
+    );
+    assert!(text.contains("Ember — ember@in.test"), "{}", text);
+    assert!(text.contains("Bora — bora@in.test"), "{}", text);
+    assert!(
+        text.find("Bora").unwrap() < text.find("Ember").unwrap(),
+        "directory not offered by name: {text}"
+    );
+    assert!(!text.contains("Ada — ada@in.test"), "owner offered: {text}");
+    assert!(
+        !text.contains("Gonca — gonca@in.test"),
+        "disabled account offered: {text}"
+    );
+
+    // The grant posts the picked address; Ember never signed in here.
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("email", "ember@in.test"),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "add refused: {:?}", answer.location);
+    let page = app
+        .get(&format!("/drive?share=file:{file}"), Some(&admin))
+        .await;
+    assert!(page.text().contains("Ember"), "{}", page.text());
+}
+
+/// A directory that does not answer — im without the route, the way an
+/// unregistered or unreachable im behaves — leaves the modal exactly as
+/// it was: the typed address.
+#[tokio::test]
+async fn share_modal_without_a_directory_keeps_the_typed_address() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "typed.txt", b"typed").await;
+
+    let page = app
+        .get(&format!("/drive?share=file:{file}"), Some(&admin))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let text = page.text();
+    assert!(
+        text.contains("type=\"email\" name=\"email\""),
+        "typed address lost: {text}"
+    );
+    assert!(
+        !text.contains("<select class=\"field-input share-add-email\""),
+        "dropdown rendered without a directory: {text}"
+    );
 }
 
 /// View only means preview, no download: the reader sees the media inline

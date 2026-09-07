@@ -147,6 +147,41 @@ pub async fn photo_for(cx: &Cx, user_id: &str) -> Option<(Vec<u8>, String)> {
     Some((bytes, mime))
 }
 
+/// One entry of im's directory: the stable subject, the address, the
+/// display name, and whether im calls the person an admin — exactly what
+/// mirroring the directory into local user rows needs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DirectoryMember {
+    pub sub: String,
+    pub email: String,
+    pub name: String,
+    pub admin: bool,
+}
+
+/// im's family phonebook: every person im knows, fetched as the app
+/// (`Authorization: Basic base64(client_id ":" client_secret)`, the same
+/// credentials the photo route and the introspection round-trip take) from
+/// `{issuer}/directory`. Only a registered app gets an answer at all.
+///
+/// `None` on anything that is not a readable list — a refused pair, a
+/// dropped connection, a body that is not the array — because a missed
+/// beat must never look like an empty directory: the caller keeps the
+/// rows it has and asks again next time.
+pub async fn directory(cx: &Cx) -> Option<Vec<DirectoryMember>> {
+    let state = client(cx);
+    let reply = state
+        .http
+        .get(format!("{}/directory", state.config.issuer))
+        .basic_auth(&state.config.client_id, Some(&state.config.client_secret))
+        .send()
+        .await
+        .ok()?;
+    if !reply.status().is_success() {
+        return None;
+    }
+    reply.json().await.ok()
+}
+
 /// Path of im's RFC 7662 introspection endpoint, relative to the issuer.
 const INTROSPECT_PATH: &str = "/introspect";
 

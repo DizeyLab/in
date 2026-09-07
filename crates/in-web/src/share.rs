@@ -1137,6 +1137,29 @@ pub(crate) async fn share_modal(
             people.push((grantee.display_name, grantee.email, grant.can_download));
         }
     }
+    // The shareable people come from im's directory: each entry mirrored
+    // into a local user row here, so the address the form posts resolves
+    // the way a typed one would — then the owner, anyone already on the
+    // list above, and any locally-disabled account are taken back out
+    // (im's directory not naming someone disabled here must not offer
+    // them). A directory that does not answer, or answers nobody new,
+    // leaves the typed-address field in place below.
+    let default_quota = app(cx).config.default_quota_bytes;
+    let mut candidates: Vec<User> = Vec::new();
+    if let Some(members) = in_client::directory(cx).await {
+        for member in members {
+            let row = store
+                .provision_user(&member.sub, &member.email, &member.name, default_quota)
+                .await?;
+            if !row.disabled
+                && row.id != user.id
+                && !people.iter().any(|(_, email, _)| *email == row.email)
+            {
+                candidates.push(row);
+            }
+        }
+    }
+    candidates.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     let refusal = query_value(uri(cx).query().unwrap_or(""), "refusal")
         .and_then(|code| Refusal::from_code(&code));
     Ok(Some(view! {
@@ -1169,7 +1192,16 @@ pub(crate) async fn share_modal(
                 <form class="pop-row-form share-add" method="post" action="/api/share/user/add">
                     <input type="hidden" name="kind" value=(kind.as_str())>
                     <input type="hidden" name="target_id" value=(target_id.to_string())>
-                    <input class="field-input share-add-email" type="email" name="email" required="" placeholder=(t(language, Key::SharePlaceholder)) aria-label=(t(language, Key::EmailAddress))>
+                    if candidates.is_empty() {
+                        <input class="field-input share-add-email" type="email" name="email" required="" placeholder=(t(language, Key::SharePlaceholder)) aria-label=(t(language, Key::EmailAddress))>
+                    } else {
+                        <select class="field-input share-add-email" name="email" required="" aria-label=(t(language, Key::SharePickPerson))>
+                            <option value="" disabled="" selected="">(t(language, Key::SharePickPerson))</option>
+                            for person in &candidates {
+                                <option value=(person.email.clone())>(format!("{} — {}", person.display_name.clone(), person.email.clone()))</option>
+                            }
+                        </select>
+                    }
                     <select class="field-input" name="can_download" aria-label=(t(language, Key::CanDownload))>
                         <option value="1">(t(language, Key::CanDownload))</option>
                         <option value="0">(t(language, Key::ViewOnly))</option>
