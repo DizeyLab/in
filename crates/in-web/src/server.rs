@@ -42,6 +42,18 @@ pub fn app(cx: &Cx) -> App {
     app_context::<App>(cx).clone()
 }
 
+/// The origin the public links carry: the `base_url` an admin saved on the
+/// running install when one is set, else the config chain — the file's
+/// `base_url`, else the address bound. Every public URL construction (the
+/// share links and their copy-once banners) asks this; the settings
+/// server-address panel is what edits the setting the lookup reads.
+pub async fn share_origin(cx: &Cx) -> String {
+    match app(cx).store.get_setting("base_url").await {
+        Ok(Some(base)) if !base.trim().is_empty() => base.trim().to_string(),
+        _ => app(cx).config.public_origin(),
+    }
+}
+
 /// A stable-enough label for the client, for rate limiting. A proxy header is
 /// only trusted because In is meant to sit behind one; the address bucket is
 /// the limit that actually protects the login round-trip either way.
@@ -219,6 +231,9 @@ pub enum Refusal {
     /// The admin's quota form named something unusable — unparseable, or a
     /// unit the form does not offer.
     BadLimit,
+    /// The admin's server-address form named something no public link can
+    /// be built on — no `http`/`https` scheme, or a trailing slash.
+    BadBaseUrl,
 }
 
 impl Refusal {
@@ -242,6 +257,7 @@ impl Refusal {
             Refusal::BadTheme => "That is not a theme.".to_string(),
             Refusal::BadLanguage => "That is not a language.".to_string(),
             Refusal::BadLimit => "That limit is not usable.".to_string(),
+            Refusal::BadBaseUrl => "That address is not an origin links can be built on.".to_string(),
         }
     }
 
@@ -267,6 +283,7 @@ impl Refusal {
             Refusal::BadTheme => "Bu bir tema değil.".to_string(),
             Refusal::BadLanguage => "Bu bir dil değil.".to_string(),
             Refusal::BadLimit => "Bu sınır kullanılamaz.".to_string(),
+            Refusal::BadBaseUrl => "Bu adres, bağlantı kurulabilecek bir kök adres değil.".to_string(),
         }
     }
 
@@ -290,6 +307,7 @@ impl Refusal {
             "bad-theme" => Refusal::BadTheme,
             "bad-language" => Refusal::BadLanguage,
             "bad-limit" => Refusal::BadLimit,
+            "bad-base-url" => Refusal::BadBaseUrl,
             _ => return None,
         })
     }
@@ -317,6 +335,7 @@ impl Refusal {
             Refusal::BadTheme => "bad-theme",
             Refusal::BadLanguage => "bad-language",
             Refusal::BadLimit => "bad-limit",
+            Refusal::BadBaseUrl => "bad-base-url",
         }
     }
 }

@@ -227,6 +227,11 @@ pub enum Key {
     PasswordLabel,
     WrongPassword,
     Unlock,
+    // Server address (SettingsPaging owns this block).
+    ServerAddress,
+    EffectiveOrigin,
+    BaseUrlLabel,
+    BaseUrlNote,
 }
 
 pub fn t(lang: Lang, key: Key) -> &'static str {
@@ -379,6 +384,10 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             PasswordLabel => "Password",
             WrongPassword => "Wrong password.",
             Unlock => "Unlock",
+            ServerAddress => "Server address",
+            EffectiveOrigin => "Effective origin",
+            BaseUrlLabel => "Public base URL",
+            BaseUrlNote => "The origin share links carry: a saved value wins, an empty one falls back to the configured base_url, then the bind address.",
         },
         Lang::Tr => match key {
             Cancel => "Vazgeç",
@@ -527,6 +536,10 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             PasswordLabel => "Parola",
             WrongPassword => "Parola hatalı.",
             Unlock => "Kilidi aç",
+            ServerAddress => "Sunucu adresi",
+            EffectiveOrigin => "Etkin kök adres",
+            BaseUrlLabel => "Herkese açık kök adres",
+            BaseUrlNote => "Paylaşım bağlantılarının taşıdığı kök adres: kaydedilen değer önceliklidir, boş bırakılırsa yapılandırılmış base_url'e, sonra bağlanılan adrese dönülür.",
         },
     }
 }

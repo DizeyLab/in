@@ -25,7 +25,7 @@ use topcoat::view::view;
 
 use crate::i18n::{Key, lang, t};
 use crate::layout::{NavPage, topbar};
-use crate::server::{Refusal, app, back_to, refusal_of, require_user};
+use crate::server::{Refusal, app, back_to, refusal_of, require_user, share_origin};
 
 /// A [`StoreError`] in the drive's own words. Cross-owner reads and writes
 /// alike answer [`Refusal::NotFound`]: telling a stranger which ids exist is
@@ -505,7 +505,7 @@ async fn drive(cx: &Cx) -> Result {
     // A link minted from this surface redirects back here with the plaintext
     // token on `?created=` — rendered once, like the settings page does.
     let created = created_token(uri(cx).query().unwrap_or(""));
-    let origin = app(cx).config.public_origin();
+    let origin = share_origin(cx).await;
 
     let current_id = current
         .as_ref()

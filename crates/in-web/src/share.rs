@@ -34,7 +34,7 @@ use topcoat::view::view;
 use crate::files::{ViewerKind, entry_chip, media_player, media_player_script, viewer_kind};
 use crate::i18n::{Key, Lang, lang, t};
 use crate::layout::{NavPage, document_shell, topbar, wordmark};
-use crate::server::{Refusal, app, back_to, require_user};
+use crate::server::{Refusal, app, back_to, require_user, share_origin};
 
 path_param!(token);
 path_param!(kind);
@@ -219,18 +219,18 @@ struct CreateLinkForm {
 async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
     let user = match require_user(cx).await {
         Ok(user) => user,
-        Err(refusal) => return redirect_back(cx, "/settings", "create", Some(refusal)),
+        Err(refusal) => return redirect_back(cx, "/settings?section=links", "create", Some(refusal)),
     };
     let Some(kind) = parse_kind(&input.kind) else {
-        return redirect_back(cx, "/settings", "create", Some(Refusal::NotFound));
+        return redirect_back(cx, "/settings?section=links", "create", Some(Refusal::NotFound));
     };
     if let Err(refusal) = owned_target(app(cx).store.as_ref(), &user, kind, &input.target_id).await
     {
-        return redirect_back(cx, "/settings", "create", Some(refusal));
+        return redirect_back(cx, "/settings?section=links", "create", Some(refusal));
     }
     let expires_at = match parse_expiry(input.expires_in_days.as_deref()) {
         Ok(expires_at) => expires_at,
-        Err(refusal) => return redirect_back(cx, "/settings", "create", Some(refusal)),
+        Err(refusal) => return redirect_back(cx, "/settings?section=links", "create", Some(refusal)),
     };
     // An optional password on the link: a trimmed empty field is no
     // password at all. Argon2id is CPU-slow on purpose, so the hash runs
@@ -240,7 +240,7 @@ async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
         Some(password) => {
             match tokio::task::spawn_blocking(move || hash_link_password(&password)).await {
                 Ok(Ok(hash)) => Some(hash),
-                _ => return redirect_back(cx, "/settings", "create", Some(Refusal::Unavailable)),
+            _ => return redirect_back(cx, "/settings?section=links", "create", Some(Refusal::Unavailable)),
             }
         }
         None => None,
@@ -260,12 +260,12 @@ async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
         .await;
     match created {
         Ok(link) => {
-            let back = back_to(cx, "/settings");
+            let back = back_to(cx, "/settings?section=links");
             let separator = if back.contains('?') { '&' } else { '?' };
             let location = format!("{back}{separator}created={}", link.token);
             Ok((StatusCode::SEE_OTHER, [(header::LOCATION, location)]))
         }
-        Err(error) => redirect_back(cx, "/settings", "create", Some(refusal_of(error))),
+        Err(error) => redirect_back(cx, "/settings?section=links", "create", Some(refusal_of(error))),
     }
 }
 
@@ -280,7 +280,7 @@ struct RevokeLinkForm {
 async fn revoke_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
     let user = match require_user(cx).await {
         Ok(user) => user,
-        Err(refusal) => return redirect_back(cx, "/settings", "revoke", Some(refusal)),
+        Err(refusal) => return redirect_back(cx, "/settings?section=links", "revoke", Some(refusal)),
     };
     let store = app(cx).store;
     let mine = store
@@ -288,17 +288,17 @@ async fn revoke_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
         .await
         .map_err(|_| Refusal::Unavailable);
     let Ok(links) = mine else {
-        return redirect_back(cx, "/settings", "revoke", Some(Refusal::Unavailable));
+        return redirect_back(cx, "/settings?section=links", "revoke", Some(Refusal::Unavailable));
     };
     if !links
         .iter()
         .any(|link| link.id == input.id && link.created_by == user.id)
     {
-        return redirect_back(cx, "/settings", "revoke", Some(Refusal::NotFound));
+        return redirect_back(cx, "/settings?section=links", "revoke", Some(Refusal::NotFound));
     }
     match store.revoke_share_link(&input.id).await {
-        Ok(()) => redirect_back(cx, "/settings", "revoke", None),
-        Err(error) => redirect_back(cx, "/settings", "revoke", Some(refusal_of(error))),
+        Ok(()) => redirect_back(cx, "/settings?section=links", "revoke", None),
+        Err(error) => redirect_back(cx, "/settings?section=links", "revoke", Some(refusal_of(error))),
     }
 }
 
@@ -1350,9 +1350,10 @@ pub(crate) async fn share_modal(
         Err(_) => return Ok(None),
     };
     let language = lang(cx).await;
-    // The links this modal shows carry the public origin — the configured
-    // `base_url` when the deployment names one, the bound address otherwise.
-    let origin = app(cx).config.public_origin();
+    // The links this modal shows carry the public origin — the admin-set
+    // `base_url` setting when one is stored, else the config chain: the
+    // file's `base_url`, else the bound address.
+    let origin = share_origin(cx).await;
     let store = app(cx).store.clone();
     // The owned, live target: present, untrashed, and theirs. Anything else
     // opens nothing — a stranger learns not even whose it is.

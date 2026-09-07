@@ -1,14 +1,17 @@
 //! Settings: the reader's profile and quota, plus the admin's user panel.
 //!
-//! `GET /settings` shows the profile im vouches for (name, address) with the
-//! quota usage bar beside it, and the reader's own live share links with
-//! their revoke buttons — including the copy-once banner after a creation
-//! (`?created=<token>` on the query, rendered once and never stored).
-//! Admins additionally see every account with its quota and disabled flag in
-//! the Everyone panel. `POST /api/settings/quota|disable` are admin-only:
-//! the first sets a user's byte quota, the second disables or re-enables
-//! them (a disabled account reads as signed-out everywhere, the im session
-//! untouched, and disabling yourself is refused).
+//! `GET /settings` renders one rail section at a time (`?section=`, the
+//! profile when the pair is missing or unknown): the profile with the quota
+//! usage bar; the reader's own live share links with their revoke buttons —
+//! including the copy-once banner after a creation (`?created=<token>` on
+//! the query, rendered once and never stored); and, for an admin, the
+//! Everyone panel of every account with its quota and disabled flag, plus
+//! the server address the public links carry. `POST
+//! /api/settings/quota|disable|base_url` are admin-only: the first sets a
+//! user's byte quota, the second disables or re-enables them (a disabled
+//! account reads as signed-out everywhere, the im session untouched, and
+//! disabling yourself is refused), the third stores the origin share links
+//! are built from.
 
 use in_core::store::{ShareKind, User};
 use serde::Deserialize;
@@ -21,7 +24,7 @@ use topcoat::view::view;
 
 use crate::i18n::{Key, lang, t};
 use crate::layout::{NavPage, topbar};
-use crate::server::{Refusal, app, back_to, require_admin, require_user};
+use crate::server::{Refusal, app, back_to, require_admin, require_user, share_origin};
 use crate::share::{refusal_banner, refusal_of};
 
 /// Bytes in human units: `512 B`, `1.5 KiB`, `2.0 GiB`. One decimal past
@@ -93,11 +96,13 @@ fn unit_bytes(amount: &str, unit: &str) -> Option<u64> {
 
 type Redirect = Result<(StatusCode, [(HeaderName, String); 1])>;
 
-/// Back to settings, the refusal (if any) on the query — or `saved=<call>`
-/// when there was nothing to refuse, the way iz's `saved_or_refused` marks
-/// a save the page should chip.
-fn redirect_back(cx: &Cx, call: &str, refusal: Option<Refusal>) -> Redirect {
-    let back = back_to(cx, "/settings");
+/// Back to the posting page's section, the refusal (if any) on the query —
+/// or `saved=<call>` when there was nothing to refuse, the way iz's
+/// `saved_or_refused` marks a save the page should chip. `nowhere` names
+/// the section the call is answered on, for a post that arrives without a
+/// `Referer` to go back to.
+fn redirect_back(cx: &Cx, nowhere: &str, call: &str, refusal: Option<Refusal>) -> Redirect {
+    let back = back_to(cx, nowhere);
     let separator = if back.contains('?') { '&' } else { '?' };
     let location = match refusal {
         Some(refusal) => format!("{back}{separator}refusal={}&on={call}", refusal.code()),
@@ -122,7 +127,7 @@ struct QuotaForm {
 #[route(POST "/api/settings/quota")]
 async fn set_quota(cx: &Cx, Form(input): Form<QuotaForm>) -> Redirect {
     if let Err(refusal) = require_admin(cx).await {
-        return redirect_back(cx, "quota", Some(refusal));
+        return redirect_back(cx, "/settings?section=everyone", "quota", Some(refusal));
     }
     match unit_bytes(&input.quota, &input.quota_unit) {
         Some(quota_bytes) => match app(cx)
@@ -130,10 +135,10 @@ async fn set_quota(cx: &Cx, Form(input): Form<QuotaForm>) -> Redirect {
             .set_user_quota(&input.user_id, quota_bytes)
             .await
         {
-            Ok(()) => redirect_back(cx, "quota", None),
-            Err(error) => redirect_back(cx, "quota", Some(refusal_of(error))),
+            Ok(()) => redirect_back(cx, "/settings?section=everyone", "quota", None),
+            Err(error) => redirect_back(cx, "/settings?section=everyone", "quota", Some(refusal_of(error))),
         },
-        None => redirect_back(cx, "quota", Some(Refusal::BadLimit)),
+        None => redirect_back(cx, "/settings?section=everyone", "quota", Some(Refusal::BadLimit)),
     }
 }
 
@@ -150,10 +155,10 @@ struct DisableForm {
 async fn set_disabled(cx: &Cx, Form(input): Form<DisableForm>) -> Redirect {
     let admin = match require_admin(cx).await {
         Ok(admin) => admin,
-        Err(refusal) => return redirect_back(cx, "disable", Some(refusal)),
+        Err(refusal) => return redirect_back(cx, "/settings?section=everyone", "disable", Some(refusal)),
     };
     if input.user_id == admin.id {
-        return redirect_back(cx, "disable", Some(Refusal::Forbidden));
+        return redirect_back(cx, "/settings?section=everyone", "disable", Some(Refusal::Forbidden));
     }
     let disabled = match input.disabled.as_deref() {
         None => true,
@@ -167,8 +172,8 @@ async fn set_disabled(cx: &Cx, Form(input): Form<DisableForm>) -> Redirect {
         .set_user_disabled(&input.user_id, disabled)
         .await
     {
-        Ok(()) => redirect_back(cx, "disable", None),
-        Err(error) => redirect_back(cx, "disable", Some(refusal_of(error))),
+        Ok(()) => redirect_back(cx, "/settings?section=everyone", "disable", None),
+        Err(error) => redirect_back(cx, "/settings?section=everyone", "disable", Some(refusal_of(error))),
     }
 }
 
@@ -196,29 +201,89 @@ const LANGUAGE_OPTIONS: [&str; 2] = ["en", "tr"];
 async fn set_preferences(cx: &Cx, Form(input): Form<PreferencesForm>) -> Redirect {
     let user = match require_user(cx).await {
         Ok(user) => user,
-        Err(refusal) => return redirect_back(cx, "preferences", Some(refusal)),
+        Err(refusal) => return redirect_back(cx, "/settings?section=profile", "preferences", Some(refusal)),
     };
     if !UI_OPTIONS.contains(&input.ui.as_str()) {
-        return redirect_back(cx, "preferences", Some(Refusal::BadUi));
+        return redirect_back(cx, "/settings?section=profile", "preferences", Some(Refusal::BadUi));
     }
     if !THEME_OPTIONS.contains(&input.theme.as_str()) {
-        return redirect_back(cx, "preferences", Some(Refusal::BadTheme));
+        return redirect_back(cx, "/settings?section=profile", "preferences", Some(Refusal::BadTheme));
     }
     if !LANGUAGE_OPTIONS.contains(&input.language.as_str()) {
-        return redirect_back(cx, "preferences", Some(Refusal::BadLanguage));
+        return redirect_back(cx, "/settings?section=profile", "preferences", Some(Refusal::BadLanguage));
     }
     match app(cx)
         .store
         .set_preferences(&user.id, &input.theme, &input.language, &input.ui)
         .await
     {
-        Ok(()) => redirect_back(cx, "preferences", None),
-        Err(error) => redirect_back(cx, "preferences", Some(refusal_of(error))),
+        Ok(()) => redirect_back(cx, "/settings?section=profile", "preferences", None),
+        Err(error) => redirect_back(cx, "/settings?section=profile", "preferences", Some(refusal_of(error))),
     }
 }
 
-/// The reader's profile and quota, their live share links, and — for an
-/// admin — every account with its quota and kill switch.
+#[derive(Deserialize)]
+struct BaseUrlForm {
+    #[serde(default)]
+    base_url: String,
+}
+
+/// Stores the origin the public links are built from, in the instance
+/// `setting` store under `base_url`. While a non-empty value sits there it
+/// is what [`crate::server::share_origin`] hands every link builder;
+/// saving empty clears it, and the origin falls back to the config chain.
+/// A value the boot would refuse is refused here for the same reason —
+/// [`in_core::Config::validate_base_url`], the very check `parse` runs —
+/// and the stored setting is left untouched.
+#[route(POST "/api/settings/base_url")]
+async fn set_base_url(cx: &Cx, Form(input): Form<BaseUrlForm>) -> Redirect {
+    if let Err(refusal) = require_admin(cx).await {
+        return redirect_back(cx, "/settings?section=server", "base_url", Some(refusal));
+    }
+    let trimmed = input.base_url.trim().to_string();
+    if !trimmed.is_empty() && in_core::Config::validate_base_url(&trimmed).is_err() {
+        return redirect_back(cx, "/settings?section=server", "base_url", Some(Refusal::BadBaseUrl));
+    }
+    match app(cx).store.set_setting("base_url", &trimmed).await {
+        Ok(()) => redirect_back(cx, "/settings?section=server", "base_url", None),
+        Err(error) => redirect_back(cx, "/settings?section=server", "base_url", Some(refusal_of(error))),
+    }
+}
+
+/// Which rail section the page renders. Only one is drawn at a time; an
+/// admin-only value asked for by anyone else falls back to `Profile`, same
+/// as a section name it does not recognize at all.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Profile,
+    Links,
+    Everyone,
+    Server,
+}
+
+/// The class a rail link wears: `active` on the section it points to when
+/// that is the one showing, plain otherwise.
+fn rail_class(current: Section, target: Section) -> &'static str {
+    if current == target {
+        "settings-section-link active"
+    } else {
+        "settings-section-link"
+    }
+}
+
+/// The value of one query pair, if present.
+fn query_value(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name == key).then(|| value.to_string())
+    })
+}
+
+/// The settings screen, one rail section at a time: the reader's profile
+/// and quota, their live share links, and — for an admin — every account
+/// with its quota and kill switch, plus the server address the public
+/// links are built from. An admin section asked for by anyone else renders
+/// the profile, the way an unknown section name does.
 #[page("/settings")]
 async fn settings(cx: &Cx) -> Result {
     let user = match require_user(cx).await {
@@ -238,131 +303,174 @@ async fn settings(cx: &Cx) -> Result {
     let store = app(cx).store;
     // Re-read the row so the quota bar never shows a stale number.
     let fresh = store.user(&user.id).await?.unwrap_or_else(|| user.clone());
-    let links = store.share_links(&user.id).await?;
-    let live_links: Vec<_> = links
-        .iter()
-        .filter(|link| link.revoked_at.is_none())
-        .collect();
-    // The display name per live link's target: the row carries only the id.
-    // A missing or trashed target keeps its id — the grant row outlives the
-    // trash, and the panel still revokes it. Enrichment never fails the
-    // page: an unreadable target reads as its id, the way the shared list
-    // degrades per row.
+    let administers = fresh.admin;
+    let query = uri(cx).query().unwrap_or("");
+    let section = match query_value(query, "section").as_deref() {
+        Some("links") => Section::Links,
+        Some("everyone") if administers => Section::Everyone,
+        Some("server") if administers => Section::Server,
+        _ => Section::Profile,
+    };
+    let created = created_token(query);
+    // Only the section on show pays for its rows: the links panel names
+    // each live link's target, Everyone lists the accounts, and the server
+    // panel needs the origin — nothing else reads them.
     let mut link_names: Vec<(&in_core::store::ShareLink, String)> = Vec::new();
-    for link in &live_links {
-        let name = match link.kind {
-            ShareKind::File => store
-                .file(&link.target_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|file| file.name),
-            ShareKind::Folder => store
-                .folder(&link.target_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|folder| folder.name),
+    let links = if section == Section::Links {
+        store.share_links(&user.id).await?
+    } else {
+        Vec::new()
+    };
+    if section == Section::Links {
+        // The display name per live link's target: the row carries only
+        // the id. A missing or trashed target keeps its id — the grant row
+        // outlives the trash, and the panel still revokes it. Enrichment
+        // never fails the page: an unreadable target reads as its id, the
+        // way the shared list degrades per row.
+        for link in links.iter().filter(|link| link.revoked_at.is_none()) {
+            let name = match link.kind {
+                ShareKind::File => store
+                    .file(&link.target_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|file| file.name),
+                ShareKind::Folder => store
+                    .folder(&link.target_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|folder| folder.name),
+            }
+            .unwrap_or_else(|| link.target_id.clone());
+            link_names.push((link, name));
         }
-        .unwrap_or_else(|| link.target_id.clone());
-        link_names.push((*link, name));
     }
-    let users = if fresh.admin {
+    let users = if administers && section == Section::Everyone {
         store.users().await?
     } else {
         Vec::new()
     };
-    let created = created_token(uri(cx).query().unwrap_or(""));
-    let origin = app(cx).config.public_origin();
+    // The origin the copy-once banner and the server panel show: the
+    // stored setting when an admin set one, the config chain otherwise.
+    let origin = if matches!(section, Section::Links | Section::Server) {
+        share_origin(cx).await
+    } else {
+        String::new()
+    };
+    // What the server form's field holds: the stored setting alone. An
+    // empty field is not an invented value — the effective line above it
+    // shows what an empty save falls back to.
+    let stored_base_url = if section == Section::Server {
+        store
+            .get_setting("base_url")
+            .await?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     view! {
         cx =>
         (topbar(cx, NavPage::Settings, &fresh, language).await?)
         <div class="settings-shell">
+            <nav class="settings-sections">
+                <a class=(rail_class(section, Section::Profile)) href="/settings?section=profile">(t(language, Key::Profile))</a>
+                <a class=(rail_class(section, Section::Links)) href="/settings?section=links">(t(language, Key::ManageLinks))</a>
+                if administers {
+                    <a class=(rail_class(section, Section::Everyone)) href="/settings?section=everyone">(t(language, Key::AdminPanel))</a>
+                    <a class=(rail_class(section, Section::Server)) href="/settings?section=server">(t(language, Key::ServerAddress))</a>
+                }
+            </nav>
             <main class="settings-stage stage-wide">
                 <h1 class="settings-title">(t(language, Key::Settings))</h1>
-                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences"]).await?)
-                if let Some(token) = created {
+                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences", "base_url"]).await?)
+                if section == Section::Profile {
                     <section class="panel">
                         <div class="panel-head">
-                            <h2 class="panel-title">(t(language, Key::LinkCreated))</h2>
+                            <h2 class="panel-title">(t(language, Key::Profile))</h2>
                         </div>
                         <div class="panel-body">
-                            <p class="field-note">(t(language, Key::CopyLinkOnce))</p>
-                            <p class="member-link-value">(format!("{origin}/s/{token}"))</p>
+                            <label class="field">
+                                <span class="field-label">(t(language, Key::DisplayName))</span>
+                                <span class="field-static">(fresh.display_name.clone())</span>
+                            </label>
+                            <label class="field">
+                                <span class="field-label">(t(language, Key::EmailAddress))</span>
+                                <span class="field-static">(fresh.email.clone())</span>
+                            </label>
+                            <div class="field">
+                                <span class="field-label">(t(language, Key::QuotaUsage))</span>
+                                <span class="field-static">(format!("{} {} {}", human_bytes(fresh.used_bytes), t(language, Key::QuotaOf), human_bytes(fresh.quota_bytes)))</span>
+                                <div class="quota-bar" role="progressbar" aria-valuenow=(quota_percent(&fresh).to_string()) aria-valuemin="0" aria-valuemax="100">
+                                    <div class="quota-fill" style=(format!("width: {}%", quota_percent(&fresh)))></div>
+                                </div>
+                            </div>
+                            <form class="field" method="post" action="/api/settings/preferences">
+                                <label class="field">
+                                    <span class="field-label">(t(language, Key::UiLabel))</span>
+                                    <select class="field-input" name="ui">
+                                        <option value="instrument" selected=(fresh.ui == "instrument")>"Instrument"</option>
+                                        <option value="ledger" selected=(fresh.ui == "ledger")>"Ledger"</option>
+                                    </select>
+                                </label>
+                                <label class="field">
+                                    <span class="field-label">(t(language, Key::ThemeLabel))</span>
+                                    <select class="field-input" name="theme">
+                                        <option value="light" selected=(fresh.theme == "light")>(t(language, Key::LightOption))</option>
+                                        <option value="dark" selected=(fresh.theme == "dark")>(t(language, Key::DarkOption))</option>
+                                    </select>
+                                </label>
+                                <label class="field">
+                                    <span class="field-label">(t(language, Key::LanguageLabel))</span>
+                                    <select class="field-input" name="language">
+                                        <option value="en" selected=(fresh.language == "en")>"English"</option>
+                                        <option value="tr" selected=(fresh.language == "tr")>"Türkçe"</option>
+                                    </select>
+                                </label>
+                                <div class="panel-foot">
+                                    <button class="primary" type="submit">(t(language, Key::Save))</button>
+                                </div>
+                            </form>
                         </div>
                     </section>
                 }
-                <section class="panel">
-                    <div class="panel-head">
-                        <h2 class="panel-title">(t(language, Key::Profile))</h2>
-                    </div>
-                    <div class="panel-body">
-                        <label class="field">
-                            <span class="field-label">(t(language, Key::DisplayName))</span>
-                            <span class="field-static">(fresh.display_name.clone())</span>
-                        </label>
-                        <label class="field">
-                            <span class="field-label">(t(language, Key::EmailAddress))</span>
-                            <span class="field-static">(fresh.email.clone())</span>
-                        </label>
-                        <div class="field">
-                            <span class="field-label">(t(language, Key::QuotaUsage))</span>
-                            <span class="field-static">(format!("{} {} {}", human_bytes(fresh.used_bytes), t(language, Key::QuotaOf), human_bytes(fresh.quota_bytes)))</span>
-                            <div class="quota-bar" role="progressbar" aria-valuenow=(quota_percent(&fresh).to_string()) aria-valuemin="0" aria-valuemax="100">
-                                <div class="quota-fill" style=(format!("width: {}%", quota_percent(&fresh)))></div>
+                if section == Section::Links {
+                    if let Some(token) = created {
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2 class="panel-title">(t(language, Key::LinkCreated))</h2>
                             </div>
+                            <div class="panel-body">
+                                <p class="field-note">(t(language, Key::CopyLinkOnce))</p>
+                                <p class="member-link-value">(format!("{origin}/s/{token}"))</p>
+                            </div>
+                        </section>
+                    }
+                    <section class="panel">
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::ManageLinks))</h2>
                         </div>
-                        <form class="field" method="post" action="/api/settings/preferences">
-                            <label class="field">
-                                <span class="field-label">(t(language, Key::UiLabel))</span>
-                                <select class="field-input" name="ui">
-                                    <option value="instrument" selected=(fresh.ui == "instrument")>"Instrument"</option>
-                                    <option value="ledger" selected=(fresh.ui == "ledger")>"Ledger"</option>
-                                </select>
-                            </label>
-                            <label class="field">
-                                <span class="field-label">(t(language, Key::ThemeLabel))</span>
-                                <select class="field-input" name="theme">
-                                    <option value="light" selected=(fresh.theme == "light")>(t(language, Key::LightOption))</option>
-                                    <option value="dark" selected=(fresh.theme == "dark")>(t(language, Key::DarkOption))</option>
-                                </select>
-                            </label>
-                            <label class="field">
-                                <span class="field-label">(t(language, Key::LanguageLabel))</span>
-                                <select class="field-input" name="language">
-                                    <option value="en" selected=(fresh.language == "en")>"English"</option>
-                                    <option value="tr" selected=(fresh.language == "tr")>"Türkçe"</option>
-                                </select>
-                            </label>
-                            <div class="panel-foot">
-                                <button class="primary" type="submit">(t(language, Key::Save))</button>
-                            </div>
-                        </form>
-                    </div>
-                </section>
-                <section class="panel">
-                    <div class="panel-head">
-                        <h2 class="panel-title">(t(language, Key::ManageLinks))</h2>
-                    </div>
-                    <div class="panel-body">
-                        if live_links.is_empty() {
-                            <p class="field-note">(t(language, Key::NoLinks))</p>
-                        }
-                        for (link, target_name) in &link_names {
-                            <div class="member-row">
-                                <span class="member-name">(format!("{} · {}", link.kind.as_str(), target_name.clone()))</span>
-                                <span class="field-note">(expiry_line(language, link.expires_at))</span>
-                                <div class="spacer"></div>
-                                <span class="field-note">(if link.can_download { t(language, Key::CanDownload) } else { t(language, Key::ViewOnly) })</span>
-                                <form class="pop-row-form" method="post" action="/api/share/link/revoke">
-                                    <input type="hidden" name="id" value=(link.id.clone())>
-                                    <button class="quiet quiet-danger" type="submit">(t(language, Key::RevokeLink))</button>
-                                </form>
-                            </div>
-                        }
-                    </div>
-                </section>
-                if fresh.admin {
+                        <div class="panel-body">
+                            if link_names.is_empty() {
+                                <p class="field-note">(t(language, Key::NoLinks))</p>
+                            }
+                            for (link, target_name) in &link_names {
+                                <div class="member-row">
+                                    <span class="member-name">(format!("{} · {}", link.kind.as_str(), target_name.clone()))</span>
+                                    <span class="field-note">(expiry_line(language, link.expires_at))</span>
+                                    <div class="spacer"></div>
+                                    <span class="field-note">(if link.can_download { t(language, Key::CanDownload) } else { t(language, Key::ViewOnly) })</span>
+                                    <form class="pop-row-form" method="post" action="/api/share/link/revoke">
+                                        <input type="hidden" name="id" value=(link.id.clone())>
+                                        <button class="quiet quiet-danger" type="submit">(t(language, Key::RevokeLink))</button>
+                                    </form>
+                                </div>
+                            }
+                        </div>
+                    </section>
+                }
+                if section == Section::Everyone {
                     <section class="panel">
                         <div class="panel-head">
                             <h2 class="panel-title">(t(language, Key::AdminPanel))</h2>
@@ -427,6 +535,29 @@ async fn settings(cx: &Cx) -> Result {
                         </div>
                     </section>
                 }
+                if section == Section::Server {
+                    <section class="panel">
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::ServerAddress))</h2>
+                        </div>
+                        <div class="panel-body">
+                            <label class="field">
+                                <span class="field-label">(t(language, Key::EffectiveOrigin))</span>
+                                <span class="field-static">(origin.clone())</span>
+                            </label>
+                            <form class="field" method="post" action="/api/settings/base_url">
+                                <label class="field">
+                                    <span class="field-label">(t(language, Key::BaseUrlLabel))</span>
+                                    <input class="field-input" type="url" name="base_url" value=(stored_base_url) placeholder="https://files.example.com">
+                                </label>
+                                <p class="field-note">(t(language, Key::BaseUrlNote))</p>
+                                <div class="panel-foot">
+                                    <button class="primary" type="submit">(t(language, Key::Save))</button>
+                                </div>
+                            </form>
+                        </div>
+                    </section>
+                }
             </main>
         </div>
         (crate::dropdown::dropdown_script(cx).await?)
@@ -435,10 +566,7 @@ async fn settings(cx: &Cx) -> Result {
 
 /// The just-minted token off the redirect's `?created=` pair, if present.
 fn created_token(query: &str) -> Option<String> {
-    query.split('&').find_map(|pair| {
-        let (name, value) = pair.split_once('=')?;
-        (name == "created" && !value.is_empty()).then(|| value.to_string())
-    })
+    query_value(query, "created").filter(|value| !value.is_empty())
 }
 
 /// When the link stops opening, or never on its own.

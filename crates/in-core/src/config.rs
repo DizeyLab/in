@@ -360,22 +360,10 @@ impl Config {
         // like every key here.
         let base_url = value(toml.base_url);
         if let Some(base) = &base_url {
-            if !base.starts_with("http://") && !base.starts_with("https://") {
-                return Err(ConfigError::Invalid {
-                    key: "base_url",
-                    why: format!(
-                        "{base:?} names no scheme — an origin like https://files.example.com is what links are built from"
-                    ),
-                });
-            }
-            if base.ends_with('/') {
-                return Err(ConfigError::Invalid {
-                    key: "base_url",
-                    why: format!(
-                        "{base:?} ends in a slash — set the bare origin; In joins the /s/ path itself"
-                    ),
-                });
-            }
+            Config::validate_base_url(base).map_err(|why| ConfigError::Invalid {
+                key: "base_url",
+                why,
+            })?;
         }
 
         let oidc_toml = toml.oidc.ok_or(ConfigError::Missing("[oidc]"))?;
@@ -469,6 +457,26 @@ fn listen_url_of(listen: &SocketAddr) -> String {
     match listen.port() {
         80 => format!("http://{host}"),
         port => format!("http://{host}:{port}"),
+    }
+}
+
+impl Config {
+    /// Whether a base URL is an origin a public link can be built on: an
+    /// `http` or `https` scheme and no trailing slash. Shared by the file's
+    /// own parse and the admin's server-address form, so a value the boot
+    /// refuses is refused by the form for exactly the same reason.
+    pub fn validate_base_url(value: &str) -> Result<(), String> {
+        if !value.starts_with("http://") && !value.starts_with("https://") {
+            return Err(format!(
+                "{value:?} names no scheme — an origin like https://files.example.com is what links are built from"
+            ));
+        }
+        if value.ends_with('/') {
+            return Err(format!(
+                "{value:?} ends in a slash — set the bare origin; In joins the /s/ path itself"
+            ));
+        }
+        Ok(())
     }
 }
 

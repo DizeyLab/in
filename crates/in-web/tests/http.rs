@@ -1736,7 +1736,7 @@ async fn link_create_without_the_flag_is_view_only() {
         "share modal showed no name: {}",
         named.text()
     );
-    let settings = app.get("/settings", Some(&admin)).await;
+    let settings = app.get("/settings?section=links", Some(&admin)).await;
     assert_eq!(settings.status, StatusCode::OK, "{}", settings.text());
     assert!(
         settings.text().contains("file · plain.txt"),
@@ -2407,6 +2407,14 @@ async fn settings_quota_and_disable_guards() {
         )
         .await;
     assert!(answer.accepted(), "quota refused: {:?}", answer.location);
+    assert!(
+        answer
+            .location
+            .as_deref()
+            .is_some_and(|location| location.contains("section=everyone")),
+        "quota left the Everyone section: {:?}",
+        answer.location
+    );
     assert_eq!(
         app.store.user(&bob_id).await.unwrap().unwrap().quota_bytes,
         2147483648
@@ -2452,6 +2460,14 @@ async fn settings_quota_and_disable_guards() {
         )
         .await;
     assert!(answer.accepted(), "disable refused: {:?}", answer.location);
+    assert!(
+        answer
+            .location
+            .as_deref()
+            .is_some_and(|location| location.contains("section=everyone")),
+        "disable left the Everyone section: {:?}",
+        answer.location
+    );
     let page = app.get("/settings", Some(&bob)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(
@@ -2487,7 +2503,7 @@ async fn share_links_carry_the_configured_base_url() {
 
     // The banner the mint redirects back to.
     let page = app
-        .get(&format!("/settings?created={token}"), Some(&admin))
+        .get(&format!("/settings?section=links&created={token}"), Some(&admin))
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(
@@ -2548,7 +2564,7 @@ async fn share_links_follow_the_bind_without_a_base_url() {
     // No `base_url`: the links say the address bound, as they always
     // have.
     let page = app
-        .get(&format!("/settings?created={token}"), Some(&admin))
+        .get(&format!("/settings?section=links&created={token}"), Some(&admin))
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(
@@ -2556,6 +2572,289 @@ async fn share_links_follow_the_bind_without_a_base_url() {
             .contains(&format!("http://127.0.0.1:7655/s/{token}")),
         "banner showed no bind link: {}",
         page.text()
+    );
+}
+
+/// Mints one link over `file` and returns the plaintext token — and the
+/// mint must land back on the links section that renders its banner.
+async fn minted_token(app: &TestApp, cookie: &str, file: &str) -> String {
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(cookie),
+            &[("kind", "file"), ("target_id", file), ("can_download", "1")],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    assert!(
+        answer
+            .location
+            .as_deref()
+            .is_some_and(|location| location.contains("section=links")),
+        "create left the links section: {:?}",
+        answer.location
+    );
+    created_token(answer.location.as_deref().unwrap())
+}
+
+/// The rail splits the page: every signed-in reader sees Profile and Share
+/// links, an admin additionally Everyone and Server — and an admin URL a
+/// non-admin pastes renders the profile, leaking no rows and no form.
+#[tokio::test]
+async fn settings_rail_gates_the_admin_sections() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+
+    // An admin's rail carries all four sections, and the default page is
+    // the profile alone.
+    let page = app.get("/settings", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    for section in ["profile", "links", "everyone", "server"] {
+        assert!(
+            body.contains(&format!("/settings?section={section}")),
+            "admin rail lacks {section}: {body}"
+        );
+    }
+    assert!(body.contains("name=\"ui\""), "{}", body);
+    assert!(!body.contains("member-table"), "{}", body);
+    assert!(!body.contains("/api/settings/base_url"), "{}", body);
+
+    // A non-admin's rail stops at the reader sections.
+    let page = app.get("/settings", Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    assert!(body.contains("/settings?section=profile"), "{}", body);
+    assert!(body.contains("/settings?section=links"), "{}", body);
+    assert!(!body.contains("/settings?section=everyone"), "{}", body);
+    assert!(!body.contains("/settings?section=server"), "{}", body);
+
+    // An admin URL pasted by a non-admin answers the profile: no account
+    // rows, no address form, no origin.
+    for asked in ["everyone", "server"] {
+        let page = app
+            .get(&format!("/settings?section={asked}"), Some(&bob))
+            .await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+        let body = page.text();
+        assert!(body.contains("name=\"ui\""), "not the profile: {body}");
+        assert!(!body.contains("member-table"), "{body}");
+        assert!(!body.contains("/api/settings/base_url"), "{body}");
+    }
+}
+
+/// Each section renders alone on its own `?section=` pair — the profile's
+/// preferences form, the links panel, the Everyone register, the server
+/// address form — and never a row or form belonging to another.
+#[tokio::test]
+async fn admin_settings_sections_render_alone() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
+    app.store
+        .create_share_link(&owner, ShareKind::File, &file, true, None, None)
+        .await
+        .unwrap();
+
+    let body = app.get("/settings?section=profile", Some(&admin)).await.text();
+    assert!(body.contains("name=\"ui\""), "{body}");
+    assert!(!body.contains("/api/share/link/revoke"), "{body}");
+    assert!(!body.contains("member-table"), "{body}");
+    assert!(!body.contains("/api/settings/base_url"), "{body}");
+
+    let body = app.get("/settings?section=links", Some(&admin)).await.text();
+    assert!(body.contains("action=\"/api/share/link/revoke\""), "{body}");
+    assert!(!body.contains("name=\"ui\""), "{body}");
+    assert!(!body.contains("member-table"), "{body}");
+    assert!(!body.contains("/api/settings/base_url"), "{body}");
+
+    let body = app.get("/settings?section=everyone", Some(&admin)).await.text();
+    assert!(body.contains("member-table"), "{body}");
+    assert!(body.contains("ada@in.test"), "{body}");
+    assert!(!body.contains("name=\"ui\""), "{body}");
+    assert!(!body.contains("/api/share/link/revoke"), "{body}");
+    assert!(!body.contains("/api/settings/base_url"), "{body}");
+
+    let body = app.get("/settings?section=server", Some(&admin)).await.text();
+    assert!(body.contains("action=\"/api/settings/base_url\""), "{body}");
+    // The effective origin shows before anything is stored: the bind.
+    assert!(body.contains("http://127.0.0.1:7655"), "{body}");
+    assert!(!body.contains("name=\"ui\""), "{body}");
+    assert!(!body.contains("member-table"), "{body}");
+    assert!(!body.contains("/api/share/link/revoke"), "{body}");
+}
+
+/// The admin's server-address form: a valid origin stores the `base_url`
+/// setting and every newly minted link carries it; a value with no scheme
+/// or a trailing slash is refused with the setting untouched; saving empty
+/// clears it and the links fall back to the address bound. A non-admin is
+/// refused before anything is read.
+#[tokio::test]
+async fn server_address_setting_drives_share_links() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
+
+    let answer = app
+        .post(
+            "/api/settings/base_url",
+            Some(&bob),
+            &[("base_url", "https://bob.example.net")],
+        )
+        .await;
+    assert!(
+        answer.refused("forbidden", "base_url"),
+        "{:?}",
+        answer.location
+    );
+    assert_eq!(app.store.get_setting("base_url").await.unwrap(), None);
+
+    let answer = app
+        .post(
+            "/api/settings/base_url",
+            Some(&admin),
+            &[("base_url", "https://files.example.com")],
+        )
+        .await;
+    assert!(answer.accepted(), "save refused: {:?}", answer.location);
+    assert!(
+        answer.location.as_deref().is_some_and(|location| {
+            location.contains("section=server") && location.contains("saved=base_url")
+        }),
+        "{:?}",
+        answer.location
+    );
+    assert_eq!(
+        app.store.get_setting("base_url").await.unwrap().as_deref(),
+        Some("https://files.example.com")
+    );
+    let token = minted_token(&app, &admin, &file).await;
+    let page = app
+        .get(
+            &format!("/settings?section=links&created={token}"),
+            Some(&admin),
+        )
+        .await;
+    assert!(
+        page
+            .text()
+            .contains(&format!("https://files.example.com/s/{token}")),
+        "{}",
+        page.text()
+    );
+
+    // No scheme, or a trailing slash: refused, the stored value untouched.
+    for bad in ["files.example.com", "https://files.example.com/"] {
+        let answer = app
+            .post("/api/settings/base_url", Some(&admin), &[("base_url", bad)])
+            .await;
+        assert!(
+            answer.refused("bad-base-url", "base_url"),
+            "{bad}: {:?}",
+            answer.location
+        );
+    }
+    assert_eq!(
+        app.store.get_setting("base_url").await.unwrap().as_deref(),
+        Some("https://files.example.com"),
+        "a refused save changed the setting"
+    );
+
+    // Empty clears: the links fall back to the address bound.
+    let answer = app
+        .post("/api/settings/base_url", Some(&admin), &[("base_url", "")])
+        .await;
+    assert!(answer.accepted(), "clear refused: {:?}", answer.location);
+    assert_eq!(
+        app.store.get_setting("base_url").await.unwrap().as_deref(),
+        Some("")
+    );
+    let token = minted_token(&app, &admin, &file).await;
+    let page = app
+        .get(
+            &format!("/settings?section=links&created={token}"),
+            Some(&admin),
+        )
+        .await;
+    let body = page.text();
+    assert!(
+        body.contains(&format!("http://127.0.0.1:7655/s/{token}")),
+        "{body}"
+    );
+    assert!(!body.contains("https://files.example.com"), "{body}");
+}
+
+/// Clearing a stored origin falls back to the config's `base_url` when the
+/// file sets one: the setting wins only while it is non-empty.
+#[tokio::test]
+async fn cleared_setting_falls_back_to_the_configured_base_url() {
+    let app = TestApp::build_with(Some("https://cfg.example.com")).await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
+
+    let answer = app
+        .post(
+            "/api/settings/base_url",
+            Some(&admin),
+            &[("base_url", "https://override.example.com")],
+        )
+        .await;
+    assert!(answer.accepted(), "save refused: {:?}", answer.location);
+    let token = minted_token(&app, &admin, &file).await;
+    let page = app
+        .get(
+            &format!("/settings?section=links&created={token}"),
+            Some(&admin),
+        )
+        .await;
+    assert!(
+        page
+            .text()
+            .contains(&format!("https://override.example.com/s/{token}")),
+        "{}",
+        page.text()
+    );
+
+    let answer = app
+        .post("/api/settings/base_url", Some(&admin), &[("base_url", "")])
+        .await;
+    assert!(answer.accepted(), "clear refused: {:?}", answer.location);
+    let token = minted_token(&app, &admin, &file).await;
+    let page = app
+        .get(
+            &format!("/settings?section=links&created={token}"),
+            Some(&admin),
+        )
+        .await;
+    let body = page.text();
+    assert!(
+        body.contains(&format!("https://cfg.example.com/s/{token}")),
+        "{body}"
+    );
+    assert!(!body.contains("override.example.com"), "{body}");
+}
+
+/// A revoke lands back on the links section that hosts its rows, even for
+/// a post arriving without a `Referer` to return to.
+#[tokio::test]
+async fn revoke_redirects_land_on_the_links_section() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let answer = app
+        .post("/api/share/link/revoke", Some(&admin), &[("id", "never-real")])
+        .await;
+    assert!(
+        answer
+            .location
+            .as_deref()
+            .is_some_and(|location| location.contains("/settings?section=links")),
+        "{:?}",
+        answer.location
     );
 }
 
@@ -2572,7 +2871,7 @@ async fn the_settings_revoke_button_sits_inline_in_its_row() {
         .await
         .unwrap();
 
-    let body = app.get("/settings", Some(&admin)).await.text();
+    let body = app.get("/settings?section=links", Some(&admin)).await.text();
     let row_at = body
         .find("<div class=\"member-row\">")
         .expect("no share-link row");
@@ -3529,11 +3828,20 @@ async fn settings_panels_nest_inside_the_stage() {
         .find("<main class=\"settings-stage")
         .expect("no settings-stage");
     let close = body.find("</main>").expect("no main close");
-    for marker in ["panel-head", "member-table", "name=\"ui\""] {
+    for marker in ["panel-head", "name=\"ui\""] {
         let at = body.find(marker).unwrap_or_else(|| panic!("no {marker}"));
         assert!(stage < at && at < close, "{marker} escapes the stage");
     }
-    // The admin register is a table now: one named column per fact.
+    // The admin register keeps its named columns, on its own section.
+    let page = app.get("/settings?section=everyone", Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    let stage = body
+        .find("<main class=\"settings-stage")
+        .expect("no settings-stage");
+    let close = body.find("</main>").expect("no main close");
+    let at = body.find("member-table").expect("no member-table");
+    assert!(stage < at && at < close, "member-table escapes the stage");
     assert!(body.contains("<th class=\"member-col-name\""), "{body}");
 }
 
@@ -3685,7 +3993,7 @@ async fn settings_quota_button_wears_the_quiet_class() {
     let admin = app
         .sign_in("sub-quota-btn", "quotabtn@in.test", "QuotaBtn")
         .await;
-    let page = app.get("/settings", Some(&admin)).await;
+    let page = app.get("/settings?section=everyone", Some(&admin)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let body = page.text();
     // The Set-the-quota submit is a house button in a field row, not a
