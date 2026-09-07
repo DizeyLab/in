@@ -84,6 +84,7 @@ pub enum Key {
     NothingAtThisAddress,
     BackToDrive,
     BackToShared,
+    BackToTrash,
     // Landing.
     WelcomeTitle,
     WelcomeBlurb,
@@ -257,6 +258,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             NothingAtThisAddress => "There is nothing at this address.",
             BackToDrive => "Back to the drive",
             BackToShared => "Back to shared",
+            BackToTrash => "Back to trash",
             WelcomeTitle => "In: your files",
             WelcomeBlurb => "Your folders and files, shared on your terms.",
             SignIn => "Sign in",
@@ -416,6 +418,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             NothingAtThisAddress => "Bu adreste bir şey yok.",
             BackToDrive => "Sürücüye dön",
             BackToShared => "Paylaşılanlara dön",
+            BackToTrash => "Çöpe dön",
             WelcomeTitle => "In: dosyaların",
             WelcomeBlurb => "Klasörlerin ve dosyaların, senin kurallarınla.",
             SignIn => "Oturum aç",

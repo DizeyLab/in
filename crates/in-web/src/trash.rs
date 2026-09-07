@@ -1,7 +1,9 @@
 //! Trash: the soft-deleted shelf and its three mutations.
 //!
-//! `GET /trash` lists the reader's trashed files and folders. Trashed bytes
-//! stay on disk and keep counting toward the quota until the purge. Folder
+//! `GET /trash` lists the reader's trashed files and folders; a file row
+//! opens the preview — `/view/{id}` — which serves a trashed row to its
+//! owner alone, download-dead until restored. Trashed bytes stay on disk
+//! and keep counting toward the quota until the purge. Folder
 //! trash and restore cascade to descendants under one timestamp, and an item
 //! whose ancestor is still trashed cannot be restored.
 //! `POST /api/trash/restore|purge|empty` bring back, destroy one row (plus
@@ -141,9 +143,9 @@ async fn empty(cx: &Cx) -> Redirect {
     }
 }
 
-/// A trashed file's chip: always the mime-class glyph, never the thumbnail
-/// image — `/thumb/{id}` 404s trashed rows, so a Ready row would render a
-/// broken image. The clone only clears the thumbnail flag for the render.
+/// A trashed file's chip: the mime-class glyph, never the thumbnail image —
+/// the shelf wears its own mark, thumbnails belong to the live listings.
+/// The clone only clears the thumbnail flag for the render.
 async fn trash_chip(cx: &Cx, file: &File) -> Result {
     let mut unthumb = file.clone();
     unthumb.thumb_state = ThumbState::None;
@@ -371,31 +373,29 @@ async fn trash(cx: &Cx) -> Result {
                 </div>
                 <div class="drive-list">
                     for row in &rows {
-                        // Trashed entries open nothing — the row is a fact,
-                        // not a way in; the ⋯ holds the way back and the way
-                        // gone. The grid is `.drive-cols`, the same columns
-                        // the drive's anchors wear.
+                        // File rows open the preview — the row is a way in
+                        // for a look; the ⋯ still holds the way back and
+                        // the way gone. Folder rows stay facts. The grid is
+                        // `.drive-cols`' columns, the same ones the drive's
+                        // anchors wear.
                         <div class="drive-row">
-                            <div class="drive-cols">
-                                match row {
-                                    TrashEntry::Folder(folder) => {
-                                        <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
-                                        <span class="dep-title">(folder.name.clone())</span>
-                                        <span class="drive-meta" aria-hidden="true"></span>
-                                    }
-                                    TrashEntry::File(file) => {
-                                        (trash_chip(cx, file).await?)
-                                        <span class="dep-title">(file.name.clone())</span>
-                                        <span class="drive-meta drive-size">(crate::drive::human_size(file.size_bytes))</span>
-                                    }
-                                }
-                                <span class="drive-meta drive-date">(row.deleted().date().to_string())</span>
-                                if let TrashEntry::File(file) = row {
+                            if let TrashEntry::File(file) = row {
+                                <a class="drive-open" href=(format!("/view/{}", file.id))>
+                                    (trash_chip(cx, file).await?)
+                                    <span class="dep-title">(file.name.clone())</span>
+                                    <span class="drive-meta drive-size">(crate::drive::human_size(file.size_bytes))</span>
+                                    <span class="drive-meta drive-date">(row.deleted().date().to_string())</span>
                                     <span class="drive-meta drive-dl">(file.download_count.to_string())</span>
-                                } else {
+                                </a>
+                            } else if let TrashEntry::Folder(folder) = row {
+                                <div class="drive-cols">
+                                    <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                                    <span class="dep-title">(folder.name.clone())</span>
                                     <span class="drive-meta" aria-hidden="true"></span>
-                                }
-                            </div>
+                                    <span class="drive-meta drive-date">(row.deleted().date().to_string())</span>
+                                    <span class="drive-meta" aria-hidden="true"></span>
+                                </div>
+                            }
                             <details class="user-menu entry-options">
                                 <summary class="quiet entry-options-trigger" aria-label=(t(language, Key::Options))>"⋯"</summary>
                                 <div class="user-menu-panel">

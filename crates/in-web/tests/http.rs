@@ -1298,9 +1298,58 @@ async fn file_rename_move_and_delete() {
         trashed.deleted_at.is_some(),
         "delete did not trash the file"
     );
-    // And the bytes answer 404 once trashed.
-    let gone = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
-    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    // Trashed bytes still serve the owner's preview inline — only the
+    // taking is dead until the row is restored.
+    let preview = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
+    assert_eq!(preview.status, StatusCode::OK);
+    let forced = app
+        .get(&format!("/file/{}?dl=1", file.id), Some(&cookie))
+        .await;
+    assert_eq!(forced.status, StatusCode::NOT_FOUND);
+}
+
+/// A trashed file previews for its owner: the trash's row opens the
+/// viewer, the back link names the trash, the bytes serve inline while
+/// `?dl=1` stays dead — and a stranger, grant or no grant, sees nothing.
+#[tokio::test]
+async fn trashed_file_previews_for_its_owner() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "gone.png", b"\x89PNG\r\n\x1a\n gone").await;
+
+    let answer = app
+        .post("/api/file/delete", Some(&admin), &[("id", &file)])
+        .await;
+    assert_eq!(answer.body, "null", "deleting was refused: {}", answer.body);
+
+    // The trash's file row opens the preview; the folder rows beside it
+    // stay facts.
+    let shelf = app.get("/trash", Some(&admin)).await;
+    assert_eq!(shelf.status, StatusCode::OK, "{}", shelf.text());
+    assert!(
+        shelf.text().contains(&format!("/view/{file}")),
+        "{}",
+        shelf.text()
+    );
+
+    // The viewer names the trash as the way back and shows the media,
+    // but offers no download for a trashed row.
+    let page = app.get(&format!("/view/{file}"), Some(&admin)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("Back to trash"), "{}", page.text());
+    assert!(page.text().contains("viewer-media"), "{}", page.text());
+    assert!(!page.text().contains("?dl=1"), "{}", page.text());
+
+    // Inline bytes serve the owner's preview, taking stays dead, and a
+    // stranger sees the same nothing a missing id would show.
+    let inline = app.get(&format!("/file/{file}"), Some(&admin)).await;
+    assert_eq!(inline.status, StatusCode::OK, "{}", inline.text());
+    let forced = app.get(&format!("/file/{file}?dl=1"), Some(&admin)).await;
+    assert_eq!(forced.status, StatusCode::NOT_FOUND);
+    let stranger = app.get(&format!("/view/{file}"), Some(&bob)).await;
+    assert_eq!(stranger.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

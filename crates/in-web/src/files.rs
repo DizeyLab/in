@@ -183,8 +183,9 @@ struct ViewQuery {
 }
 
 /// The file row this account may open: its owner may, and anyone holding a
-/// live grant onto it may. Trashed files open for nobody here — the trash
-/// has its own screen. `None` folds "no such file" and "not shared" into
+/// live grant onto it may. A trashed row opens for its owner only — the
+/// trash's preview — and stays download-dead on the byte route until the
+/// row is restored. `None` folds "no such file" and "not shared" into
 /// one answer.
 async fn visible_file(
     store: &dyn Store,
@@ -193,7 +194,7 @@ async fn visible_file(
 ) -> Option<in_core::store::File> {
     let file = store.file(file_id).await.ok()??;
     if file.deleted_at.is_some() {
-        return None;
+        return (file.owner_id == user_id).then_some(file);
     }
     if file.owner_id == user_id {
         return Some(file);
@@ -211,8 +212,9 @@ async fn visible_file(
 /// Serves one file's bytes, or the same not-found a stranger would see for
 /// a file that does not exist — never a `403`, which would confirm the id
 /// belongs to somebody else's drive. Inline bytes are the viewer's preview:
-/// anyone who may see the file reads them. Taking the file away is a
-/// different act — `?dl=1` needs the download grant, and only it counts.
+/// anyone who may see the file reads them, a trashed row's owner included.
+/// Taking the file away is a different act — `?dl=1` needs the download
+/// grant, and a trashed row never counts: restoring is its way back.
 ///
 /// The body streams off disk through [`bytes_response`]: a play starts on
 /// the first 64 KiB frame, not on the whole file landing in memory, and a
@@ -239,12 +241,14 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, topcoat::r
         .ok()
         .and_then(|query| query.dl.clone())
         .is_some();
-    // A view-only grant previews but never downloads.
-    let may_download = file.owner_id == user.id
-        || store
-            .can_download(ShareKind::File, id, &user.id)
-            .await
-            .unwrap_or(false);
+    // A view-only grant previews but never downloads, and neither does a
+    // trashed row — its owner may look, not take.
+    let may_download = file.deleted_at.is_none()
+        && (file.owner_id == user.id
+            || store
+                .can_download(ShareKind::File, id, &user.id)
+                .await
+                .unwrap_or(false));
     if forced && !may_download {
         return Ok(not_found());
     }
@@ -475,17 +479,19 @@ fn is_archive_mime(mime: &str) -> bool {
 }
 
 /// `GET /view/{id}`: one file's viewer page — its name, the inline viewer
-/// for its kind, a download link and its details. Authorization mirrors
-/// trashed files open for nobody. Anyone who may see the file gets the
-/// media preview — "view only" means preview, no download: the media
-/// elements carry no save affordance (no download in the controls, no
-/// drag, no context menu — `viewer_guard_script`), the Download link shows
-/// only while the reader may download, and `?dl=1` stays gated on the
-/// byte route. Documents (PDF, text) frame the bytes in the browser's own
-/// chrome, whose toolbar downloads — they preview only under the grant.
-/// Bytes for another owner's file answer 404, not 403. The head's back
-/// link names the origin: `?from=shared`, the pair the shared page's rows
-/// carry, returns there; anything else back to the drive.
+/// for its kind, a download link and its details. Anyone who may see the
+/// file gets the media preview — "view only" means preview, no download:
+/// the media elements carry no save affordance (no download in the
+/// controls, no drag, no context menu — `viewer_guard_script`), the
+/// Download link shows only while the reader may download, and `?dl=1`
+/// stays gated on the byte route. A trashed row previews for its owner
+/// alone, download-dead until restored. Documents (PDF, text) frame the
+/// bytes in the browser's own chrome, whose toolbar downloads — they
+/// preview only under the grant. Bytes for another owner's file answer
+/// 404, not 403. The head's back link names the origin: `?from=shared`,
+/// the pair the shared page's rows carry, returns there; a trashed row,
+/// wherever it was opened from, back to the trash; anything else back to
+/// the drive.
 #[page("/view/{id}")]
 async fn view_file(cx: &Cx) -> Result {
     let id: &str = path_param::<Id>(cx);
@@ -511,11 +517,20 @@ async fn view_file(cx: &Cx) -> Result {
     let Some(file) = visible_file(store.as_ref(), &user.id, id).await else {
         return Err(page_not_found().into());
     };
-    let may_download = file.owner_id == user.id
-        || store
-            .can_download(ShareKind::File, &file.id, &user.id)
-            .await
-            .unwrap_or(false);
+    let may_download = file.deleted_at.is_none()
+        && (file.owner_id == user.id
+            || store
+                .can_download(ShareKind::File, &file.id, &user.id)
+                .await
+                .unwrap_or(false));
+    // A trashed row's home is the trash, whatever pair the query wears.
+    let (back_href, back_key) = if file.deleted_at.is_some() {
+        ("/trash", Key::BackToTrash)
+    } else if from_shared {
+        ("/shared", Key::BackToShared)
+    } else {
+        ("/drive", Key::BackToDrive)
+    };
 
     let src = format!("/file/{}", file.id);
     let download_href = format!("/file/{}?dl=1", file.id);
@@ -530,9 +545,7 @@ async fn view_file(cx: &Cx) -> Result {
         (topbar(cx, NavPage::Drive, &user, language).await?)
         <main class="settings-stage stage-wide">
             <div class="viewer-head">
-                <a class="quiet" href=(if from_shared { "/shared" } else { "/drive" })>
-                    (t(language, if from_shared { Key::BackToShared } else { Key::BackToDrive }))
-                </a>
+                <a class="quiet" href=(back_href)>(t(language, back_key))</a>
                 <div class="spacer"></div>
                 if may_download {
                     <a class="primary" href=(download_href) download="">(t(language, Key::Download))</a>
