@@ -67,5 +67,5 @@ client_secret = "in-dev-secret"
 #
 # Migrating an existing deployment's bytes into the bucket — database and
 # storage tree stay where they are; run once with the server stopped:
-#   rclone copy <storage>/files :r2,account=<id>,key=<id>:<bucket>/files
-#   rclone copy <storage>/thumbs :r2,account=<id>,key=<id>:<bucket>/thumbs
+#   rclone copy <storage>/files ":s3,provider=Cloudflare,access_key_id=<key id>,secret_access_key=<secret>,region=auto,endpoint=https://<account_id>.r2.cloudflarestorage.com:<bucket>/files"
+#   rclone copy <storage>/thumbs ":s3,provider=Cloudflare,access_key_id=<key id>,secret_access_key=<secret>,region=auto,endpoint=https://<account_id>.r2.cloudflarestorage.com:<bucket>/thumbs"
