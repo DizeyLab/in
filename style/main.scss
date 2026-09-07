@@ -788,13 +788,15 @@ a {
 
   &-role,
   &-admin,
+  &-shared,
   &-connected,
   &-off {
     text-transform: capitalize;
   }
 
   &-role { background: var(--surface-sunken); border: 1px solid var(--border-strong); color: var(--ink-soft); }
-  &-admin { background: var(--panel-sunken); border: 1px solid var(--border-strong); color: var(--muted); }
+  &-admin,
+  &-shared { background: var(--panel-sunken); border: 1px solid var(--border-strong); color: var(--muted); }
   &-connected { background: var(--positive-tint); color: var(--positive-ink); }
   &-off { background: var(--warn-tint); color: var(--warn-ink); }
 }
@@ -5183,6 +5185,18 @@ div.member-row + div.member-row {
 
   &:hover .dep-title { text-decoration: underline; }
 }
+
+// The name column of a drive row: the title keeps its ellipsis and the
+// Shared mark rides beside it inside the one grid cell, so the mark never
+// becomes a column of its own on the row's grid.
+.dep-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dep-name-cell .dep-title { min-width: 0; }
 
 .drive-meta {
   min-width: 0;

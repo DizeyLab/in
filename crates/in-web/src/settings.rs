@@ -21,11 +21,12 @@ use topcoat::router::content::Form;
 use topcoat::router::request::uri;
 use topcoat::router::{HeaderName, StatusCode, header, page, route};
 use topcoat::view::view;
-
+use crate::server::{
+    Refusal, app, back_to, require_admin, require_user, share_link_url, share_origin,
+};
+use crate::share::{refusal_banner, refusal_of, share_copy_script};
 use crate::i18n::{Key, lang, t};
 use crate::layout::{NavPage, topbar};
-use crate::server::{Refusal, app, back_to, require_admin, require_user, share_origin};
-use crate::share::{refusal_banner, refusal_of};
 
 /// Bytes in human units: `512 B`, `1.5 KiB`, `2.0 GiB`. One decimal past
 /// bytes so a quota line reads at a glance.
@@ -315,7 +316,7 @@ async fn settings(cx: &Cx) -> Result {
     // Only the section on show pays for its rows: the links panel names
     // each live link's target, Everyone lists the accounts, and the server
     // panel needs the origin — nothing else reads them.
-    let mut link_names: Vec<(&in_core::store::ShareLink, String)> = Vec::new();
+    let mut link_names: Vec<(&in_core::store::ShareLink, String, Option<String>)> = Vec::new();
     let links = if section == Section::Links {
         store.share_links(&user.id).await?
     } else {
@@ -343,7 +344,10 @@ async fn settings(cx: &Cx) -> Result {
                     .map(|folder| folder.name),
             }
             .unwrap_or_else(|| link.target_id.clone());
-            link_names.push((link, name));
+            // The full address, re-derived from the token the creation
+            // sealed away; `None` keeps the row masked with the note.
+            let url = share_link_url(cx, link).await;
+            link_names.push((link, name, url));
         }
     }
     let users = if administers && section == Section::Everyone {
@@ -455,7 +459,7 @@ async fn settings(cx: &Cx) -> Result {
                             if link_names.is_empty() {
                                 <p class="field-note">(t(language, Key::NoLinks))</p>
                             }
-                            for (link, target_name) in &link_names {
+                            for (link, target_name, url) in &link_names {
                                 <div class="member-row">
                                     <span class="member-name">(format!("{} · {}", link.kind.as_str(), target_name.clone()))</span>
                                     <span class="field-note">(expiry_line(language, link.expires_at))</span>
@@ -466,9 +470,26 @@ async fn settings(cx: &Cx) -> Result {
                                         <button class="quiet quiet-danger" type="submit">(t(language, Key::RevokeLink))</button>
                                     </form>
                                 </div>
+                                // The same affordance the modal's live row
+                                // carries: the full address with its copy
+                                // button, or the masked value plus the
+                                // carry-forward note for a link from before
+                                // the sealing.
+                                <div class="share-link-row">
+                                    if let Some(url) = url {
+                                        <input class="field-input share-link-url" readonly="" value=(url.clone()) aria-label=(t(language, Key::ShareLink))>
+                                        <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
+                                    } else {
+                                        <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>
+                                        <p class="field-note">(t(language, Key::LegacyLinkNote))</p>
+                                    }
+                                </div>
                             }
                         </div>
                     </section>
+                    // One delegated listener serves every row's copy button
+                    // above; the script is idempotent across re-renders.
+                    (share_copy_script(cx).await?)
                 }
                 if section == Section::Everyone {
                     <section class="panel">

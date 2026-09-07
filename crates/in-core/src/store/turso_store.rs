@@ -554,7 +554,7 @@ fn like_pattern(query: &str) -> String {
 }
 
 /// A fresh public-link token: 32 random bytes, base64url without padding.
-/// Shown once at creation; only its hash is stored.
+/// Shown at creation and sealed by the web layer; only its hash is stored here.
 fn new_token() -> String {
     use base64::Engine as _;
     let mut bytes = [0u8; 32];
@@ -1641,6 +1641,14 @@ impl Store for TursoStore {
         Ok(())
     }
 
+    async fn delete_setting(&self, key: &str) -> Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute("DELETE FROM setting WHERE key = ?1", params![key])
+            .await
+            .map_err(backend)?;
+        Ok(())
+    }
+
     async fn thumb_bytes(&self, id: &str) -> Result<Option<Vec<u8>>> {
         let conn = self.conn.lock().await;
         let mut rows = conn
@@ -2154,6 +2162,47 @@ impl Store for TursoStore {
             }
             None => Ok(None),
         }
+    }
+
+    async fn shared_target_ids(&self, owner_id: &str) -> Result<Vec<(ShareKind, String)>> {
+        let now = OffsetDateTime::now_utc();
+        let mut found: std::collections::HashSet<(ShareKind, String)> =
+            std::collections::HashSet::new();
+        let conn = self.conn.lock().await;
+        // Link liveness is decided here rather than in SQL, the way
+        // resolve_share_link decides it: one definition of live, the row's
+        // own timestamps.
+        let mut rows = conn
+            .query(
+                &format!("SELECT {LINK_COLUMNS} FROM share_link WHERE created_by = ?1"),
+                params![owner_id],
+            )
+            .await
+            .map_err(backend)?;
+        while let Some(row) = rows.next().await.map_err(backend)? {
+            let link = link_from(&row)?;
+            if link.is_live(now) {
+                found.insert((link.kind, link.target_id));
+            }
+        }
+        drop(rows);
+        // Grants name no owner — the target's own row does — so the ids are
+        // matched against the person's files and folders directly.
+        let mut rows = conn
+            .query(
+                "SELECT DISTINCT kind, target_id FROM share_user \
+                 WHERE (kind = 'file' AND target_id IN (SELECT id FROM file WHERE owner_id = ?1)) \
+                    OR (kind = 'folder' AND target_id IN (SELECT id FROM folder WHERE owner_id = ?1))",
+                params![owner_id],
+            )
+            .await
+            .map_err(backend)?;
+        while let Some(row) = rows.next().await.map_err(backend)? {
+            found.insert((ShareKind::parse(&text(&row, 0)?)?, text(&row, 1)?));
+        }
+        drop(rows);
+        drop(conn);
+        Ok(found.into_iter().collect())
     }
 
     async fn add_share_user(

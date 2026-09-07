@@ -680,6 +680,94 @@ async fn share_links_open_until_revoked_or_expired() {
     assert_eq!(scratch.store.share_links(&user.id).await.unwrap().len(), 2);
 }
 
+/// The drive page's Shared mark reads its set from here: live links and
+/// given grants are in, revoked and expired links are out, and another
+/// owner's grants never leak in.
+#[tokio::test]
+async fn shared_target_ids_holds_live_links_and_own_grants() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let friend = bob(&scratch.store).await;
+    let linked = scratch.store.insert_file(&user.id, None, "linked", b"d").await.unwrap();
+    let granted = scratch.store.insert_file(&user.id, None, "granted", b"d").await.unwrap();
+    let folder = scratch.store.create_folder(&user.id, None, "dossier").await.unwrap();
+    let strangers = scratch.store.insert_file(&friend.id, None, "theirs", b"d").await.unwrap();
+
+    // Empty while nothing is shared.
+    assert!(scratch.store.shared_target_ids(&user.id).await.unwrap().is_empty());
+
+    let file_link = scratch
+        .store
+        .create_share_link(&user.id, ShareKind::File, &linked.id, true, None, None)
+        .await
+        .unwrap();
+    scratch
+        .store
+        .add_share_user(&user.id, ShareKind::File, &granted.id, &friend.id, false)
+        .await
+        .unwrap();
+    scratch
+        .store
+        .add_share_user(&user.id, ShareKind::Folder, &folder.id, &friend.id, true)
+        .await
+        .unwrap();
+
+    let shared: std::collections::HashSet<_> = scratch
+        .store
+        .shared_target_ids(&user.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect();
+    let expected: std::collections::HashSet<_> = vec![
+        (ShareKind::File, granted.id.clone()),
+        (ShareKind::File, linked.id.clone()),
+        (ShareKind::Folder, folder.id.clone()),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(shared, expected);
+    // The friend shares nothing of their own: a grant received is not a
+    // grant given.
+    assert!(scratch.store.shared_target_ids(&friend.id).await.unwrap().is_empty());
+
+    // A revoked link drops out; the grant stays.
+    scratch.store.revoke_share_link(&file_link.link.id).await.unwrap();
+    let shared = scratch.store.shared_target_ids(&user.id).await.unwrap();
+    assert_eq!(shared.len(), 2);
+    assert!(!shared.contains(&(ShareKind::File, linked.id.clone())));
+
+    // An expired link drops out too.
+    let past = scratch
+        .store
+        .create_share_link(
+            &user.id,
+            ShareKind::File,
+            &linked.id,
+            true,
+            Some(OffsetDateTime::now_utc() - Duration::hours(1)),
+            None,
+        )
+        .await
+        .unwrap();
+    let shared = scratch.store.shared_target_ids(&user.id).await.unwrap();
+    assert!(!shared.contains(&(ShareKind::File, past.link.target_id.clone())));
+    assert!(!shared.contains(&(ShareKind::File, strangers.id.clone())));
+
+    // Deleting the grant removes the last mark its target had.
+    scratch
+        .store
+        .remove_share_user(ShareKind::File, &granted.id, &friend.id)
+        .await
+        .unwrap();
+    let shared = scratch.store.shared_target_ids(&user.id).await.unwrap();
+    assert_eq!(
+        shared,
+        vec![(ShareKind::Folder, folder.id.clone())],
+        "the folder link is all that is left"
+    );
+}
+
 #[tokio::test]
 async fn a_password_link_round_trips_its_hash() {
     let scratch = Scratch::open().await;

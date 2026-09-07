@@ -13,7 +13,9 @@
 //! plain GET form. The old `GET /search?q=` address 303s here, so old links
 //! keep working.
 
-use in_core::store::{Folder, Store, StoreError};
+use std::collections::HashSet;
+
+use in_core::store::{Folder, ShareKind, Store, StoreError};
 use topcoat::router::request::uri;
 use topcoat::router::{HeaderName, HeaderValue, StatusCode, header, page, query_params, route};
 
@@ -511,6 +513,15 @@ async fn drive(cx: &Cx) -> Result {
         .as_ref()
         .map(|folder| folder.id.clone())
         .unwrap_or_default();
+    // The rows this account shares today — live public links it minted and
+    // grants it gave — marked on the listing. A failure reads as nothing
+    // marked: the chip is garnish, and the listing itself is the meal.
+    let shared: HashSet<(ShareKind, String)> = store
+        .shared_target_ids(&user.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     let current_name = current
         .as_ref()
         .map(|folder| folder.name.clone())
@@ -706,7 +717,12 @@ async fn drive(cx: &Cx) -> Result {
                             <div class="drive-row">
                                 <a class="drive-open" href=(format!("/drive?folder={}", folder.id))>
                                     <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
-                                    <span class="dep-title">(folder.name.clone())</span>
+                                    <span class="dep-name-cell">
+                                        <span class="dep-title">(folder.name.clone())</span>
+                                        if shared.contains(&(ShareKind::Folder, folder.id.clone())) {
+                                            <span class="chip chip-shared">(t(language, Key::Shared))</span>
+                                        }
+                                    </span>
                                     <span class="drive-meta" aria-hidden="true"></span>
                                     <span class="drive-meta drive-date">(folder.created_at.date().to_string())</span>
                                     <span class="drive-meta" aria-hidden="true"></span>
@@ -717,7 +733,12 @@ async fn drive(cx: &Cx) -> Result {
                             <div class="drive-row">
                                 <a class="drive-open" href=(format!("/view/{}", file.id))>
                                     (crate::files::entry_chip(cx, file).await?)
-                                    <span class="dep-title">(file.name.clone())</span>
+                                    <span class="dep-name-cell">
+                                        <span class="dep-title">(file.name.clone())</span>
+                                        if shared.contains(&(ShareKind::File, file.id.clone())) {
+                                            <span class="chip chip-shared">(t(language, Key::Shared))</span>
+                                        }
+                                    </span>
                                     <span class="drive-meta drive-size">(human_size(file.size_bytes))</span>
                                     <span class="drive-meta drive-date">(file.created_at.date().to_string())</span>
                                     <span class="drive-meta drive-dl">(file.download_count.to_string())</span>
@@ -762,7 +783,12 @@ async fn drive(cx: &Cx) -> Result {
                             } else {
                             <a class="drive-open" href=(format!("/drive?folder={}", folder.id))>
                                 <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
-                                <span class="dep-title">(folder.name.clone())</span>
+                                <span class="dep-name-cell">
+                                    <span class="dep-title">(folder.name.clone())</span>
+                                    if shared.contains(&(ShareKind::Folder, folder.id.clone())) {
+                                        <span class="chip chip-shared">(t(language, Key::Shared))</span>
+                                    }
+                                </span>
                                 <span class="drive-meta" aria-hidden="true"></span>
                                 <span class="drive-meta drive-date">(folder.created_at.date().to_string())</span>
                                 <span class="drive-meta" aria-hidden="true"></span>
@@ -801,7 +827,12 @@ async fn drive(cx: &Cx) -> Result {
                             } else {
                             <a class="drive-open" href=(format!("/view/{}", file.id))>
                                 (crate::files::entry_chip(cx, file).await?)
-                                <span class="dep-title">(file.name.clone())</span>
+                                <span class="dep-name-cell">
+                                    <span class="dep-title">(file.name.clone())</span>
+                                    if shared.contains(&(ShareKind::File, file.id.clone())) {
+                                        <span class="chip chip-shared">(t(language, Key::Shared))</span>
+                                    }
+                                </span>
                                 <span class="drive-meta drive-size">(human_size(file.size_bytes))</span>
                                 <span class="drive-meta drive-date">(file.created_at.date().to_string())</span>
                                 <span class="drive-meta drive-dl">(file.download_count.to_string())</span>

@@ -193,7 +193,7 @@ impl ThumbState {
 
 /// Which table a share points at — one file, or one folder and everything
 /// under it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShareKind {
     File,
@@ -218,7 +218,9 @@ impl ShareKind {
 }
 
 /// A public share link. The row holds only the token's hash; the plaintext
-/// is shown once at creation and never again. An owner may also give the
+/// never sits in this table — the web layer seals it onto a
+/// `share_token:{id}` setting row with the app key, so the full address can
+/// be re-shown later. An owner may also give the
 /// link a password: the row then keeps the password's Argon2id PHC string,
 /// and a visitor answers the gate once per browser — the proof lives in a
 /// cookie, never in a server-side session.
@@ -244,7 +246,7 @@ impl ShareLink {
 }
 
 /// A freshly created link, with the one thing the row does not keep: the
-/// plaintext token, shown once and then forgotten.
+/// plaintext token, which the web layer seals away for later re-display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatedLink {
     pub link: ShareLink,
@@ -531,9 +533,9 @@ pub trait Store: 'static + Send + Sync {
     async fn empty_trash(&self, owner_id: &str) -> Result<u64>;
 
     // -- share links -------------------------------------------------------
-
     /// Creates a public link onto one file or folder. Returns the row and the
-    /// plaintext token — the only moment the token exists outside its hash.
+    /// plaintext token — the only moment it exists unsealed; the web layer
+    /// seals it onto a setting row at once.
     /// `password_hash` is stored as given: the caller hashes the password
     /// with [`hash_link_password`], because Argon2id is CPU-slow on
     /// purpose and only the caller knows whether the hash belongs off the
@@ -564,6 +566,12 @@ pub trait Store: 'static + Send + Sync {
         token_hash: &str,
         now: OffsetDateTime,
     ) -> Result<Option<ShareLink>>;
+
+    /// Every target the person shares today, as `(kind, target_id)` with
+    /// duplicates folded away: the live public links they minted —
+    /// unrevoked and unexpired — plus the targets they granted to other
+    /// people. The drive page marks these rows as shared.
+    async fn shared_target_ids(&self, owner_id: &str) -> Result<Vec<(ShareKind, String)>>;
 
     // -- per-person shares -------------------------------------------------
 
@@ -679,6 +687,10 @@ pub trait Store: 'static + Send + Sync {
     /// Writes one instance-level setting, creating or replacing the row.
     /// Keys are free-form; the web layer is the only writer today.
     async fn set_setting(&self, key: &str, value: &str) -> Result<()>;
+
+    /// Removes one instance-level setting. A key never set is not an error:
+    /// deleting what is not there leaves exactly what was asked for.
+    async fn delete_setting(&self, key: &str) -> Result<()>;
 
     // -- search ------------------------------------------------------------
 

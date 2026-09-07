@@ -134,8 +134,10 @@ async fn main() {
     });
     let store: Arc<dyn in_core::store::Store> = store;
 
-    // The key sealing the OIDC session cookies, kept beside the database as
-    // `in.key` — one key per deployment, never in the repository.
+    // The `in.key` loaded here seals two things: the OIDC session cookies
+    // below, and — through the app context — the share-link tokens their
+    // creation seals onto setting rows, so the full link addresses can be
+    // re-shown later. One key per deployment, never in the repository.
     let key_path = std::path::Path::new(&config.database)
         .parent()
         .map(|parent| parent.join("in.key"))
@@ -180,6 +182,7 @@ async fn main() {
         store,
         config,
         shutdown: in_web::live::Shutdown(stopping),
+        link_key: cookie_key,
     })
     .app_context(in_web::live::LiveWindow(std::time::Duration::from_secs(
         live_seconds,

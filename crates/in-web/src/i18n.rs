@@ -232,6 +232,9 @@ pub enum Key {
     EffectiveOrigin,
     BaseUrlLabel,
     BaseUrlNote,
+    // Re-viewable share links (LinkVisible owns this block).
+    Shared,
+    LegacyLinkNote,
 }
 
 pub fn t(lang: Lang, key: Key) -> &'static str {
@@ -335,7 +338,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             EnableUser => "Enable",
             DisabledBadge => "disabled",
             LinkCreated => "Link created.",
-            CopyLinkOnce => "Copy it now. It is shown once and never again.",
+            CopyLinkOnce => "Copy it now. The full address also stays on your Share links panel.",
             ExpiresLabel => "Expires",
             NeverExpires => "Never",
             ViewOnly => "View only: preview, no downloads",
@@ -388,6 +391,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             EffectiveOrigin => "Effective origin",
             BaseUrlLabel => "Public base URL",
             BaseUrlNote => "The origin share links carry: a saved value wins, an empty one falls back to the configured base_url, then the bind address.",
+            Shared => "Shared",
+            LegacyLinkNote => "This link predates re-viewable addresses — revoke and mint a new one to carry it forward.",
         },
         Lang::Tr => match key {
             Cancel => "Vazgeç",
@@ -487,7 +492,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             EnableUser => "Etkinleştir",
             DisabledBadge => "devre dışı",
             LinkCreated => "Bağlantı oluşturuldu.",
-            CopyLinkOnce => "Şimdi kopyala. Bir kez gösterilir, bir daha gösterilmez.",
+            CopyLinkOnce => "Şimdi kopyala. Tam adres, Paylaşım bağlantıları panelinde de görünür kalır.",
             ExpiresLabel => "Bitiş",
             NeverExpires => "Süresiz",
             ViewOnly => "Yalnızca görüntüleme: önizleme, indirme yok",
@@ -540,6 +545,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             EffectiveOrigin => "Etkin kök adres",
             BaseUrlLabel => "Herkese açık kök adres",
             BaseUrlNote => "Paylaşım bağlantılarının taşıdığı kök adres: kaydedilen değer önceliklidir, boş bırakılırsa yapılandırılmış base_url'e, sonra bağlanılan adrese dönülür.",
+            Shared => "Paylaşılmış",
+            LegacyLinkNote => "Bu bağlantı, adreslerin yeniden görüntülenebildiği dönemden önce oluşturuldu — devam ettirmek için iptal edip yeni bir tane oluşturun.",
         },
     }
 }

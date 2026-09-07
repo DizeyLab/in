@@ -35,6 +35,12 @@ pub struct App {
     /// Told when the process is stopping, so the live streams end instead of
     /// being waited out.
     pub shutdown: crate::live::Shutdown,
+    /// The `in.key` loaded at boot — the same key that seals the session
+    /// cookies. Share-link creation seals the minted token with it onto a
+    /// setting row, so the full link address can be re-shown later; a
+    /// database copy without the key file carries links that open but can
+    /// no longer be re-viewed.
+    pub link_key: in_core::store::secret::Key,
 }
 
 /// The application context this request runs under.
@@ -52,6 +58,25 @@ pub async fn share_origin(cx: &Cx) -> String {
         Ok(Some(base)) if !base.trim().is_empty() => base.trim().to_string(),
         _ => app(cx).config.public_origin(),
     }
+}
+
+/// The full public address of a share link — `{origin}/s/{token}` —
+/// re-derived from the token its creation sealed onto the
+/// `share_token:{id}` setting row.
+///
+/// `None` when the address cannot be told again: a link minted before the
+/// sealing carries no row, and a key lost since minting opens nothing. Both
+/// callers degrade the same way — the masked value plus the legacy note —
+/// so the option is the whole contract.
+pub async fn share_link_url(cx: &Cx, link: &in_core::store::ShareLink) -> Option<String> {
+    let app = app(cx);
+    let sealed = app
+        .store
+        .get_setting(&format!("share_token:{}", link.id))
+        .await
+        .ok()??;
+    let token = in_core::store::secret::open(&app.link_key, &sealed)?;
+    Some(format!("{}/s/{token}", share_origin(cx).await))
 }
 
 /// A stable-enough label for the client, for rate limiting. A proxy header is

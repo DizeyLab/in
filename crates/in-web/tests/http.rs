@@ -374,8 +374,10 @@ impl TestApp {
             store: store.clone(),
             config: config.clone(),
             shutdown: in_web::live::Shutdown(stopping),
+            // Deliberately not the cookie key: the sealing helpers must
+            // reach for `link_key`, not for whatever key sits nearest.
+            link_key: [11u8; 32],
         })
-        .app_context(in_web::live::LiveWindow(std::time::Duration::from_secs(10)))
         .build();
         Self {
             dir,
@@ -2001,6 +2003,229 @@ async fn share_modal_without_a_directory_keeps_the_typed_address() {
     );
 }
 
+/// The link a person just minted stays visible: creation seals the token
+/// onto its setting row, and the modal's live row and the settings panel's
+/// row both re-derive the full address from it — copy buttons included,
+/// masked value nowhere.
+#[tokio::test]
+async fn created_link_is_revisible_and_copyable_everywhere() {
+    let app = TestApp::build().await;
+    let ada = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "visible.txt", b"visible").await;
+
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&ada),
+            &[("kind", "file"), ("target_id", &file), ("can_download", "1")],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+    let url = format!("http://127.0.0.1:7655/s/{token}");
+
+    // The mint stored the sealed token — ciphertext, not the plaintext —
+    // and the app's link key is what opens it.
+    let link = &app.store.share_links(&owner).await.unwrap()[0];
+    let sealed = app
+        .store
+        .get_setting(&format!("share_token:{}", link.id))
+        .await
+        .unwrap()
+        .expect("no sealed token row after mint");
+    assert_ne!(sealed, token);
+    assert_eq!(
+        in_core::store::secret::open(&[11u8; 32], &sealed).as_deref(),
+        Some(token.as_str())
+    );
+
+    // The modal's live row carries the full address with its copy button.
+    let page = app
+        .get(
+            &format!("/drive?share=file:{file}&created={token}"),
+            Some(&ada),
+        )
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let text = page.text();
+    assert!(
+        text.contains(&format!("value=\"{url}\"")),
+        "no full url in the modal: {text}"
+    );
+    assert!(
+        text.contains("class=\"quiet share-copy\""),
+        "no copy button in the modal: {text}"
+    );
+    assert!(
+        !text.contains("/s/…"),
+        "masked value on a re-visible link: {text}"
+    );
+
+    // The settings panel's row carries the same.
+    let page = app.get("/settings?section=links", Some(&ada)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let text = page.text();
+    assert!(
+        text.contains(&format!("value=\"{url}\"")),
+        "no full url in settings: {text}"
+    );
+    assert!(
+        text.contains("class=\"quiet share-copy\""),
+        "no copy button in settings: {text}"
+    );
+    assert!(
+        text.contains("__inShareCopy"),
+        "no copy script on the links panel: {text}"
+    );
+}
+
+/// Revoking deletes the sealed row too — it is part of the revoke, so a
+/// mint-and-revoke round trip leaves no orphan setting behind.
+#[tokio::test]
+async fn revoke_deletes_the_sealed_token_row() {
+    let app = TestApp::build().await;
+    let ada = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "sealed.txt", b"sealed").await;
+
+    for round in 0..2 {
+        let answer = app
+            .post(
+                "/api/share/link/create",
+                Some(&ada),
+                &[("kind", "file"), ("target_id", &file)],
+            )
+            .await;
+        assert!(answer.accepted(), "create refused: {:?}", answer.location);
+        let id = app.store.share_links(&owner).await.unwrap()[0].id.clone();
+        let key = format!("share_token:{id}");
+        assert!(
+            app.store.get_setting(&key).await.unwrap().is_some(),
+            "no sealed row after mint {round}"
+        );
+
+        let answer = app
+            .post("/api/share/link/revoke", Some(&ada), &[("id", &id)])
+            .await;
+        assert!(answer.accepted(), "revoke refused: {:?}", answer.location);
+        assert!(
+            app.store.get_setting(&key).await.unwrap().is_none(),
+            "sealed row survived the revoke {round}"
+        );
+    }
+}
+
+/// A link minted before the sealing has no row to open: the modal and the
+/// settings panel keep the masked value and carry the carry-forward note
+/// instead of a copy button.
+#[tokio::test]
+async fn legacy_link_stays_masked_with_the_carry_forward_note() {
+    let app = TestApp::build().await;
+    let ada = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "legacy.txt", b"legacy").await;
+    // Minted through the store alone, as the pre-sealing code did it: no
+    // setting row ever comes to be.
+    app.store
+        .create_share_link(&owner, ShareKind::File, &file, false, None, None)
+        .await
+        .unwrap();
+
+    let page = app
+        .get(&format!("/drive?share=file:{file}"), Some(&ada))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let text = page.text();
+    assert!(text.contains("/s/…"), "no masked value: {text}");
+    assert!(
+        text.contains("predates re-viewable addresses"),
+        "no carry-forward note: {text}"
+    );
+    assert!(
+        !text.contains("class=\"quiet share-copy\""),
+        "copy button on a link with no re-derivable address: {text}"
+    );
+
+    let page = app.get("/settings?section=links", Some(&ada)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let text = page.text();
+    assert!(text.contains("/s/…"), "no masked value: {text}");
+    assert!(
+        text.contains("predates re-viewable addresses"),
+        "no carry-forward note: {text}"
+    );
+    assert!(
+        !text.contains("class=\"quiet share-copy\""),
+        "copy button on a link with no re-derivable address: {text}"
+    );
+}
+
+/// Live public links and grants to other people mark their drive rows with
+/// the Shared chip; unmarked siblings carry nothing, and no row carries two.
+#[tokio::test]
+async fn drive_marks_shared_rows() {
+    let app = TestApp::build().await;
+    let ada = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    app.sign_in("sub-ember", "ember@in.test", "Ember").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let linked = file_id(&app, &owner, "linked.txt", b"linked").await;
+    let plain = file_id(&app, &owner, "plain.txt", b"plain").await;
+    let granted = file_id(&app, &owner, "granted.txt", b"granted").await;
+    let answer = app
+        .post(
+            "/api/folder/create",
+            Some(&ada),
+            &[("parent_id", ""), ("name", "Dossier")],
+        )
+        .await;
+    assert!(answer.accepted(), "folder create refused: {:?}", answer.location);
+    let folder = folder_id(&app, &owner, None, "Dossier").await;
+
+    // A live public link onto the file, another onto the folder.
+    for (kind, target) in [("file", linked.as_str()), ("folder", folder.as_str())] {
+        let answer = app
+            .post(
+                "/api/share/link/create",
+                Some(&ada),
+                &[("kind", kind), ("target_id", target)],
+            )
+            .await;
+        assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    }
+    // A grant onto the third file.
+    let ember = app
+        .store
+        .user_by_email("ember@in.test")
+        .await
+        .unwrap()
+        .unwrap();
+    app.store
+        .add_share_user(&owner, ShareKind::File, &granted, &ember.id, true)
+        .await
+        .unwrap();
+
+    let page = app.get("/drive", Some(&ada)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let text = page.text();
+    let chips = text.matches("chip chip-shared").count();
+    assert_eq!(chips, 3, "expected three marked rows: {text}");
+    assert!(
+        text.contains("<span class=\"chip chip-shared\">Shared</span>"),
+        "chip markup changed: {text}"
+    );
+    // The unshared sibling is on the page, but its row carries no mark.
+    assert!(text.contains("plain.txt"), "sibling missing: {text}");
+    let plain_row = text
+        .split("<div class=\"drive-row\">")
+        .find(|row| row.contains("plain.txt"))
+        .expect("no drive row for the unshared sibling");
+    assert!(
+        !plain_row.contains("chip-shared"),
+        "unshared sibling marked: {plain_row}"
+    );
+}
+
 /// View only means preview, no download: the reader sees the media inline
 /// on the viewer page and reads the inline bytes, while `?dl=1` stays dead
 /// and the page never offers the Download link.
@@ -2518,8 +2743,8 @@ async fn share_links_carry_the_configured_base_url() {
         page.text()
     );
 
-    // The modal says the same: the minted row and the live-link
-    // placeholder alike.
+    // The modal says the same — and a sealed link now carries the full
+    // address, leaving no masked placeholder behind.
     let page = app
         .get(
             &format!("/drive?share=file:{file}&created={token}"),
@@ -2534,8 +2759,8 @@ async fn share_links_carry_the_configured_base_url() {
         page.text()
     );
     assert!(
-        page.text().contains("https://files.example.com/s/…"),
-        "modal placeholder showed no domain: {}",
+        !page.text().contains("/s/…"),
+        "modal kept a masked placeholder on a sealed link: {}",
         page.text()
     );
 }
@@ -4474,3 +4699,4 @@ async fn an_empty_folder_says_how_to_fill_it() {
     assert!(body.contains("id=\"upload-form\""), "{body}");
     assert!(body.contains("__inDrop"), "{body}");
 }
+

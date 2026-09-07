@@ -13,10 +13,12 @@
 //!
 //! Every mutation answers the way `board.rs` in iz does: a 303 back to the
 //! page the form was posted from, the refusal (if any) on the redirect's
-//! query. The one exception is link creation, whose plaintext token exists
-//! only at creation: the redirect carries it once as `?created=<token>` so
-//! a browser without script can copy it, and the drive and settings pages
-//! render the copy-once banner off that pair.
+//! query. The one exception is link creation, whose plaintext token is
+//! sealed with the app key onto the `share_token:{id}` setting row and
+//! shown in the redirect's `?created=<token>` pair, so a browser without
+//! script can copy it; the drive and settings pages render the copy-once
+//! banner off that pair, and re-derive the full address for the live-link
+//! rows from the sealed one.
 
 use in_core::store::{File, ShareKind, Store, StoreError, ThumbState, User};
 use in_core::{hash_link_password, hash_share_token, link_password_matches, link_unlock_proof};
@@ -34,7 +36,7 @@ use topcoat::view::view;
 use crate::files::{ViewerKind, entry_chip, media_player, media_player_script, viewer_kind};
 use crate::i18n::{Key, Lang, lang, t};
 use crate::layout::{NavPage, document_shell, topbar, wordmark};
-use crate::server::{Refusal, app, back_to, require_user, share_origin};
+use crate::server::{Refusal, app, back_to, require_user, share_link_url, share_origin};
 
 path_param!(token);
 path_param!(kind);
@@ -212,9 +214,11 @@ struct CreateLinkForm {
     password: Option<String>,
 }
 
-/// Mints a bearer link. The token is shown once — in the redirect's
-/// `?created=` pair, which the drive and settings pages render as the
-/// copy-once banner — and never again; only its hash is stored.
+/// Mints a bearer link. The token rides the redirect's `?created=` pair —
+/// which the drive and settings pages render as the copy-once banner — and
+/// is sealed with the app key onto the `share_token:{id}` setting row, so
+/// the full address can be re-shown later; the row itself keeps only the
+/// token's hash.
 #[route(POST "/api/share/link/create")]
 async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
     let user = match require_user(cx).await {
@@ -259,10 +263,21 @@ async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
         )
         .await;
     match created {
-        Ok(link) => {
+        Ok(minted) => {
+            // The token is sealed onto its own setting row — the same
+            // `in.key` that seals the session cookies — so the share modal
+            // and the settings panel can re-show the full address later. A
+            // failed seal is lived with, not refused: refusing now would
+            // leave a live link whose token the one-time banner never
+            // showed, the worse half of that bargain.
+            let sealed = in_core::store::secret::seal(&app(cx).link_key, &minted.token);
+            let _ = app(cx)
+                .store
+                .set_setting(&format!("share_token:{}", minted.link.id), &sealed)
+                .await;
             let back = back_to(cx, "/settings?section=links");
             let separator = if back.contains('?') { '&' } else { '?' };
-            let location = format!("{back}{separator}created={}", link.token);
+            let location = format!("{back}{separator}created={}", minted.token);
             Ok((StatusCode::SEE_OTHER, [(header::LOCATION, location)]))
         }
         Err(error) => redirect_back(cx, "/settings?section=links", "create", Some(refusal_of(error))),
@@ -297,7 +312,21 @@ async fn revoke_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
         return redirect_back(cx, "/settings?section=links", "revoke", Some(Refusal::NotFound));
     }
     match store.revoke_share_link(&input.id).await {
-        Ok(()) => redirect_back(cx, "/settings?section=links", "revoke", None),
+        Ok(()) => {
+            // The sealed address dies with the link: deleting the row is
+            // part of revoking, not cleanup after it, so a failed delete
+            // reports the revoke as refused. A retry finishes the job —
+            // revoking twice is not an error.
+            match store
+                .delete_setting(&format!("share_token:{}", input.id))
+                .await
+            {
+                Ok(()) => redirect_back(cx, "/settings?section=links", "revoke", None),
+                Err(error) => {
+                    redirect_back(cx, "/settings?section=links", "revoke", Some(refusal_of(error)))
+                }
+            }
+        }
         Err(error) => redirect_back(cx, "/settings?section=links", "revoke", Some(refusal_of(error))),
     }
 }
@@ -1504,6 +1533,10 @@ pub(crate) async fn share_modal(
         </form>
     }
     for link in live.iter().take(1) {
+        // The full address, re-derived from the token the creation sealed
+        // away. A link from before the sealing — or one whose key is gone —
+        // keeps the masked value and carries the carry-forward note.
+        let url = share_link_url(cx, *link).await;
         <div class="member-row">
             <span class="member-name">(t(language, Key::AnyoneWithLink))</span>
             <div class="spacer"></div>
@@ -1514,7 +1547,13 @@ pub(crate) async fn share_modal(
             <span class="field-note">(access_chip(language, link.can_download))</span>
         </div>
         <div class="share-link-row">
-            <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>
+            if let Some(url) = url {
+                <input class="field-input share-link-url" readonly="" value=(url) aria-label=(t(language, Key::ShareLink))>
+                <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
+            } else {
+                <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>
+                <p class="field-note">(t(language, Key::LegacyLinkNote))</p>
+            }
             <form class="pop-row-form" method="post" action="/api/share/link/revoke">
                 <input type="hidden" name="id" value=(link.id.clone())>
                 <button class="quiet quiet-danger" type="submit">(t(language, Key::RevokeLink))</button>
@@ -1529,7 +1568,7 @@ pub(crate) async fn share_modal(
 
 /// The copy button's client half: one delegated listener, idempotent across
 /// the modal's re-renders (the `share-modal-copy` class marks a wired row).
-async fn share_copy_script(cx: &Cx) -> Result {
+pub(crate) async fn share_copy_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
         (function () { \
