@@ -26,8 +26,8 @@ use object_store::{
     GetOptions, GetRange, MultipartUpload, ObjectStore, ObjectStoreExt, PutPayload,
 };
 
-use super::blobs::{BlobError, Blobs};
 use super::FileSpan;
+use super::blobs::{BlobError, Blobs};
 
 /// The part size [`R2Blobs::adopt`] streams up in: 8 MiB, the chunk size the
 /// server fixes for uploads, so the staging side and the bucket side speak
@@ -120,21 +120,38 @@ impl Blobs for R2Blobs {
             return Ok(());
         }
         // The staged file streams up in parts — one PART_SIZE buffer in
-        // memory at a time, never one allocation the file's size. The buffer
-        // is reused per read and copied once into each part's payload, so
-        // the next read cannot overwrite bytes still in flight.
+        // memory at a time, never one allocation the file's size. Reads are
+        // ACCUMULATED until a part is full: a `read` may return short of the
+        // buffer (a regular file usually fills it, but nothing promises it),
+        // and S3 refuses a complete whose non-final parts fall under the
+        // 5 MiB minimum — R2 answers EntityTooSmall, the local fake does
+        // not, so the sizing is made true here rather than trusted to the
+        // filesystem. Only the last part is short, which is the legal shape.
         let mut file = tokio::fs::File::open(staged).await?;
         let mut upload = self.store.put_multipart(&path).await?;
         let attempt = async {
             let mut buf = vec![0u8; PART_SIZE];
+            let mut filled = 0usize;
             loop {
-                let n = tokio::io::AsyncReadExt::read(&mut file, &mut buf).await?;
+                let n = tokio::io::AsyncReadExt::read(&mut file, &mut buf[filled..]).await?;
                 if n == 0 {
+                    if filled > 0 {
+                        // The tail: the one part allowed to be short.
+                        upload
+                            .put_part(PutPayload::from(bytes::Bytes::copy_from_slice(
+                                &buf[..filled],
+                            )))
+                            .await?;
+                    }
                     break;
                 }
-                upload
-                    .put_part(PutPayload::from(bytes::Bytes::copy_from_slice(&buf[..n])))
-                    .await?;
+                filled += n;
+                if filled == PART_SIZE {
+                    upload
+                        .put_part(PutPayload::from(bytes::Bytes::copy_from_slice(&buf)))
+                        .await?;
+                    filled = 0;
+                }
             }
             upload.complete().await?;
             Ok::<(), BlobError>(())
@@ -182,7 +199,10 @@ impl Blobs for R2Blobs {
         }
         let result = match self
             .store
-            .get_opts(&path, GetOptions::default().with_range(Some(GetRange::Bounded(start..end))))
+            .get_opts(
+                &path,
+                GetOptions::default().with_range(Some(GetRange::Bounded(start..end))),
+            )
             .await
         {
             Ok(result) => result,
