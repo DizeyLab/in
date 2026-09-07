@@ -25,5 +25,6 @@ pub use config::{Config, ConfigError, OidcConfig};
 pub use live::{Change, Topic, next_seq};
 #[cfg(feature = "server")]
 pub use store::{
-    ReconcileOptions, Result, Store, StoreError, TursoStore, hash_share_token, reconcile,
+    ReconcileOptions, Result, Store, StoreError, TursoStore, hash_link_password, hash_share_token,
+    link_password_matches, link_unlock_proof, reconcile,
 };

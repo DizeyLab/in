@@ -16,12 +16,13 @@
 //! a browser without script can copy it, and the drive and settings pages
 //! render the copy-once banner off that pair.
 
-use in_core::hash_share_token;
 use in_core::store::{File, ShareKind, Store, StoreError, ThumbState, User};
+use in_core::{hash_link_password, hash_share_token, link_password_matches, link_unlock_proof};
 use serde::Deserialize;
 use time::OffsetDateTime;
 use topcoat::Result;
 use topcoat::context::Cx;
+use topcoat::cookie::{Cookies, cookie, cookies};
 use topcoat::router::content::Form;
 use topcoat::router::request::{headers as request_headers, uri};
 use topcoat::router::response::IntoResponse;
@@ -134,6 +135,15 @@ fn parse_expiry(raw: Option<&str>) -> std::result::Result<Option<OffsetDateTime>
         .ok_or(Refusal::Forbidden)
 }
 
+/// The link password off the form: absent, blank, or all whitespace is no
+/// password — the field is optional, and a blank string nobody typed is
+/// never a secret worth keeping.
+fn form_password(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|password| !password.is_empty())
+        .map(str::to_string)
+}
+
 /// The target the caller must own: present, untrashed, and theirs. Anything
 /// else is not-found — a stranger learns nothing about whose it is.
 async fn owned_target(
@@ -196,6 +206,8 @@ struct CreateLinkForm {
     can_download: Option<String>,
     #[serde(default)]
     expires_in_days: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
 }
 
 /// Mints a bearer link. The token is shown once — in the redirect's
@@ -218,6 +230,19 @@ async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
         Ok(expires_at) => expires_at,
         Err(refusal) => return redirect_back(cx, "/settings", "create", Some(refusal)),
     };
+    // An optional password on the link: a trimmed empty field is no
+    // password at all. Argon2id is CPU-slow on purpose, so the hash runs
+    // off the async path — a hash this cheap would be a hash worth
+    // guessing.
+    let password_hash = match form_password(input.password.as_deref()) {
+        Some(password) => {
+            match tokio::task::spawn_blocking(move || hash_link_password(&password)).await {
+                Ok(Ok(hash)) => Some(hash),
+                _ => return redirect_back(cx, "/settings", "create", Some(Refusal::Unavailable)),
+            }
+        }
+        None => None,
+    };
     let created = app(cx)
         .store
         .create_share_link(
@@ -228,6 +253,7 @@ async fn create_link(cx: &Cx, Form(input): Form<CreateLinkForm>) -> Redirect {
             // box posts `1`; nothing posted must never mint a download.
             parse_flag(input.can_download.as_deref(), false),
             expires_at,
+            password_hash,
         )
         .await;
     match created {
@@ -439,6 +465,19 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
     let Some(link) = link else {
         return dead_link(cx).await.into_response(cx);
     };
+    // A password-protected link answers nothing — card, bytes or thumbnail —
+    // until this browser carries the unlock proof. One check up front gates
+    // every branch below, which is the point: a gate the download route
+    // forgot would not be a gate.
+    if let Some(password_hash) = &link.password_hash {
+        let proof = link_unlock_proof(token, password_hash);
+        let presented = cookies(cx)
+            .get(&link_cookie_name(&link.id))
+            .map(|cookie| cookie.value().to_string());
+        if presented.as_deref() != Some(proof.as_str()) {
+            return password_gate(cx).await.into_response(cx);
+        }
+    }
     let query = shared_query(cx);
     match link.kind {
         ShareKind::File => {
@@ -527,6 +566,106 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
             }
             folder_card(cx, store.as_ref(), &link, &root, &at, token).await
         }
+    }
+}
+
+/// The cookie a unlocked browser carries for one link, named for the link's
+/// own id: two protected links are two gates, not one.
+fn link_cookie_name(link_id: &str) -> String {
+    format!("in_link_{link_id}")
+}
+
+/// The gate a password-protected link shows until the browser carries the
+/// proof. Same public chrome as the cards — no hint of what waits behind
+/// the gate, not even the file's name.
+async fn password_gate(cx: &Cx) -> Result {
+    let language = lang(cx).await;
+    let action = current_path(cx);
+    let wrong = has_flag(uri(cx).query().unwrap_or(""), "wrong");
+    view! {
+        cx =>
+        <main class="scaffold-note">
+            (wordmark(cx).await?)
+            <h1 class="settings-title">(t(language, Key::PasswordProtected))</h1>
+            <p class="field-note">(t(language, Key::PasswordPrompt))</p>
+            if wrong {
+                <p class="field-error" role="alert">(t(language, Key::WrongPassword))</p>
+            }
+            <form class="pop-row-form" method="post" action=(action)>
+                <input class="field-input" type="password" name="password" required="" autocomplete="off" placeholder=(t(language, Key::PasswordLabel)) aria-label=(t(language, Key::PasswordLabel))>
+                <button class="quiet" type="submit">(t(language, Key::Unlock))</button>
+            </form>
+        </main>
+    }
+}
+
+#[derive(Deserialize)]
+struct UnlockForm {
+    #[serde(default)]
+    password: Option<String>,
+}
+
+/// Unlocks a password-protected link: the right password mints the proof
+/// cookie and the visitor is sent on to the page as if the gate had never
+/// been there; anything else is the gate again, the error riding `?wrong=1`.
+/// The whole surface answers a 303 either way, so the response says nothing
+/// about whether the guess was close.
+#[route(POST "/s/{token}")]
+async fn unlock_link(
+    cx: &Cx,
+    Form(input): Form<UnlockForm>,
+) -> topcoat::Result<topcoat::router::response::Response> {
+    let token: &str = path_param::<Token>(cx);
+    let store = app(cx).store;
+    let now = OffsetDateTime::now_utc();
+    let link = store
+        .resolve_share_link(&hash_share_token(token), now)
+        .await
+        .ok()
+        .flatten();
+    let Some(link) = link else {
+        return dead_link(cx).await.into_response(cx);
+    };
+    let Some(password_hash) = link.password_hash else {
+        // Nothing to unlock: the form has no business here. Back to the page.
+        return (
+            StatusCode::SEE_OTHER,
+            [(header::LOCATION, format!("/s/{token}"))],
+        )
+            .into_response(cx);
+    };
+    let candidate = input.password.unwrap_or_default();
+    // The proof needs the hash after the verify, so the verify gets a copy.
+    let hash_for_verify = password_hash.clone();
+    let matches =
+        tokio::task::spawn_blocking(move || link_password_matches(&hash_for_verify, &candidate))
+            .await
+            .unwrap_or(false);
+    if matches {
+        let proof = link_unlock_proof(token, &password_hash);
+        // Secure mirrors the session cookie: on when the identity provider
+        // itself is reached over https, so a plain-http rehearsal stays
+        // plain.
+        let secure = app(cx).config.oidc.issuer.starts_with("https://");
+        let name = link_cookie_name(&link.id);
+        cookies(cx).add(cookie! {
+            name = proof;
+            Path = "/s";
+            HttpOnly;
+            SameSite = Lax;
+            Secure = secure
+        });
+        (
+            StatusCode::SEE_OTHER,
+            [(header::LOCATION, format!("/s/{token}"))],
+        )
+            .into_response(cx)
+    } else {
+        (
+            StatusCode::SEE_OTHER,
+            [(header::LOCATION, format!("/s/{token}?wrong=1"))],
+        )
+            .into_response(cx)
     }
 }
 
@@ -1241,6 +1380,7 @@ pub(crate) async fn share_modal(
                 <option value="0">(t(language, Key::ViewOnly))</option>
             </select>
             <input class="field-input share-expiry" type="number" name="expires_in_days" min="1" step="1" placeholder=(t(language, Key::ExpiresInDays)) aria-label=(t(language, Key::ExpiresInDays))>
+            <input class="field-input share-expiry" type="password" name="password" autocomplete="new-password" placeholder=(t(language, Key::PasswordOptional)) aria-label=(t(language, Key::PasswordOptional))>
             <button class="quiet" type="submit">(t(language, Key::CreateLink))</button>
         </form>
     }
@@ -1249,6 +1389,9 @@ pub(crate) async fn share_modal(
             <span class="member-name">(t(language, Key::AnyoneWithLink))</span>
             <div class="spacer"></div>
             <span class="field-note">(expiry_line(language, link.expires_at))</span>
+            if link.password_hash.is_some() {
+                <span class="field-note">"▪ "(t(language, Key::PasswordLabel))</span>
+            }
             <span class="field-note">(access_chip(language, link.can_download))</span>
         </div>
         <div class="share-link-row">

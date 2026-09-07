@@ -26,7 +26,9 @@ pub mod turso_store;
 #[cfg(feature = "server")]
 pub use reconcile::{ReconcileOptions, reconcile};
 #[cfg(feature = "server")]
-pub use turso_store::{TursoStore, hash_share_token};
+pub use turso_store::{
+    TursoStore, hash_link_password, hash_share_token, link_password_matches, link_unlock_proof,
+};
 
 /// What the store can fail with. A caller that needs to distinguish "no such
 /// row" from "someone else's row" gets [`StoreError::NotFound`] for the
@@ -216,7 +218,10 @@ impl ShareKind {
 }
 
 /// A public share link. The row holds only the token's hash; the plaintext
-/// is shown once at creation and never again.
+/// is shown once at creation and never again. An owner may also give the
+/// link a password: the row then keeps the password's Argon2id PHC string,
+/// and a visitor answers the gate once per browser — the proof lives in a
+/// cookie, never in a server-side session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShareLink {
     pub id: String,
@@ -228,6 +233,7 @@ pub struct ShareLink {
     pub created_at: OffsetDateTime,
     pub expires_at: Option<OffsetDateTime>,
     pub revoked_at: Option<OffsetDateTime>,
+    pub password_hash: Option<String>,
 }
 
 impl ShareLink {
@@ -528,7 +534,10 @@ pub trait Store: 'static + Send + Sync {
 
     /// Creates a public link onto one file or folder. Returns the row and the
     /// plaintext token — the only moment the token exists outside its hash.
-    /// A target of another owner is [`StoreError::CrossOwner`].
+    /// `password_hash` is stored as given: the caller hashes the password
+    /// with [`hash_link_password`], because Argon2id is CPU-slow on
+    /// purpose and only the caller knows whether the hash belongs off the
+    /// async path. A target of another owner is [`StoreError::CrossOwner`].
     async fn create_share_link(
         &self,
         created_by: &str,
@@ -536,6 +545,7 @@ pub trait Store: 'static + Send + Sync {
         target_id: &str,
         can_download: bool,
         expires_at: Option<OffsetDateTime>,
+        password_hash: Option<String>,
     ) -> Result<CreatedLink>;
 
     /// Revokes a link. The row stays, so a dead link reads as revoked rather

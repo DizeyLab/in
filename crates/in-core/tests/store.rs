@@ -636,7 +636,7 @@ async fn share_links_open_until_revoked_or_expired() {
 
     let created = scratch
         .store
-        .create_share_link(&user.id, ShareKind::File, &file.id, true, None)
+        .create_share_link(&user.id, ShareKind::File, &file.id, true, None, None)
         .await
         .unwrap();
     // The token is shown once; the row keeps only the hash.
@@ -669,6 +669,7 @@ async fn share_links_open_until_revoked_or_expired() {
             &file.id,
             false,
             Some(now - Duration::hours(1)),
+            None,
         )
         .await
         .unwrap();
@@ -677,6 +678,160 @@ async fn share_links_open_until_revoked_or_expired() {
     assert_eq!(scratch.store.share_links(&user.id).await.unwrap().len(), 2);
 }
 
+#[tokio::test]
+async fn a_password_link_round_trips_its_hash() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let file = scratch
+        .store
+        .insert_file(&user.id, None, "locked", b"data")
+        .await
+        .unwrap();
+    let now = OffsetDateTime::now_utc();
+
+    let hash = in_core::hash_link_password("open sesame").unwrap();
+    let created = scratch
+        .store
+        .create_share_link(
+            &user.id,
+            ShareKind::File,
+            &file.id,
+            true,
+            None,
+            Some(hash.clone()),
+        )
+        .await
+        .unwrap();
+
+    // The hash is really on disk: a fresh database carries the column, and
+    // the row reads back through a second connection the way it sits.
+    let raw = raw_conn(&scratch).await;
+    let mut rows = raw
+        .query(
+            "SELECT password_hash FROM share_link WHERE id = ?1",
+            turso::params![created.link.id.as_str()],
+        )
+        .await
+        .unwrap();
+    let stored = rows.next().await.unwrap().unwrap();
+    assert_eq!(stored.get::<String>(0).unwrap(), hash);
+
+    // Resolving hands the hash back, so the route can mint the proof
+    // without a second read.
+    let resolved = scratch
+        .store
+        .resolve_share_link(&created.link.token_hash, now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.password_hash.as_deref(), Some(hash.as_str()));
+
+    // The check answers the right password and refuses the rest — and a
+    // malformed hash refuses without panicking, the way a gate must.
+    assert!(in_core::link_password_matches(&hash, "open sesame"));
+    assert!(!in_core::link_password_matches(&hash, "Open Sesame"));
+    assert!(!in_core::link_password_matches(&hash, ""));
+    assert!(!in_core::link_password_matches(
+        "not a phc string",
+        "open sesame"
+    ));
+
+    // The proof binds the token to the stored hash: same pair, same proof;
+    // any other pair — another link's, or a re-keyed hash — answers
+    // differently.
+    assert_eq!(
+        in_core::link_unlock_proof(&created.token, &hash),
+        in_core::link_unlock_proof(&created.token, &hash)
+    );
+    assert_ne!(
+        in_core::link_unlock_proof(&created.token, &hash),
+        in_core::link_unlock_proof("another-token", &hash)
+    );
+}
+#[tokio::test]
+async fn a_pre_password_link_reconciles_to_no_password_and_a_new_one_survives_reopen() {
+    // A database built from 0001+0004 — the shape In ran with before links
+    // could carry passwords — has a share_link table with no
+    // `password_hash` column. Opening it with the current code reconciles
+    // it onto the declared schema: the link row is carried across and wears
+    // NULL, opening like it always did, and a password minted after the
+    // rebuild survives the next boot whole.
+    let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("in.db").to_string_lossy().into_owned();
+    {
+        let db = turso::Builder::new_local(&path).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute_batch(include_str!("../migrations/0001_init.sql"))
+            .await
+            .unwrap();
+        conn.execute_batch(include_str!("../migrations/0002_ui.sql"))
+            .await
+            .unwrap();
+        conn.execute_batch(include_str!("../migrations/0003_preferences.sql"))
+            .await
+            .unwrap();
+        conn.execute_batch(include_str!("../migrations/0004_downloads_settings.sql"))
+            .await
+            .unwrap();
+        conn.execute(
+            "INSERT INTO user (id, oidc_sub, email, display_name, admin, disabled, \
+             quota_bytes, used_bytes, created_at, last_seen_at) \
+             VALUES ('u-old', 'sub-old', 'old@example.com', 'Old', 1, 0, 100, 0, \
+             '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file (id, owner_id, folder_id, name, mime, size_bytes, \
+             thumb_state, created_at, updated_at, deleted_at) \
+             VALUES ('f-old', 'u-old', NULL, 'old.txt', 'text/plain', 3, 'none', \
+             '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', NULL)",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO share_link (id, token_hash, kind, target_id, created_by, \
+             can_download, created_at, expires_at, revoked_at) \
+             VALUES ('l-old', 'hash-old', 'file', 'f-old', 'u-old', 1, \
+             '2026-08-01T00:00:00Z', NULL, NULL)",
+            (),
+        )
+        .await
+        .unwrap();
+    }
+    let storage = dir.join("storage");
+    let store = TursoStore::open(&path, Some(&storage)).await.unwrap();
+    let links = store.share_links("u-old").await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].id, "l-old");
+    assert_eq!(links[0].password_hash, None);
+
+    // A password minted after the rebuild is an ordinary row: the next open
+    // sees the declared shape, changes nothing, and the hash survives.
+    let hash = in_core::hash_link_password("open sesame").unwrap();
+    store
+        .create_share_link(
+            "u-old",
+            ShareKind::File,
+            "f-old",
+            true,
+            None,
+            Some(hash.clone()),
+        )
+        .await
+        .unwrap();
+    drop(store);
+    let store = TursoStore::open(&path, Some(&storage)).await.unwrap();
+    let links = store.share_links("u-old").await.unwrap();
+    assert_eq!(links.len(), 2);
+    let carried = links.iter().find(|link| link.id != "l-old").unwrap();
+    assert_eq!(carried.password_hash.as_deref(), Some(hash.as_str()));
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
 #[tokio::test]
 async fn per_person_shares_gate_visibility() {
     let scratch = Scratch::open().await;

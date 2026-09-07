@@ -207,7 +207,9 @@ struct TableMap {
 /// `ui`, `theme` and `language`, and the file table one for
 /// `download_count`: a database old enough to predate a column starts on the
 /// schema's own default rather than on an empty string, which no writer
-/// would ever store and no reader would ever honour. Tables the old database
+/// would ever store and no reader would ever honour. The share-link table
+/// carries `password_hash` the same way, backfilled with NULL — a link from
+/// before passwords opens like it always did. Tables the old database
 /// predates entirely (today: `setting`) map column-for-column and are
 /// skipped at copy time, starting empty.
 fn build_maps(
@@ -215,6 +217,7 @@ fn build_maps(
     old_has_theme: bool,
     old_has_language: bool,
     old_has_download_count: bool,
+    old_has_password_hash: bool,
 ) -> Vec<TableMap> {
     vec![
         TableMap {
@@ -285,17 +288,25 @@ fn build_maps(
         },
         TableMap {
             name: "share_link",
-            columns: old_cols(&[
-                "id",
-                "token_hash",
-                "kind",
-                "target_id",
-                "created_by",
-                "can_download",
-                "created_at",
-                "expires_at",
-                "revoked_at",
-            ]),
+            columns: {
+                let mut columns = old_cols(&[
+                    "id",
+                    "token_hash",
+                    "kind",
+                    "target_id",
+                    "created_by",
+                    "can_download",
+                    "created_at",
+                    "expires_at",
+                    "revoked_at",
+                ]);
+                columns.push(if old_has_password_hash {
+                    ("password_hash", "old.password_hash".into())
+                } else {
+                    ("password_hash", "NULL".into())
+                });
+                columns
+            },
         },
         TableMap {
             name: "share_user",
@@ -412,11 +423,13 @@ async fn copy_data(old_conn: &Connection, new_conn: &Connection, path: &str) -> 
     let old_has_theme = old_has_column(old_conn, "user", "theme").await?;
     let old_has_language = old_has_column(old_conn, "user", "language").await?;
     let old_has_download_count = old_has_column(old_conn, "file", "download_count").await?;
+    let old_has_password_hash = old_has_column(old_conn, "share_link", "password_hash").await?;
     let maps = build_maps(
         old_has_ui,
         old_has_theme,
         old_has_language,
         old_has_download_count,
+        old_has_password_hash,
     );
     validate_maps(new_conn, &maps).await?;
 

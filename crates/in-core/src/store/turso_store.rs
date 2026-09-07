@@ -38,8 +38,7 @@ const THUMB_SOURCE_CAP: u64 = 64 * 1024 * 1024;
 const USER_COLUMNS: &str = "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, ui, created_at, last_seen_at, theme, language";
 const FOLDER_COLUMNS: &str = "id, owner_id, parent_id, name, created_at, deleted_at";
 const FILE_COLUMNS: &str = "id, owner_id, folder_id, name, mime, size_bytes, thumb_state, created_at, updated_at, deleted_at, download_count";
-const LINK_COLUMNS: &str =
-    "id, token_hash, kind, target_id, created_by, can_download, created_at, expires_at, revoked_at";
+const LINK_COLUMNS: &str = "id, token_hash, kind, target_id, created_by, can_download, created_at, expires_at, revoked_at, password_hash";
 const SESSION_COLUMNS: &str = "id, owner_id, folder_id, name, size_bytes, chunk_size, received_bytes, state, created_at, expires_at";
 
 pub struct TursoStore {
@@ -544,6 +543,63 @@ pub fn hash_share_token(token: &str) -> String {
     use sha2::Digest as _;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(token.as_bytes()))
 }
+
+/// Argon2id's cost, mirrored from im's account hasher: 19 MiB of memory,
+/// two iterations, one lane. Slow enough that a guess costs real work,
+/// cheap enough that unlocking a link never reads as an outage.
+pub const ARGON2_MEMORY_KIB: u32 = 19 * 1024;
+pub const ARGON2_ITERATIONS: u32 = 2;
+pub const ARGON2_PARALLELISM: u32 = 1;
+
+fn link_argon2() -> argon2::Argon2<'static> {
+    let params = argon2::Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_ITERATIONS,
+        ARGON2_PARALLELISM,
+        None,
+    )
+    .expect("argon2 parameters are constants and are in range");
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+}
+
+/// Hashes a link password into a PHC string, salt included. The parameters
+/// ride in the string itself, so raising the cost later does not lock
+/// holders of the link out.
+///
+/// CPU-slow on purpose: the caller owns the async boundary and runs this
+/// under `tokio::task::spawn_blocking`.
+pub fn hash_link_password(password: &str) -> Result<String> {
+    use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
+    let salt = SaltString::generate(&mut OsRng);
+    link_argon2()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|e| StoreError::Backend(format!("password hashing failed: {e}")))
+}
+
+/// Checks a candidate password against a stored PHC string. A malformed
+/// hash answers false — a gate that could panic would be a gate an attacker
+/// could aim.
+pub fn link_password_matches(phc: &str, candidate: &str) -> bool {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    match PasswordHash::new(phc) {
+        Ok(parsed) => link_argon2()
+            .verify_password(candidate.as_bytes(), &parsed)
+            .is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// The unlock proof a visitor's browser carries as `in_link_{id}`: the
+/// token and the stored hash bound together, so a proof stolen from one
+/// link is worthless on another and a re-keyed password voids every cookie
+/// minted before. Same encode as [`hash_share_token`].
+pub fn link_unlock_proof(token: &str, password_hash: &str) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let bound = format!("{token}:{password_hash}");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(bound.as_bytes()))
+}
 /// zero-byte upload has no chunks; its finish assembles the empty file.
 fn chunk_count(size_bytes: u64) -> u64 {
     if size_bytes == 0 {
@@ -807,6 +863,7 @@ fn link_from(row: &Row) -> Result<ShareLink> {
         created_at: parse_stamp(&text(row, 6)?)?,
         expires_at: opt_stamp(row, 7)?,
         revoked_at: opt_stamp(row, 8)?,
+        password_hash: opt_text(row, 9)?,
     })
 }
 
@@ -1951,6 +2008,7 @@ impl Store for TursoStore {
         target_id: &str,
         can_download: bool,
         expires_at: Option<OffsetDateTime>,
+        password_hash: Option<String>,
     ) -> Result<CreatedLink> {
         // The sharer must own a live target: a stranger's, a missing, or a
         // trashed target refuses before any token exists to leak.
@@ -1967,8 +2025,8 @@ impl Store for TursoStore {
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT INTO share_link (id, token_hash, kind, target_id, created_by, \
-             can_download, created_at, expires_at, revoked_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+             can_download, created_at, expires_at, revoked_at, password_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9)",
             params![
                 id.clone(),
                 token_hash,
@@ -1977,7 +2035,8 @@ impl Store for TursoStore {
                 created_by,
                 if can_download { 1 } else { 0 },
                 now,
-                expires
+                expires,
+                password_hash,
             ],
         )
         .await

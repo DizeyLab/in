@@ -1,0 +1,11 @@
+-- Optional passwords on public share links.
+--
+-- `share_link.password_hash` holds an Argon2id PHC string when the owner
+-- gave the link a password, and NULL when the link opens like any other.
+-- A visitor who answers the gate keeps their proof in a cookie named for
+-- the link's own id — the row needs no session of its own, and a link
+-- without a password behaves exactly as it did before this column.
+-- Databases already carrying the column never see this file applied
+-- piecemeal — they reach the declared shape through `in reconcile`, whose
+-- copy map carries the column across.
+ALTER TABLE share_link ADD COLUMN password_hash TEXT;

@@ -591,6 +591,7 @@ struct Answer {
     status: StatusCode,
     body: String,
     location: Option<String>,
+    set_cookie: Option<String>,
 }
 
 impl Answer {
@@ -601,10 +602,16 @@ impl Answer {
             .get(header::LOCATION)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        let set_cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         Answer {
             status,
             location,
+            set_cookie,
             body: String::from_utf8(bytes.to_vec()).unwrap(),
         }
     }
@@ -1518,7 +1525,7 @@ async fn expired_link_is_dead() {
     let past = time::OffsetDateTime::now_utc() - time::Duration::days(1);
     let created = app
         .store
-        .create_share_link(&owner, ShareKind::File, &file, true, Some(past))
+        .create_share_link(&owner, ShareKind::File, &file, true, Some(past), None)
         .await
         .unwrap();
     let page = app.get(&format!("/s/{}", created.token), None).await;
@@ -1560,6 +1567,126 @@ async fn view_only_link_download_is_dead_card() {
         blocked.text().contains("no longer works"),
         "view-only download showed: {}",
         blocked.text()
+    );
+}
+
+/// A password-protected link gates everything — card, download bytes —
+/// until the browser answers the gate once; the proof then lives in the
+/// link's own cookie. A wrong password answers the gate with the error and
+/// mints no cookie, a revoked link dead-ends even an unlocked browser, and
+/// none of the gate pages ever name the file.
+#[tokio::test]
+async fn password_link_gates_until_unlocked() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "private.txt", b"behind the gate").await;
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+                ("password", "open sesame"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+    let link = &app.store.share_links(&owner).await.unwrap()[0];
+    assert!(link.password_hash.is_some());
+
+    // The gate: no cookie, no name, no bytes — on the card and on `?dl=1`
+    // both.
+    let gate = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(gate.status, StatusCode::OK, "{}", gate.text());
+    assert!(
+        !gate.text().contains("private.txt"),
+        "gate leaked the file name: {}",
+        gate.text()
+    );
+    assert!(gate.text().contains("type=\"password\""), "{}", gate.text());
+    let gated_bytes = app.get(&format!("/s/{token}?dl=1"), None).await;
+    assert_eq!(gated_bytes.status, StatusCode::OK);
+    assert!(
+        !gated_bytes.text().contains("behind the gate"),
+        "gate leaked the bytes: {}",
+        gated_bytes.text()
+    );
+
+    // A wrong password: back to the gate with the error on the query, and
+    // no cookie minted.
+    let wrong = app
+        .post(&format!("/s/{token}"), None, &[("password", "wrong one")])
+        .await;
+    assert_eq!(wrong.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        wrong.location.as_deref(),
+        Some(&format!("/s/{token}?wrong=1")[..])
+    );
+    assert!(
+        wrong.set_cookie.is_none(),
+        "a wrong password minted a cookie: {:?}",
+        wrong.set_cookie
+    );
+    let wrong_gate = app.get(&format!("/s/{token}?wrong=1"), None).await;
+    assert_eq!(wrong_gate.status, StatusCode::OK);
+    assert!(
+        wrong_gate.text().contains("Wrong password."),
+        "the gate did not say what went wrong: {}",
+        wrong_gate.text()
+    );
+
+    // The right password: a 303 back to the page, carrying the proof cookie
+    // named for the link, scoped to /s, not marked Secure on a plain-http
+    // rehearsal.
+    let right = app
+        .post(&format!("/s/{token}"), None, &[("password", "open sesame")])
+        .await;
+    assert_eq!(right.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        right.location.as_deref(),
+        Some(format!("/s/{token}").as_str())
+    );
+    let proof = in_core::link_unlock_proof(&token, link.password_hash.as_deref().unwrap());
+    let cookie_pair = format!("in_link_{}={proof}", link.id);
+    let set_cookie = right.set_cookie.as_deref().expect("unlock set no cookie");
+    assert!(
+        set_cookie.contains(&cookie_pair),
+        "cookie did not carry the proof: {set_cookie}"
+    );
+    assert!(set_cookie.contains("Path=/s"), "{set_cookie}");
+    assert!(set_cookie.contains("HttpOnly"), "{set_cookie}");
+    assert!(set_cookie.contains("SameSite=Lax"), "{set_cookie}");
+    assert!(!set_cookie.contains("Secure"), "{set_cookie}");
+
+    // The unlocked browser sees the card, and the download serves bytes.
+    let unlocked = app.get(&format!("/s/{token}"), Some(&cookie_pair)).await;
+    assert_eq!(unlocked.status, StatusCode::OK, "{}", unlocked.text());
+    assert!(
+        unlocked.text().contains("private.txt"),
+        "unlocked card showed nothing: {}",
+        unlocked.text()
+    );
+    let served = app
+        .get(&format!("/s/{token}?dl=1"), Some(&cookie_pair))
+        .await;
+    assert_eq!(served.bytes, b"behind the gate");
+
+    // Revocation dead-ends even the unlocked browser.
+    let id = link.id.clone();
+    let answer = app
+        .post("/api/share/link/revoke", Some(&admin), &[("id", &id)])
+        .await;
+    assert!(answer.accepted(), "revoke refused: {:?}", answer.location);
+    let gone = app.get(&format!("/s/{token}"), Some(&cookie_pair)).await;
+    assert_eq!(gone.status, StatusCode::OK);
+    assert!(
+        gone.text().contains("no longer works"),
+        "revoked link showed: {}",
+        gone.text()
     );
 }
 

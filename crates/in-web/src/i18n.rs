@@ -220,6 +220,13 @@ pub enum Key {
     PublicLinkLabel,
     AnyoneWithLink,
     NotActive,
+    // Link passwords (LinkPassword owns this block).
+    PasswordOptional,
+    PasswordProtected,
+    PasswordPrompt,
+    PasswordLabel,
+    WrongPassword,
+    Unlock,
 }
 
 pub fn t(lang: Lang, key: Key) -> &'static str {
@@ -366,6 +373,12 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             CreateLink => "Create link",
             ExpiresInDays => "Expires in days",
             NoShares => "Not shared with anyone yet.",
+            PasswordOptional => "Password (optional)",
+            PasswordProtected => "This link is locked",
+            PasswordPrompt => "Enter the password to open this link.",
+            PasswordLabel => "Password",
+            WrongPassword => "Wrong password.",
+            Unlock => "Unlock",
         },
         Lang::Tr => match key {
             Cancel => "Vazgeç",
@@ -508,6 +521,12 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             NotActive => "Etkin değil",
             ExpiresInDays => "Bitiş (gün)",
             NoShares => "Henüz kimseyle paylaşılmadı.",
+            PasswordOptional => "Parola (isteğe bağlı)",
+            PasswordProtected => "Bu bağlantı kilitli",
+            PasswordPrompt => "Bağlantıyı açmak için parolayı girin.",
+            PasswordLabel => "Parola",
+            WrongPassword => "Parola hatalı.",
+            Unlock => "Kilidi aç",
         },
     }
 }
