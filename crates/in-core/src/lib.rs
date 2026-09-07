@@ -20,7 +20,7 @@ pub use store::{
 };
 
 #[cfg(feature = "server")]
-pub use config::{Config, ConfigError, OidcConfig, ServiceConfig};
+pub use config::{Config, ConfigError, OidcConfig};
 #[cfg(feature = "server")]
 pub use live::{Change, Topic, next_seq};
 #[cfg(feature = "server")]

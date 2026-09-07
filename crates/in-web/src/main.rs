@@ -5,6 +5,7 @@ use in_core::store::{Store, TursoStore};
 use in_core::store::r2::R2Blobs;
 use topcoat::Result;
 use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
+use topcoat::context::Cx;
 use topcoat::cookie::RouterBuilderCookieExt;
 use topcoat::router::{BodyLimit, Router, RouterBuilderDiscoverExt, route};
 
@@ -212,6 +213,17 @@ async fn main() {
         logout_back: config.public_origin(),
     };
 
+    // The suite the switcher's wordmarks link to is im's to keep: im's
+    // admin panel owns the list and `/family` serves it to registered
+    // apps. This mirror is refreshed on the beat, first pass right away so
+    // a fresh deploy shows the trio at boot; an im that does not answer —
+    // down, restarting, mid-deploy — costs one log line and nothing else:
+    // the last list filed keeps the switcher alive until the next beat.
+    tokio::spawn(family_sync(
+        store.clone(),
+        in_client::InClient::new(oidc.clone()),
+    ));
+
     // Told when the process is stopping, so the live streams end instead of
     // being waited out. See `in_web::live::Shutdown`.
     let (stop, stopping) = tokio::sync::watch::channel(false);
@@ -238,6 +250,9 @@ async fn main() {
         shutdown: in_web::live::Shutdown(stopping),
         link_key: cookie_key,
     })
+    .app_context(in_client::LogoutBack(Arc::new(|cx: &Cx| {
+        Box::pin(async move { Some(in_web::server::share_origin(cx).await) })
+    })))
     .app_context(in_web::live::LiveWindow(std::time::Duration::from_secs(
         live_seconds,
     )))
@@ -308,5 +323,33 @@ async fn shutdown_signal() {
     tokio::select! {
         () = interrupt => {}
         () = terminate => {}
+    }
+}
+
+/// How often the suite list is re-fetched from im. Short enough that a
+/// service the admin adds over there shows up here before anyone goes
+/// looking for its wordmark, long enough that the two are not talking
+/// about it constantly.
+const FAMILY_SECONDS: u64 = 300;
+
+/// Keeps the switcher's list a mirror of im's family: fetched as this app
+/// (Basic client credentials) and filed as a JSON string under the
+/// `family` setting — the one row the switcher reads, so a beat that
+/// answers simply replaces what is filed. Runs the whole life of the
+/// process; nothing here is worth keeping alive past shutdown.
+async fn family_sync(store: Arc<dyn in_core::store::Store>, client: in_client::InClient) {
+    loop {
+        match client.family().await {
+            Some(family) => match serde_json::to_string(&family) {
+                Ok(json) => {
+                    if let Err(problem) = store.set_setting("family", &json).await {
+                        eprintln!("family sync: {problem}");
+                    }
+                }
+                Err(problem) => eprintln!("family sync: {problem}"),
+            },
+            None => eprintln!("family sync: im did not answer; keeping the list there is"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(FAMILY_SECONDS)).await;
     }
 }

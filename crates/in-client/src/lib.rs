@@ -11,6 +11,9 @@
 //! against im; when im has revoked the central session, the rotation is
 //! refused and the app sees a signed-out user.
 
+use std::pin::Pin;
+use std::sync::Arc;
+
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as b64url;
 use chacha20poly1305::aead::Aead;
@@ -44,12 +47,16 @@ pub struct Config {
     pub cookie_name: String,
     /// 32 bytes, generated once per app and kept out of the repository.
     pub cookie_key: [u8; 32],
-    /// The app's public origin — `base_url` when the file sets one, else
-    /// the address bound, derived the way the app derives its public links.
-    /// After clearing the local cookie, `/auth/logout` walks the browser on
-    /// to im's `/logout?back={logout_back}/`, so the central session ends
-    /// and the person lands back at this app's front door. Empty is legal —
-    /// im catches a stray `back` on its own `/` — but a real app sets it.
+    /// The app's public origin as boot knew it — `base_url` when the file
+    /// sets one, else the address bound. After clearing the local cookie,
+    /// `/auth/logout` walks the browser on to im's `/logout?back={origin}/`,
+    /// so the central session ends and the person lands back at this app's
+    /// front door. This is the fallback: an app that keeps its public
+    /// address live mounts a [`LogoutBack`] beside [`mount`], and the
+    /// sign-out asks that first — per exit, so an address changed while the
+    /// process runs is honored without a restart. Empty is legal — im
+    /// catches a stray `back` on its own `/` — but a real app sets one of
+    /// the two.
     pub logout_back: String,
 }
 
@@ -87,6 +94,18 @@ impl InClient {
         }
     }
 }
+
+/// Where im's `/logout` should send the browser after a sign-out that
+/// started here: the app's public origin as it is *now*, asked per
+/// sign-out. Apps that keep the address live — a database setting an
+/// admin edits while the process runs — mount one of these as an app
+/// context beside [`mount`]; absent, or answering `None`, the sign-out
+/// falls back to [`Config::logout_back`], the origin as boot knew it.
+pub struct LogoutBack(pub Arc<dyn for<'a> Fn(&'a Cx) -> BackAnswer<'a> + Send + Sync>);
+
+/// The boxed answer a [`LogoutBack`] resolver returns: the origin, or
+/// `None` to fall back to [`Config::logout_back`].
+pub type BackAnswer<'a> = Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>>;
 
 /// Registers the client state on the router. The routes themselves register
 /// through `discover()` — call it as usual.
@@ -187,6 +206,49 @@ pub async fn directory(cx: &Cx) -> Option<Vec<DirectoryMember>> {
         return None;
     }
     reply.json().await.ok()
+}
+
+/// One entry of im's family list: the word the switcher renders, the
+/// human label for its title, and the service's base URL — the shape im's
+/// `/family` answers with.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceJson {
+    pub key: String,
+    pub name: String,
+    pub url: String,
+}
+
+impl InClient {
+    /// The fetch behind [`family`], on the state directly — the shape the
+    /// background mirror takes, which holds its own `InClient` and has no
+    /// request context to borrow.
+    pub async fn family(&self) -> Option<Vec<ServiceJson>> {
+        let reply = self
+            .http
+            .get(format!("{}/family", self.config.issuer))
+            .basic_auth(&self.config.client_id, Some(&self.config.client_secret))
+            .send()
+            .await
+            .ok()?;
+        if !reply.status().is_success() {
+            return None;
+        }
+        reply.json().await.ok()
+    }
+}
+
+/// im's family list — the suite the signed-in chrome's switcher renders —
+/// fetched as the app (`Authorization: Basic base64(client_id ":"
+/// client_secret)`, the same credentials the photo route and the
+/// introspection round-trip take) from `{issuer}/family`. Only a
+/// registered app gets an answer at all.
+///
+/// `None` on anything that is not a readable list — a refused pair, a
+/// dropped connection, a body that is not the array — because a missed
+/// beat must never look like an empty suite: the caller keeps the list it
+/// has and asks again next time.
+pub async fn family(cx: &Cx) -> Option<Vec<ServiceJson>> {
+    client(cx).family().await
 }
 
 /// Path of im's RFC 7662 introspection endpoint, relative to the issuer.
@@ -544,19 +606,27 @@ async fn in_callback(cx: &Cx) -> Result<Response, topcoat::Error> {
 /// Signs out of the app, then out of im: the local cookie is cleared
 /// first — this app forgets the person even if the central hop never
 /// lands — and the browser is sent on to im's `/logout` with this app's
-/// public address as `back`. im revokes the central session and returns
-/// them here. The hop is a top-level navigation (the user menu's sign-out
-/// link carries `data-hard`), never a fetch.
+/// public address as `back`. The address is resolved here, per sign-out:
+/// a [`LogoutBack`] mounted beside `mount` answers first, so an origin
+/// changed while the process runs is honored on the very next exit, and
+/// `Config::logout_back` — the origin as boot knew it — stands in when
+/// nothing live answers. im revokes the central session and returns the
+/// browser to wherever `back` named. The hop is a top-level navigation
+/// (the user menu's sign-out link carries `data-hard`), never a fetch.
 #[route(GET "/auth/logout")]
 async fn in_logout(cx: &Cx) -> Result<Response, topcoat::Error> {
     let state = client(cx);
     clear_cookie(cx, &state.config.cookie_name);
+    let back = match try_app_context::<LogoutBack>(cx) {
+        Some(ask) => (ask.0)(cx).await.unwrap_or_else(|| state.config.logout_back.clone()),
+        None => state.config.logout_back.clone(),
+    };
     see(
         cx,
         &format!(
             "{}/logout?back={}",
             state.config.issuer,
-            urlencoded(&format!("{}/", state.config.logout_back)),
+            urlencoded(&format!("{}/", back)),
         ),
     )
 }

@@ -20,30 +20,12 @@ base_url = ""
 # created on boot. Not written here: it defaults to beside the database file,
 # and the boot completes this file with the value it resolved.
 
-# The suite the signed-in chrome's switcher links to: one [[services]]
-# table per app — `key` the word the switcher renders, `name` its hover
-# label, `url` the address the link points at (scheme and host, no
-# trailing slash). In names itself among them so the switcher can mark
-# where the reader is. Production sets these on the deploy side as
-# https://<key>.dizey.sh; this committed copy carries only the
-# development addresses.
+# The suite the switcher's wordmarks link to is im's to keep — im's admin
+# panel owns the list, and In fetches it from im and keeps a mirror. This
+# file no longer names the suite; a `[[services]]` block left behind by an
+# older file is reported as ignored and then passed over.
 # Where drive files, thumbnails and staged upload chunks live as files, created on boot.
 storage = "/home/tahinli/Documents/Code/Rust/in/storage"
-
-[[services]]
-key = "in"
-name = "Files"
-url = "http://127.0.0.1:7655"
-
-[[services]]
-key = "im"
-name = "Account"
-url = "http://127.0.0.1:7650"
-
-[[services]]
-key = "iz"
-name = "Board"
-url = "http://127.0.0.1:7654"
 
 [oidc]
 # The provider that signs people in. Required: no default is guessed.

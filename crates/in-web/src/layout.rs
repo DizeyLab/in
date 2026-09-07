@@ -221,23 +221,34 @@ pub async fn topbar_nav(cx: &Cx, active: NavPage, lang: Lang) -> Result {
     }
 }
 
-/// This app's key in the `[[services]]` list: the entry matching it is the
-/// one marked as where the reader already is.
+/// This app's key in the family list: the entry matching it is the one
+/// marked as where the reader already is.
 const SELF_KEY: &str = "in";
 
-/// The topbar's suite switcher: every `[[services]]` entry as its wordmark,
-/// beside the page nav, the current one marked. Rendered only when the file
-/// names a suite — a file silent about the others keeps the chrome exactly
-/// as it has always been. The links point at the services' own addresses,
-/// so the cross-origin ones navigate the browser natively; this app's entry
-/// lands where a soft-nav swap would have gone anyway.
+/// The suite list as im keeps it, mirrored into the `setting` store under
+/// `family` by the background fetch that started at boot. A list that is
+/// absent, or not parseable JSON, reads as empty — a suite nobody told
+/// this app about keeps the chrome exactly as it has always been.
+async fn family_of(cx: &Cx) -> Vec<in_client::ServiceJson> {
+    match app(cx).store.get_setting("family").await {
+        Ok(Some(raw)) => serde_json::from_str(&raw).unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// The topbar's suite switcher: every family entry as its wordmark,
+/// beside the page nav, the current one marked. Rendered only when a
+/// mirrored list is actually there. The links point at the services' own
+/// addresses, so the cross-origin ones navigate the browser natively;
+/// this app's entry lands where a soft-nav swap would have gone anyway.
 async fn app_switcher(cx: &Cx) -> Result {
-    let empty = app(cx).config.services.is_empty();
+    let family = family_of(cx).await;
+    let empty = family.is_empty();
     view! {
         cx =>
         if !empty {
             <nav class="app-switcher">
-                for service in &app(cx).config.services {
+                for service in &family {
                     <a
                         class=(if service.key == SELF_KEY {
                             "app-switcher-mark app-switcher-here"

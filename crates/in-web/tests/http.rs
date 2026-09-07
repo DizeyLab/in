@@ -9,7 +9,7 @@
 //!
 //! New HTTP tests belong in this file rather than a new `tests/*.rs`: one
 //! test binary links and runs once.
-use in_core::{Config, OidcConfig, ServiceConfig};
+use in_core::{Config, OidcConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -18,6 +18,7 @@ use http::{HeaderValue, Request, StatusCode, header};
 use in_core::store::{ShareKind, Store, TursoStore};
 use in_web::server::App;
 use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
+use topcoat::context::Cx;
 use topcoat::cookie::RouterBuilderCookieExt;
 use topcoat::router::{Body, BodyLimit, Router, RouterBuilderDiscoverExt, to_bytes};
 use ulid::Ulid;
@@ -315,13 +316,15 @@ struct TestApp {
 
 impl TestApp {
     async fn build() -> Self {
-        Self::build_with(None, Vec::new()).await
+        Self::build_with(None, &[]).await
     }
 
     /// The same workspace with a config `base_url` set — the key that
-    /// decides where the public links are told to point — and optional
-    /// `[[services]]` entries, the suite the topbar's switcher links to.
-    async fn build_with(base_url: Option<&str>, services: Vec<ServiceConfig>) -> Self {
+    /// decides where the public links are told to point — and an optional
+    /// family list, the suite the topbar's switcher links to, seeded the
+    /// way the background fetch files it: one JSON row in the `setting`
+    /// store under `family`.
+    async fn build_with(base_url: Option<&str>, family: &[(&str, &str, &str)]) -> Self {
         let dir = std::env::temp_dir().join(format!("in-http-{}", Ulid::new()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("in.db");
@@ -331,6 +334,20 @@ impl TestApp {
                 .await
                 .unwrap(),
         );
+        if !family.is_empty() {
+            let list: Vec<in_client::ServiceJson> = family
+                .iter()
+                .map(|(key, name, url)| in_client::ServiceJson {
+                    key: key.to_string(),
+                    name: name.to_string(),
+                    url: url.to_string(),
+                })
+                .collect();
+            store
+                .set_setting("family", &serde_json::to_string(&list).unwrap())
+                .await
+                .unwrap();
+        }
         let fake = FakeIm::spawn().await;
         let client = in_client::Config {
             issuer: fake.url(),
@@ -349,7 +366,6 @@ impl TestApp {
             purge_after_days: 30,
             default_quota_bytes: 10 * 1024 * 1024 * 1024,
             base_url: base_url.map(str::to_string),
-            services,
             r2: None,
             oidc: OidcConfig {
                 issuer: fake.url(),
@@ -381,6 +397,9 @@ impl TestApp {
             // reach for `link_key`, not for whatever key sits nearest.
             link_key: [11u8; 32],
         })
+        .app_context(in_client::LogoutBack(Arc::new(|cx: &Cx| {
+            Box::pin(async move { Some(in_web::server::share_origin(cx).await) })
+        })))
         .build();
         Self {
             dir,
@@ -2696,8 +2715,8 @@ async fn topbar_nav_has_no_search_link() {
 }
 
 #[tokio::test]
-async fn the_suite_switcher_renders_when_services_are_set() {
-    // No [[services]]: no switcher — the chrome as it always was.
+async fn the_suite_switcher_renders_when_the_family_is_mirrored() {
+    // No mirrored family: no switcher — the chrome as it always was.
     let bare = TestApp::build().await;
     let cookie = bare
         .sign_in("sub-switch0", "switch0@in.test", "Switch0")
@@ -2708,22 +2727,10 @@ async fn the_suite_switcher_renders_when_services_are_set() {
 
     let app = TestApp::build_with(
         None,
-        vec![
-            ServiceConfig {
-                key: "in".into(),
-                name: "Files".into(),
-                url: "https://files.example.com".into(),
-            },
-            ServiceConfig {
-                key: "im".into(),
-                name: "Account".into(),
-                url: "https://id.example.com".into(),
-            },
-            ServiceConfig {
-                key: "iz".into(),
-                name: "Board".into(),
-                url: "https://board.example.com".into(),
-            },
+        &[
+            ("in", "Files", "https://files.example.com"),
+            ("im", "Account", "https://id.example.com"),
+            ("iz", "Board", "https://board.example.com"),
         ],
     )
     .await;
@@ -2742,6 +2749,41 @@ async fn the_suite_switcher_renders_when_services_are_set() {
     assert!(nav.contains("title=\"Files\""), "{nav}");
     // Exactly the app the reader is already in is marked.
     assert_eq!(nav.matches("aria-current").count(), 1, "{nav}");
+}
+
+/// The `back` the sign-out hands im is read per sign-out: an origin saved
+/// on the running install — the `base_url` setting the settings panel
+/// writes — takes effect on the very next exit, without a restart. Until
+/// one is saved, the chain falls back to the config origin, which here is
+/// the address bound.
+#[tokio::test]
+async fn logout_back_follows_the_origin_saved_at_runtime() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-logout", "logout@in.test", "Logout").await;
+
+    // Nothing saved: the listen-derived origin carries the back address.
+    let page = app.get("/auth/logout", Some(&cookie)).await;
+    let expected = format!(
+        "{}/logout?back=http%3A%2F%2F127.0.0.1%3A7655%2F",
+        app.client.issuer
+    );
+    assert_eq!(page.location.as_deref(), Some(expected.as_str()));
+
+    // The admin saves a public origin; the next sign-out hands im that.
+    let answer = app
+        .post(
+            "/api/settings/base_url",
+            Some(&cookie),
+            &[("base_url", "https://files.example.com")],
+        )
+        .await;
+    assert!(answer.accepted(), "base_url refused: {:?}", answer.location);
+    let page = app.get("/auth/logout", Some(&cookie)).await;
+    let expected = format!(
+        "{}/logout?back=https%3A%2F%2Ffiles.example.com%2F",
+        app.client.issuer
+    );
+    assert_eq!(page.location.as_deref(), Some(expected.as_str()));
 }
 
 // -- settings ---------------------------------------------------------------
@@ -2842,7 +2884,7 @@ async fn settings_quota_and_disable_guards() {
 /// `base_url`.
 #[tokio::test]
 async fn share_links_carry_the_configured_base_url() {
-    let app = TestApp::build_with(Some("https://files.example.com"), Vec::new()).await;
+    let app = TestApp::build_with(Some("https://files.example.com"), &[]).await;
     let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
     let owner = owner_of(&app, "sub-admin").await;
     let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
@@ -3169,7 +3211,7 @@ async fn server_address_setting_drives_share_links() {
 /// file sets one: the setting wins only while it is non-empty.
 #[tokio::test]
 async fn cleared_setting_falls_back_to_the_configured_base_url() {
-    let app = TestApp::build_with(Some("https://cfg.example.com"), Vec::new()).await;
+    let app = TestApp::build_with(Some("https://cfg.example.com"), &[]).await;
     let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
     let owner = owner_of(&app, "sub-admin").await;
     let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
