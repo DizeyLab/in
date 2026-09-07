@@ -529,14 +529,8 @@ async fn view_file(cx: &Cx) -> Result {
                 if matches!(viewer_kind(&file.mime), Some(ViewerKind::Image | ViewerKind::Video | ViewerKind::Audio)) || may_download {
                     match viewer_kind(&file.mime) {
                         Some(ViewerKind::Image) => <img class="viewer-media" src=(src.clone()) alt=(file.name.clone()) draggable="false">,
-                        Some(ViewerKind::Video) => <div class="media-player media-player-video">
-                            <video class="media-el viewer-video" src=(src.clone()) preload="metadata"></video>
-                            <div class="media-controls">(media_controls(cx, language, file.name.clone(), true).await?)</div>
-                        </div>,
-                        Some(ViewerKind::Audio) => <div class="media-player">
-                            (media_controls(cx, language, file.name.clone(), false).await?)
-                            <audio class="media-el" src=(src.clone()) preload="metadata"></audio>
-                        </div>,
+                        Some(ViewerKind::Video) => (media_player(cx, language, file.name.clone(), src.clone(), true).await?),
+                        Some(ViewerKind::Audio) => (media_player(cx, language, file.name.clone(), src.clone(), false).await?),
                         Some(ViewerKind::Pdf) => <object class="viewer-media viewer-pdf" data=(src.clone()) type="application/pdf">
                             <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
                         </object>,
@@ -576,6 +570,38 @@ async fn view_file(cx: &Cx) -> Result {
     }
 }
 
+/// The house player for one inline media element, shared verbatim by the
+/// signed-in viewer (`/view/{id}`, fed by `/file/{id}`) and the public
+/// share card (`/s/{token}`, fed by `?media=1`): the controls-less
+/// `<video>`/`<audio>` and the bar that drives it, wired by
+/// [`media_player_script`]. `video` picks the stacked video layout —
+/// picture with the bar beneath — over the audio bar.
+pub(crate) async fn media_player(
+    cx: &Cx,
+    language: crate::i18n::Lang,
+    name: String,
+    src: String,
+    video: bool,
+) -> Result {
+    if video {
+        view! {
+            cx =>
+            <div class="media-player media-player-video">
+                <video class="media-el viewer-video" src=(src) preload="metadata"></video>
+                <div class="media-controls">(media_controls(cx, language, name, true).await?)</div>
+            </div>
+        }
+    } else {
+        view! {
+            cx =>
+            <div class="media-player">
+                (media_controls(cx, language, name, false).await?)
+                <audio class="media-el" src=(src) preload="metadata"></audio>
+            </div>
+        }
+    }
+}
+
 /// The one controls bar both media players draw: play toggle, clock, seek,
 /// volume (mute + level), a speed cycle, and fullscreen on video. The script
 /// below wires it by class, so the bar stays markup-only.
@@ -612,7 +638,7 @@ async fn media_controls(cx: &Cx, language: crate::i18n::Lang, name: String, vide
 /// (ported from iz's audio player, one player for both media kinds). Wiring
 /// is per-player and idempotent (`data-wired`), re-run on `in:wire` so a
 /// player arriving in a soft page swap still gets its controls.
-async fn media_player_script(cx: &Cx) -> Result {
+pub(crate) async fn media_player_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
         (function () { \

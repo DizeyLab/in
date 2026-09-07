@@ -84,9 +84,13 @@ impl TursoStore {
     /// when `None`.
     ///
     /// The boot, in order: create the storage tree, rebuild a stale database
-    /// before any long-lived handle opens it, migrate an empty one, abort
-    /// upload sessions past their expiry, and sweep files no row names.
-    /// Trash is never purged here — see the note on the sweep below.
+    /// before any long-lived handle opens it, and migrate an empty one.
+    /// That is all a first request needs. The hygiene sweeps — aborting
+    /// expired upload sessions, deleting files no row names — wait in
+    /// [`Self::boot_sweeps`], which the server runs as a background task
+    /// the moment `open` returns: a restart is not a reason to make the
+    /// first page wait behind a walk of every file on disk. Trash is never
+    /// purged here — see the note below.
     pub async fn open(database: &str, storage: Option<&std::path::Path>) -> Result<Self> {
         let storage_buf;
         let storage: &std::path::Path = match storage {
@@ -142,15 +146,10 @@ impl TursoStore {
             storage: storage.to_path_buf(),
         };
         store.migrate(database).await?;
-        store
-            .prune_expired_uploads(OffsetDateTime::now_utc())
-            .await?;
-        // Trash is deliberately NOT purged here: the age cutoff is the
-        // deployment's `purge_after_days`, which this signature never sees.
-        // The server calls `purge_expired` with its configured cutoff right
-        // after opening; this boot only aborts expired uploads and sweeps
-        // files no row names.
-        store.sweep_orphan_files().await?;
+        // Trash is deliberately NOT swept here either: the age cutoff is
+        // the deployment's `purge_after_days`, which this signature never
+        // sees. The server purges with its configured cutoff in the same
+        // background pass that runs [`Self::boot_sweeps`].
         // The file may have been rebuilt from a backup; its permissions and
         // any transient WAL/SHM siblings should still be private.
         if database != ":memory:" {
@@ -161,6 +160,20 @@ impl TursoStore {
         Ok(store)
     }
 
+    /// The hygiene a boot owes but a first request does not wait for:
+    /// abort upload sessions past their expiry, then sweep files no row
+    /// names. The server runs this as a background task the moment `open`
+    /// returns, so the port answers while it works; a request racing the
+    /// sweep still sees a consistent store, because the sweep's deletions
+    /// are decided under the database's write lock (see
+    /// [`Self::sweep_orphan_files`]).
+    pub async fn boot_sweeps(&self) -> Result<()> {
+        self.prune_expired_uploads(OffsetDateTime::now_utc())
+            .await?;
+        self.sweep_orphan_files().await
+    }
+
+
     /// Sets the storage tree against the database, once per boot. The
     /// database and the tree are two halves of one state, and a crash between
     /// a row write and its file write — either order — leaves exactly one
@@ -170,15 +183,29 @@ impl TursoStore {
     /// deleting the row would turn a lost file into a lost fact — the row is
     /// still what screens list, and a re-upload replaces it cleanly.
     async fn sweep_orphan_files(&self) -> Result<()> {
-        let conn = self.conn.lock().await;
-        let files = known_ids(&conn, "SELECT id FROM file").await?;
-        let thumbs = known_ids(&conn, "SELECT id FROM file WHERE thumb_state = 'ready'").await?;
+        // The whole pass — the id reads and the directory walks — holds the
+        // database's write lock. A writer lands a new file while holding
+        // that same lock (the bytes go down before the row, inside one
+        // IMMEDIATE transaction), so a file the walk cannot name was either
+        // written entirely before this lock was taken — and then its row is
+        // in the id set — or is written entirely after the lock is released.
+        // A sweep that could run between a file's bytes and its row would
+        // delete an upload the server had already accepted; while the sweeps
+        // ran inside `open`, before any request could arrive, the boot order
+        // made that impossible, and this lock is what keeps it impossible
+        // now that the server answers while the sweep runs.
+        let mut conn = self.tx_conn().await?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await
+            .map_err(backend)?;
+        let files = known_ids(&tx, "SELECT id FROM file").await?;
+        let thumbs = known_ids(&tx, "SELECT id FROM file WHERE thumb_state = 'ready'").await?;
         let sessions = known_ids(
-            &conn,
+            &tx,
             "SELECT id FROM upload_session WHERE state = 'active'",
         )
         .await?;
-        drop(conn);
         for (dir, known, kind) in [
             (self.storage.join(FILES_DIR), &files, "file"),
             (self.storage.join(THUMBS_DIR), &thumbs, "thumbnail"),
@@ -237,6 +264,9 @@ impl TursoStore {
                 );
             }
         }
+        // Nothing was written through the transaction: it exists to hold
+        // the write lock across the walk, and committing it ends the pass.
+        tx.commit().await.map_err(backend)?;
         Ok(())
     }
 

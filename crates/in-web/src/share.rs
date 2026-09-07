@@ -4,9 +4,11 @@
 //! file or folder (`can_download`, optional expiry in days; only the token
 //! hash is stored). `POST /api/share/user/add|remove` grants and revokes
 //! named users the same way. `GET /s/{token}` is public — no auth —
-//! rendering the viewer page, the download only when `can_download` allows,
-//! and the stored webp preview on `?thumb=1` regardless of the flag; a spent,
-//! expired or revoked token answers the dead card, never a stack.
+//! rendering the viewer page in the document shell, the download only when
+//! `can_download` allows, the stored webp preview on `?thumb=1` regardless
+//! of the flag, and the card's `<video>`/`<audio>` player feed on
+//! `?media=1` for the video and audio kinds; a spent, expired or revoked
+//! token answers the dead card, never a stack.
 //! `GET /shared` lists what others shared with the reader.
 //!
 //! Every mutation answers the way `board.rs` in iz does: a 303 back to the
@@ -29,9 +31,9 @@ use topcoat::router::response::IntoResponse;
 use topcoat::router::{HeaderName, StatusCode, header, page, path_param, query_params, route};
 use topcoat::view::view;
 
-use crate::files::entry_chip;
+use crate::files::{ViewerKind, entry_chip, media_player, media_player_script, viewer_kind};
 use crate::i18n::{Key, Lang, lang, t};
-use crate::layout::{NavPage, topbar, wordmark};
+use crate::layout::{NavPage, document_shell, topbar, wordmark};
 use crate::server::{Refusal, app, back_to, require_user};
 
 path_param!(token);
@@ -405,13 +407,15 @@ async fn remove_share(cx: &Cx, Form(input): Form<ShareUserForm>) -> Redirect {
 }
 
 /// The public viewer's query: which folder is browsed, which file is named,
-/// whether the bytes (rather than the card) are wanted, and whether the
-/// stored webp preview is wanted — the preview a view-only link grants.
+/// whether the bytes (rather than the card) are wanted, whether the stored
+/// webp preview is wanted — the preview a view-only link grants — and
+/// whether the inline media stream the card's player draws from is wanted.
 struct SharedQuery {
     folder: Option<String>,
     file: Option<String>,
     dl: bool,
     thumb: bool,
+    media: bool,
 }
 
 /// The query off the request's own URI. Unparseable pairs are ignored —
@@ -423,6 +427,7 @@ fn shared_query(cx: &Cx) -> SharedQuery {
         file: query_value(query, "file"),
         dl: has_flag(query, "dl"),
         thumb: has_flag(query, "thumb"),
+        media: has_flag(query, "media"),
     }
 }
 
@@ -433,25 +438,38 @@ fn has_flag(query: &str, key: &str) -> bool {
         .any(|pair| pair == key || pair.starts_with(&format!("{key}=")))
 }
 
+/// A public page in the document shell. `#[page]` pairs its layouts at
+/// build time, but this route's query asks for raw bytes (`?dl=1`,
+/// `?thumb=1`, `?media=1`) that a page-shaped answer cannot carry, so the
+/// `/s` surface stays a `#[route]` and wraps its views itself — in
+/// `document_shell`, the same shell every `#[page]` under `/` wears, never
+/// a hand-copied head.
+async fn public_page(cx: &Cx, page: Result) -> topcoat::Result<topcoat::router::response::Response> {
+    Ok(document_shell(cx, page).await?.into_response(cx)?)
+}
+
 /// The dead card: a spent, expired, revoked or never-real token, a trashed
 /// target, or a download the link may not open. One answer for all of them —
 /// a stranger learns nothing about which tokens exist.
-async fn dead_link(cx: &Cx) -> Result {
+async fn dead_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response> {
     let language = lang(cx).await;
-    view! {
+    let page = view! {
         cx =>
         <main class="scaffold-note">
             (wordmark(cx).await?)
             <p>(Refusal::ShareRevoked.message_in(language))</p>
             <p><a href="/">(t(language, Key::BackToDrive))</a></p>
         </main>
-    }
+    };
+    public_page(cx, page).await
 }
-
 /// The public viewer. No auth: the token in the path is the whole
 /// credential. A file target renders its card (and its bytes on `?dl=1`
 /// when the link may download); a folder target renders the listing of the
-/// browsed folder, downloads gated per file on the same flag.
+/// browsed folder, downloads gated per file on the same flag. The card's
+/// player streams `?media=1` regardless of the flag — preview is what a
+/// view-only link grants — for the video and audio kinds the signed-in
+/// viewer plays inline.
 #[route(GET "/s/{token}")]
 async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response> {
     let token: &str = path_param::<Token>(cx);
@@ -463,7 +481,7 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
         .ok()
         .flatten();
     let Some(link) = link else {
-        return dead_link(cx).await.into_response(cx);
+        return dead_link(cx).await;
     };
     // A password-protected link answers nothing — card, bytes or thumbnail —
     // until this browser carries the unlock proof. One check up front gates
@@ -475,7 +493,7 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
             .get(&link_cookie_name(&link.id))
             .map(|cookie| cookie.value().to_string());
         if presented.as_deref() != Some(proof.as_str()) {
-            return password_gate(cx).await.into_response(cx);
+            return password_gate(cx).await;
         }
     }
     let query = shared_query(cx);
@@ -486,10 +504,10 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
                 .await
                 .map_err(|_| Refusal::Unavailable);
             let Ok(Some(file)) = file else {
-                return dead_link(cx).await.into_response(cx);
+                return dead_link(cx).await;
             };
             if file.deleted_at.is_some() {
-                return dead_link(cx).await.into_response(cx);
+                return dead_link(cx).await;
             }
             if query.dl {
                 return download_bytes(
@@ -500,6 +518,17 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
                     &file.name,
                     &file.mime,
                     link.can_download,
+                )
+                .await;
+            }
+            if query.media {
+                return media_bytes(
+                    cx,
+                    store.as_ref(),
+                    &file.id,
+                    file.size_bytes,
+                    &file.name,
+                    &file.mime,
                 )
                 .await;
             }
@@ -514,28 +543,28 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
                 .await
                 .map_err(|_| Refusal::Unavailable);
             let Ok(Some(root)) = root else {
-                return dead_link(cx).await.into_response(cx);
+                return dead_link(cx).await;
             };
             if root.deleted_at.is_some() {
-                return dead_link(cx).await.into_response(cx);
+                return dead_link(cx).await;
             }
             let at = query.folder.as_deref().unwrap_or(&root.id).to_string();
             if !under_target(store.as_ref(), &root.owner_id, &root.id, &at).await {
-                return dead_link(cx).await.into_response(cx);
+                return dead_link(cx).await;
             }
             if query.dl {
                 let Some(file_id) = query.file.as_deref() else {
-                    return dead_link(cx).await.into_response(cx);
+                    return dead_link(cx).await;
                 };
                 let file = store.file(file_id).await.map_err(|_| Refusal::Unavailable);
                 let Ok(Some(file)) = file else {
-                    return dead_link(cx).await.into_response(cx);
+                    return dead_link(cx).await;
                 };
                 if file.deleted_at.is_some()
                     || file.owner_id != root.owner_id
                     || file.folder_id.as_deref() != Some(at.as_str())
                 {
-                    return dead_link(cx).await.into_response(cx);
+                    return dead_link(cx).await;
                 }
                 return download_bytes(
                     cx,
@@ -548,19 +577,43 @@ async fn shared_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Resp
                 )
                 .await;
             }
-            if query.thumb {
+            if query.media {
                 let Some(file_id) = query.file.as_deref() else {
-                    return dead_link(cx).await.into_response(cx);
+                    return dead_link(cx).await;
                 };
                 let file = store.file(file_id).await.map_err(|_| Refusal::Unavailable);
                 let Ok(Some(file)) = file else {
-                    return dead_link(cx).await.into_response(cx);
+                    return dead_link(cx).await;
                 };
                 if file.deleted_at.is_some()
                     || file.owner_id != root.owner_id
                     || file.folder_id.as_deref() != Some(at.as_str())
                 {
-                    return dead_link(cx).await.into_response(cx);
+                    return dead_link(cx).await;
+                }
+                return media_bytes(
+                    cx,
+                    store.as_ref(),
+                    &file.id,
+                    file.size_bytes,
+                    &file.name,
+                    &file.mime,
+                )
+                .await;
+            }
+            if query.thumb {
+                let Some(file_id) = query.file.as_deref() else {
+                    return dead_link(cx).await;
+                };
+                let file = store.file(file_id).await.map_err(|_| Refusal::Unavailable);
+                let Ok(Some(file)) = file else {
+                    return dead_link(cx).await;
+                };
+                if file.deleted_at.is_some()
+                    || file.owner_id != root.owner_id
+                    || file.folder_id.as_deref() != Some(at.as_str())
+                {
+                    return dead_link(cx).await;
                 }
                 return public_thumb(cx, store.as_ref(), &file.id).await;
             }
@@ -578,11 +631,11 @@ fn link_cookie_name(link_id: &str) -> String {
 /// The gate a password-protected link shows until the browser carries the
 /// proof. Same public chrome as the cards — no hint of what waits behind
 /// the gate, not even the file's name.
-async fn password_gate(cx: &Cx) -> Result {
+async fn password_gate(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response> {
     let language = lang(cx).await;
     let action = current_path(cx);
     let wrong = has_flag(uri(cx).query().unwrap_or(""), "wrong");
-    view! {
+    let page = view! {
         cx =>
         <main class="scaffold-note">
             (wordmark(cx).await?)
@@ -596,7 +649,8 @@ async fn password_gate(cx: &Cx) -> Result {
                 <button class="quiet" type="submit">(t(language, Key::Unlock))</button>
             </form>
         </main>
-    }
+    };
+    public_page(cx, page).await
 }
 
 #[derive(Deserialize)]
@@ -624,7 +678,7 @@ async fn unlock_link(
         .ok()
         .flatten();
     let Some(link) = link else {
-        return dead_link(cx).await.into_response(cx);
+        return dead_link(cx).await;
     };
     let Some(password_hash) = link.password_hash else {
         // Nothing to unlock: the form has no business here. Back to the page.
@@ -686,7 +740,7 @@ async fn download_bytes(
     use topcoat::router::response::IntoResponse;
     use topcoat::router::{HeaderMap, HeaderValue};
     if !can_download {
-        return dead_link(cx).await.into_response(cx);
+        return dead_link(cx).await;
     }
     // A fetch counts once: a full fetch, or a range resuming from byte 0.
     // A mid-file chunk is the same view going on, not a new one — the way
@@ -716,7 +770,58 @@ async fn download_bytes(
     let Some(parts) =
         crate::files::bytes_response(store, file_id, size_bytes, range, headers).await
     else {
-        return dead_link(cx).await.into_response(cx);
+        return dead_link(cx).await;
+    };
+    Ok(parts.into_response(cx)?)
+}
+
+/// The inline media stream behind a public link: the bytes the card's
+/// `<video>`/`<audio>` player draws from, through
+/// [`crate::files::bytes_response`] — a range reads only its span, the way
+/// every byte route here serves. Only the kinds the signed-in viewer plays
+/// through their native elements answer: preview is what a view-only link
+/// grants, but a document's bytes (pdf, text) would leak through the same
+/// inline fetch, so anything else — and anything unservable — is the dead
+/// card, like every other answer on this surface. Never an attachment, and
+/// never counted as a download: a view is not a download.
+async fn media_bytes(
+    cx: &Cx,
+    store: &dyn Store,
+    file_id: &str,
+    size_bytes: u64,
+    name: &str,
+    mime: &str,
+) -> topcoat::Result<topcoat::router::response::Response> {
+    use topcoat::router::response::IntoResponse;
+    use topcoat::router::{HeaderMap, HeaderValue};
+    if !matches!(
+        viewer_kind(mime),
+        Some(ViewerKind::Video | ViewerKind::Audio)
+    ) {
+        return dead_link(cx).await;
+    }
+    let range = request_headers(cx)
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(mime) {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    let disposition = format!("inline; filename=\"{}\"", safe_name(name));
+    if let Ok(value) = HeaderValue::from_str(&disposition) {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    // Safari refuses to play a media element without a `206` reply to its
+    // own `Range` probe; the signed-in byte route declares the same.
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+    let Some(parts) =
+        crate::files::bytes_response(store, file_id, size_bytes, range, headers).await
+    else {
+        return dead_link(cx).await;
     };
     Ok(parts.into_response(cx)?)
 }
@@ -749,7 +854,7 @@ async fn public_thumb(
     use topcoat::router::response::IntoResponse;
     use topcoat::router::{HeaderMap, HeaderValue};
     let Ok(Some(bytes)) = store.thumb_bytes(file_id).await else {
-        return dead_link(cx).await.into_response(cx);
+        return dead_link(cx).await;
     };
     let etag = format!("\"{:x}\"", crate::files::fnv1a(&bytes));
     let mut headers = HeaderMap::new();
@@ -786,7 +891,11 @@ fn safe_name(name: &str) -> String {
 }
 
 /// A shared file's card: its name, size and type, an image preview off the
-/// public thumbnail route, and the download while the link allows it.
+/// public thumbnail route, the video/audio kinds through the house player
+/// itself — [`crate::files::media_player`], the one markup + bar + script
+/// the signed-in viewer renders, its classes (`media-player`, `media-el`,
+/// `viewer-video`) verbatim, the stream off the public `?media=1` route —
+/// and the download while the link allows it.
 async fn file_card(
     cx: &Cx,
     link: &in_core::store::ShareLink,
@@ -795,7 +904,9 @@ async fn file_card(
     let language = lang(cx).await;
     let preview = file.mime.starts_with("image/");
     let token_path = current_path(cx);
-    view! {
+    let media = viewer_kind(&file.mime);
+    let media_src = format!("{token_path}?media=1");
+    let page = view! {
         cx =>
         <main class="scaffold-note">
             (wordmark(cx).await?)
@@ -803,6 +914,10 @@ async fn file_card(
             <p class="field-note">(format!("{} · {}", file.mime.clone(), crate::settings::human_bytes(file.size_bytes)))</p>
             if preview {
                 <img src=(format!("{token_path}?thumb=1")) alt=(file.name.clone())>
+            } else if matches!(media, Some(ViewerKind::Video)) {
+                (media_player(cx, language, file.name.clone(), media_src.clone(), true).await?)
+            } else if matches!(media, Some(ViewerKind::Audio)) {
+                (media_player(cx, language, file.name.clone(), media_src.clone(), false).await?)
             } else {
                 <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
             }
@@ -812,8 +927,9 @@ async fn file_card(
                 <p class="field-note">(t(language, Key::ViewOnly))</p>
             }
         </main>
-    }
-    .into_response(cx)
+        (media_player_script(cx).await?)
+    };
+    public_page(cx, page).await
 }
 
 /// One file's chip on the public card: the link's own thumbnail where one
@@ -874,7 +990,7 @@ async fn folder_card(
     let language = lang(cx).await;
     let here = store.folder(at).await?;
     let Some(here) = here else {
-        return dead_link(cx).await.into_response(cx);
+        return dead_link(cx).await;
     };
     let listing = store.list_children(&root.owner_id, Some(at)).await?;
     let base = format!("/s/{token}");
@@ -882,7 +998,7 @@ async fn folder_card(
     rows.extend(listing.folders.iter().map(PublicEntry::Folder));
     rows.extend(listing.files.iter().map(PublicEntry::File));
     rows.sort_by(|a, b| a.name().to_lowercase().cmp(&b.name().to_lowercase()));
-    view! {
+    let page = view! {
         cx =>
         (wordmark(cx).await?)
         <main class="settings-stage stage-wide">
@@ -914,8 +1030,8 @@ async fn folder_card(
                 </div>
             </section>
         </main>
-    }
-    .into_response(cx)
+    };
+    public_page(cx, page).await
 }
 
 /// The request's own path, without its query: the download links the public
@@ -1225,7 +1341,6 @@ pub(crate) async fn share_modal(
     target_id: &str,
     close_href: &str,
     created: Option<String>,
-    origin: &str,
 ) -> Result<Option<topcoat::view::View>> {
     let Some(kind) = parse_kind(kind_raw) else {
         return Ok(None);
@@ -1235,6 +1350,9 @@ pub(crate) async fn share_modal(
         Err(_) => return Ok(None),
     };
     let language = lang(cx).await;
+    // The links this modal shows carry the public origin — the configured
+    // `base_url` when the deployment names one, the bound address otherwise.
+    let origin = app(cx).config.public_origin();
     let store = app(cx).store.clone();
     // The owned, live target: present, untrashed, and theirs. Anything else
     // opens nothing — a stranger learns not even whose it is.

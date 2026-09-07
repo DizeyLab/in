@@ -60,6 +60,10 @@ live_seconds = 300
 purge_after_days = 30
 # The quota a newly provisioned account starts on, in bytes. 10 GiB.
 default_quota_bytes = 10737418240
+# The base of the share links In hands out. Set it when In answers on a
+# different address than it binds — a domain, or a proxy in front. Left
+# empty, links follow the listen address.
+base_url = ""
 # Where drive files, thumbnails and staged upload chunks live as files,
 # created on boot. Not written here: it defaults to beside the database file,
 # and the boot completes this file with the value it resolved.
@@ -140,6 +144,15 @@ const OPTIONAL_KEYS: &[(&str, &str)] = &[
             "default_quota_bytes = 10737418240\n"
         ),
     ),
+    (
+        "base_url",
+        concat!(
+            "# The base of the share links In hands out. Set it when In answers on a\n",
+            "# different address than it binds — a domain, or a proxy in front. Left\n",
+            "# empty, links follow the listen address.\n",
+            "base_url = \"\"\n"
+        ),
+    ),
 ];
 
 /// The `[oidc]` table of `config/in.toml`, before the values are checked.
@@ -166,6 +179,7 @@ struct Toml {
     live_seconds: Option<u64>,
     purge_after_days: Option<u32>,
     default_quota_bytes: Option<u64>,
+    base_url: Option<String>,
     oidc: Option<OidcToml>,
     #[serde(flatten)]
     other: std::collections::BTreeMap<String, toml::Value>,
@@ -206,6 +220,10 @@ pub struct Config {
     pub purge_after_days: u32,
     /// The quota a newly provisioned account starts on, in bytes.
     pub default_quota_bytes: u64,
+    /// The origin the public links carry — share links and the copy-once
+    /// banners that mint them — when the file sets one. `None` follows the
+    /// address bound.
+    pub base_url: Option<String>,
     /// The OIDC provider In trusts.
     pub oidc: OidcConfig,
     /// Keys the file sets that nothing here reads, in the order the file
@@ -335,6 +353,31 @@ impl Config {
         let purge_after_days = toml.purge_after_days.unwrap_or(DEFAULT_PURGE_AFTER_DAYS);
         let default_quota_bytes = toml.default_quota_bytes.unwrap_or(DEFAULT_QUOTA_BYTES);
 
+        // The origin public links carry. It has to be joinable to a link —
+        // scheme and host, no trailing slash — because the link is built as
+        // `{base_url}/s/{token}`; a value that would make that join a lie
+        // (`iz.sh`, `https://iz.sh/`) is refused rather than quietly patched,
+        // like every key here.
+        let base_url = value(toml.base_url);
+        if let Some(base) = &base_url {
+            if !base.starts_with("http://") && !base.starts_with("https://") {
+                return Err(ConfigError::Invalid {
+                    key: "base_url",
+                    why: format!(
+                        "{base:?} names no scheme — an origin like https://files.example.com is what links are built from"
+                    ),
+                });
+            }
+            if base.ends_with('/') {
+                return Err(ConfigError::Invalid {
+                    key: "base_url",
+                    why: format!(
+                        "{base:?} ends in a slash — set the bare origin; In joins the /s/ path itself"
+                    ),
+                });
+            }
+        }
+
         let oidc_toml = toml.oidc.ok_or(ConfigError::Missing("[oidc]"))?;
         let issuer = value(oidc_toml.issuer).ok_or(ConfigError::Missing("oidc.issuer"))?;
         let client_id = value(oidc_toml.client_id).ok_or(ConfigError::Missing("oidc.client_id"))?;
@@ -355,6 +398,7 @@ impl Config {
             live_seconds,
             purge_after_days,
             default_quota_bytes,
+            base_url,
             oidc: OidcConfig {
                 issuer,
                 client_id,
@@ -371,10 +415,22 @@ impl Config {
     /// A bind that names no interface — `0.0.0.0`, `::` — answers everywhere
     /// and is reachable at none of it by name, so the loopback stands in: a
     /// link somebody on the box can click beats a link nobody can. Whoever
-    /// puts In behind a proxy sets the real address where it is needed (and
-    /// `redirect_uri` in `[oidc]`), which is the only thing this defers to.
+    /// puts In behind a proxy sets the real address where it is needed —
+    /// `base_url` for the public links, `redirect_uri` in `[oidc]` for
+    /// sign-ins — which is the only thing this defers to.
     pub fn listen_url(&self) -> String {
         listen_url_of(&self.listen)
+    }
+
+    /// The origin the public links are told: `base_url` when the file sets
+    /// one, otherwise the address bound. Only public URL construction — the
+    /// share links and their copy-once banners — asks this; sign-ins keep
+    /// following `redirect_uri` and the bind never moves.
+    pub fn public_origin(&self) -> String {
+        match self.base_url.as_deref() {
+            Some(base) => base.to_string(),
+            None => self.listen_url(),
+        }
     }
 
     /// The lines to print once at startup. Nothing secret is among them.
@@ -663,6 +719,60 @@ redirect_uri = "https://files.example.com/auth/callback"
             config.oidc.redirect_uri,
             "https://files.example.com/auth/callback"
         );
+    }
+
+    /// The links In hands out follow `listen` unless the file says a public
+    /// base — the mirror of `redirect_uri`, which is why the tests read the
+    /// same way.
+    #[test]
+    fn base_url_defaults_to_the_listen_address() {
+        let scratch = Scratch::new();
+        scratch.write(FULL);
+        let config = scratch.load().unwrap();
+        assert_eq!(config.base_url, None);
+        assert_eq!(config.public_origin(), "http://127.0.0.1:7655");
+        // The file is completed with the key at its empty default, so a
+        // reader learns the key exists.
+        let completed = std::fs::read_to_string(scratch.dir.join(FILE_NAME)).unwrap();
+        assert!(completed.contains("base_url = \"\""), "{completed}");
+    }
+
+    #[test]
+    fn an_explicit_base_url_wins() {
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace("[oidc]", "base_url = \"https://files.example.com\"\n[oidc]"));
+        let config = scratch.load().unwrap();
+        assert_eq!(config.base_url.as_deref(), Some("https://files.example.com"));
+        assert_eq!(config.public_origin(), "https://files.example.com");
+    }
+
+    #[test]
+    fn an_empty_base_url_is_the_listen_fallback() {
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace("[oidc]", "base_url = \"\"\n[oidc]"));
+        let config = scratch.load().unwrap();
+        assert_eq!(config.base_url, None);
+        assert_eq!(config.public_origin(), "http://127.0.0.1:7655");
+    }
+
+    #[test]
+    fn a_base_url_without_a_scheme_is_refused() {
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace("[oidc]", "base_url = \"files.example.com\"\n[oidc]"));
+        assert!(matches!(
+            scratch.load().unwrap_err(),
+            ConfigError::Invalid { key: "base_url", .. }
+        ));
+    }
+
+    #[test]
+    fn a_base_url_with_a_trailing_slash_is_refused() {
+        let scratch = Scratch::new();
+        scratch.write(&FULL.replace("[oidc]", "base_url = \"https://files.example.com/\"\n[oidc]"));
+        assert!(matches!(
+            scratch.load().unwrap_err(),
+            ConfigError::Invalid { key: "base_url", .. }
+        ));
     }
 
     #[test]

@@ -505,7 +505,7 @@ async fn drive(cx: &Cx) -> Result {
     // A link minted from this surface redirects back here with the plaintext
     // token on `?created=` — rendered once, like the settings page does.
     let created = created_token(uri(cx).query().unwrap_or(""));
-    let origin = app(cx).config.listen_url();
+    let origin = app(cx).config.public_origin();
 
     let current_id = current
         .as_ref()
@@ -549,7 +549,7 @@ async fn drive(cx: &Cx) -> Result {
     let share_pair = params.as_ref().and_then(|query| query.share.as_deref());
     let share_dialog = match share_pair.and_then(|pair| pair.split_once(':')) {
         Some((kind, id)) => {
-            crate::share::share_modal(cx, kind, id, &here, created.clone(), &origin).await?
+            crate::share::share_modal(cx, kind, id, &here, created.clone()).await?
         }
         None => None,
     };

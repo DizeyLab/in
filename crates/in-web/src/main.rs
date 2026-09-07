@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use in_core::Config;
-use in_core::store::TursoStore;
+use in_core::store::{Store, TursoStore};
 use topcoat::Result;
 use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
 use topcoat::cookie::RouterBuilderCookieExt;
@@ -106,18 +106,33 @@ async fn main() {
     let store = TursoStore::open(&config.database, Some(config.storage.as_path()))
         .await
         .expect("failed to open the database");
-    let store: Arc<dyn in_core::store::Store> = Arc::new(store);
+    let store = Arc::new(store);
 
-    // Trash purge is policy, not storage hygiene, so it happens here with the
-    // configured horizon rather than inside `open`: a deployment keeping trash
-    // longer than any built-in default must never be over-purged by boot.
+    // Trash purge is policy, not storage hygiene: it happens with the
+    // configured horizon rather than any built-in default, so a deployment
+    // keeping trash longer than the default is never over-purged.
     let cutoff =
         time::OffsetDateTime::now_utc() - time::Duration::days(i64::from(config.purge_after_days));
-    match store.purge_expired(cutoff).await {
-        Ok(0) => {}
-        Ok(purged) => println!("in    purged {purged} trashed item(s)"),
-        Err(problem) => eprintln!("in: trash purge failed: {problem}"),
-    }
+
+    // Nothing the first request needs waits for the boot's hygiene: the
+    // walk of every file and thumbnail on disk, the aborted uploads, the
+    // trash purge. The store is usable the moment `open` returns — schema
+    // live, storage tree in place — and the sweeps only delete what no row
+    // names and what has already expired, so they run as a background task
+    // while the port is about to answer. A sweep that fails is logged and
+    // lived with: an unswept tree is slow, never wrong.
+    let sweeper = store.clone();
+    tokio::spawn(async move {
+        if let Err(problem) = sweeper.boot_sweeps().await {
+            eprintln!("in: boot sweeps failed: {problem}");
+        }
+        match sweeper.purge_expired(cutoff).await {
+            Ok(0) => {}
+            Ok(purged) => println!("in    purged {purged} trashed item(s)"),
+            Err(problem) => eprintln!("in: trash purge failed: {problem}"),
+        }
+    });
+    let store: Arc<dyn in_core::store::Store> = store;
 
     // The key sealing the OIDC session cookies, kept beside the database as
     // `in.key` — one key per deployment, never in the repository.

@@ -273,7 +273,7 @@ async fn settings(cx: &Cx) -> Result {
         Vec::new()
     };
     let created = created_token(uri(cx).query().unwrap_or(""));
-    let origin = app(cx).config.listen_url();
+    let origin = app(cx).config.public_origin();
     view! {
         cx =>
         (topbar(cx, NavPage::Settings, &fresh, language).await?)
@@ -352,10 +352,11 @@ async fn settings(cx: &Cx) -> Result {
                             <div class="member-row">
                                 <span class="member-name">(format!("{} · {}", link.kind.as_str(), target_name.clone()))</span>
                                 <span class="field-note">(expiry_line(language, link.expires_at))</span>
+                                <div class="spacer"></div>
                                 <span class="field-note">(if link.can_download { t(language, Key::CanDownload) } else { t(language, Key::ViewOnly) })</span>
                                 <form class="pop-row-form" method="post" action="/api/share/link/revoke">
                                     <input type="hidden" name="id" value=(link.id.clone())>
-                                    <button type="submit">(t(language, Key::RevokeLink))</button>
+                                    <button class="quiet quiet-danger" type="submit">(t(language, Key::RevokeLink))</button>
                                 </form>
                             </div>
                         }

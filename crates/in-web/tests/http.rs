@@ -316,6 +316,12 @@ struct TestApp {
 
 impl TestApp {
     async fn build() -> Self {
+        Self::build_with(None).await
+    }
+
+    /// The same workspace with a config `base_url` set — the key that
+    /// decides where the public links are told to point.
+    async fn build_with(base_url: Option<&str>) -> Self {
         let dir = std::env::temp_dir().join(format!("in-http-{}", Ulid::new()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("in.db");
@@ -341,6 +347,7 @@ impl TestApp {
             live_seconds: 300,
             purge_after_days: 30,
             default_quota_bytes: 10 * 1024 * 1024 * 1024,
+            base_url: base_url.map(str::to_string),
             oidc: OidcConfig {
                 issuer: fake.url(),
                 client_id: "in-test".to_string(),
@@ -2454,6 +2461,143 @@ async fn settings_quota_and_disable_guards() {
     );
 }
 
+/// A deployment with a domain tells that domain, never the bind: the
+/// settings copy-once banner and the drive modal's link rows all carry
+/// `base_url`.
+#[tokio::test]
+async fn share_links_carry_the_configured_base_url() {
+    let app = TestApp::build_with(Some("https://files.example.com")).await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
+
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+
+    // The banner the mint redirects back to.
+    let page = app
+        .get(&format!("/settings?created={token}"), Some(&admin))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(
+        page.text()
+            .contains(&format!("https://files.example.com/s/{token}")),
+        "banner showed no domain link: {}",
+        page.text()
+    );
+    assert!(
+        !page.text().contains("127.0.0.1:7655/s/"),
+        "banner leaked the bind address: {}",
+        page.text()
+    );
+
+    // The modal says the same: the minted row and the live-link
+    // placeholder alike.
+    let page = app
+        .get(
+            &format!("/drive?share=file:{file}&created={token}"),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(
+        page.text()
+            .contains(&format!("https://files.example.com/s/{token}")),
+        "modal showed no domain link: {}",
+        page.text()
+    );
+    assert!(
+        page.text().contains("https://files.example.com/s/…"),
+        "modal placeholder showed no domain: {}",
+        page.text()
+    );
+}
+
+#[tokio::test]
+async fn share_links_follow_the_bind_without_a_base_url() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
+
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+
+    // No `base_url`: the links say the address bound, as they always
+    // have.
+    let page = app
+        .get(&format!("/settings?created={token}"), Some(&admin))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(
+        page.text()
+            .contains(&format!("http://127.0.0.1:7655/s/{token}")),
+        "banner showed no bind link: {}",
+        page.text()
+    );
+}
+
+/// The revoke control is one inline quiet button at the row's end, like
+/// the modal's remove-access rows — not a full-width block of its own.
+#[tokio::test]
+async fn the_settings_revoke_button_sits_inline_in_its_row() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "notes.txt", b"hello in").await;
+    app.store
+        .create_share_link(&owner, ShareKind::File, &file, true, None, None)
+        .await
+        .unwrap();
+
+    let body = app.get("/settings", Some(&admin)).await.text();
+    let row_at = body
+        .find("<div class=\"member-row\">")
+        .expect("no share-link row");
+    let form_at = body[row_at..]
+        .find("<form class=\"pop-row-form\" method=\"post\" action=\"/api/share/link/revoke\">")
+        .expect("no revoke form in a member-row");
+    let form_close = row_at
+        + form_at
+        + body[row_at + form_at..]
+            .find("</form>")
+            .expect("form never closes");
+    // The row is still open around the form: its own close is the first
+    // `</div>` after the form's.
+    let row_close = form_close + body[form_close..].find("</div>").expect("row never closes");
+    let form = &body[row_at + form_at..form_close];
+    assert!(
+        form.contains("<button class=\"quiet quiet-danger\" type=\"submit\">"),
+        "revoke is not the inline quiet button: {form}"
+    );
+    assert!(
+        !form.contains("div"),
+        "the revoke control is wrapped or outside its row: {form}"
+    );
+}
+
 #[tokio::test]
 async fn signed_out_mutations_ask_to_sign_in() {
     let app = TestApp::build().await;
@@ -2547,6 +2691,325 @@ async fn empty_file_upload_round_trip() {
         "expected 0 bytes, got {}",
         got.bytes.len()
     );
+}
+
+/// The 16-byte ISO-BMFF header the mime sniffer reads as `video/mp4`.
+const CLIP: &[u8] = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00";
+
+/// The shell every public /s page must wear: a full document — DOCTYPE and
+/// the compiled stylesheet — carrying none of the session-gated machinery:
+/// a stranger's page opens no `/api/live` stream.
+fn assert_public_shell(page: &Raw, what: &str) {
+    let body = page.text();
+    assert!(
+        body.contains("<!DOCTYPE html>"),
+        "{what} carried no doctype: {body}"
+    );
+    assert!(
+        body.contains("assets/main-"),
+        "{what} carried no stylesheet: {body}"
+    );
+    assert!(
+        !body.contains("/api/live") && !body.contains("__inLive"),
+        "{what} leaked the session-gated live stream: {body}"
+    );
+}
+
+/// Every public /s answer — card, folder listing, password gate, dead card —
+/// is a full styled document now, not a bare fragment; none of them opens
+/// the signed-in live stream at a stranger.
+#[tokio::test]
+async fn public_link_pages_wear_the_document_shell() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "shelled.txt", b"shelled bytes").await;
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+                ("password", "open sesame"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+    let link = &app.store.share_links(&owner).await.unwrap()[0];
+    let proof = in_core::link_unlock_proof(&token, link.password_hash.as_deref().unwrap());
+    let unlocked = format!("in_link_{}={proof}", link.id);
+
+    // The gate: styled, and still saying nothing about the target.
+    let gate = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(gate.status, StatusCode::OK, "{}", gate.text());
+    assert_public_shell(&gate, "the gate");
+    assert!(gate.text().contains("type=\"password\""), "{}", gate.text());
+    assert!(!gate.text().contains("shelled.txt"), "{}", gate.text());
+
+    // The unlocked card: the same document shell around the name.
+    let card = app.get(&format!("/s/{token}"), Some(&unlocked)).await;
+    assert_eq!(card.status, StatusCode::OK, "{}", card.text());
+    assert_public_shell(&card, "the card");
+    assert!(card.text().contains("shelled.txt"), "{}", card.text());
+
+    // The dead card: same.
+    let dead = app.get("/s/never-real-token", None).await;
+    assert_eq!(dead.status, StatusCode::OK, "{}", dead.text());
+    assert_public_shell(&dead, "the dead card");
+
+    // So is a folder listing.
+    let folder = app
+        .store
+        .create_folder(&owner, None, "shelled folder")
+        .await
+        .unwrap();
+    let created = app
+        .store
+        .create_share_link(&owner, ShareKind::Folder, &folder.id, true, None, None)
+        .await
+        .unwrap();
+    let listing = app.get(&format!("/s/{}", created.token), None).await;
+    assert_eq!(listing.status, StatusCode::OK, "{}", listing.text());
+    assert_public_shell(&listing, "the folder card");
+    assert!(
+        listing.text().contains("shelled folder"),
+        "{}",
+        listing.text()
+    );
+}
+
+/// A video link plays inline through the house player itself — the same
+/// markup, controls bar and wiring script the signed-in viewer renders, no
+/// native controls — streaming `?media=1`, ranges included, even on a
+/// view-only link, while `?dl=1` stays dead and a view never counts as a
+/// download. A text link draws no player at all.
+#[tokio::test]
+async fn video_link_plays_inline_without_download_rights() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let clip = file_id(&app, &owner, "clip.mp4", CLIP).await;
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[("kind", "file"), ("target_id", &clip)],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+
+    // The card: the viewer's player, fed by the public media stream, and no
+    // download on a view-only link.
+    let page = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    assert!(
+        body.contains("<div class=\"media-player media-player-video\">"),
+        "no video player: {body}"
+    );
+    assert!(
+        body.contains("<video class=\"media-el viewer-video\""),
+        "player lost the viewer's classes: {body}"
+    );
+    assert!(
+        body.contains(&format!("<video class=\"media-el viewer-video\" src=\"/s/{token}?media=1\" preload=\"metadata\">")),
+        "player not fed by ?media=1: {body}"
+    );
+    // The house bar and its wiring script — the browser's own controls
+    // never appear on the element.
+    assert!(
+        body.contains("<div class=\"media-controls\">"),
+        "no house controls bar: {body}"
+    );
+    assert!(
+        body.contains("class=\"media-play\""),
+        "no play toggle: {body}"
+    );
+    assert!(
+        body.contains("class=\"media-full\""),
+        "no fullscreen toggle: {body}"
+    );
+    assert!(
+        body.contains("__inMediaWired"),
+        "house wiring script missing: {body}"
+    );
+    assert!(
+        !body.contains(" controls="),
+        "native controls leaked onto the card: {body}"
+    );
+    assert!(
+        !body.contains("?dl=1"),
+        "view-only card offered a download: {body}"
+    );
+
+    // The stream serves ranges: a mid-file probe reads only its span, 206,
+    // under the stored video mime.
+    let probe = app
+        .get_with_range(&format!("/s/{token}?media=1"), None, "bytes=0-3")
+        .await;
+    assert_eq!(
+        probe.status,
+        StatusCode::PARTIAL_CONTENT,
+        "{}",
+        probe.text()
+    );
+    assert_eq!(probe.content_type.as_deref(), Some("video/mp4"));
+    assert_eq!(probe.bytes, &CLIP[0..4]);
+    assert_eq!(probe.content_range.as_deref(), Some("bytes 0-3/16"));
+
+    // A whole fetch is the whole clip, offered inline, and never counted as
+    // a download — preview is what a view-only link grants.
+    let full = app.get(&format!("/s/{token}?media=1"), None).await;
+    assert_eq!(full.status, StatusCode::OK, "{}", full.text());
+    assert_eq!(full.bytes, CLIP);
+    assert!(
+        full.disposition
+            .as_deref()
+            .is_some_and(|disposition| disposition.starts_with("inline")),
+        "the stream was an attachment: {:?}",
+        full.disposition
+    );
+    let stored = app.store.file(&clip).await.unwrap().unwrap();
+    assert_eq!(stored.download_count, 0, "a media view counted a download");
+
+    // The forced download stays dead — the stream is a preview, not the
+    // grant.
+    let blocked = app.get(&format!("/s/{token}?dl=1"), None).await;
+    assert_eq!(blocked.status, StatusCode::OK, "{}", blocked.text());
+    assert!(
+        blocked.text().contains("no longer works"),
+        "{}",
+        blocked.text()
+    );
+
+    // A text link draws no player.
+    let doc = file_id(&app, &owner, "plain.txt", b"plain").await;
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[("kind", "file"), ("target_id", &doc)],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let text_token = created_token(answer.location.as_deref().unwrap());
+    let text_card = app.get(&format!("/s/{text_token}"), None).await;
+    assert_eq!(text_card.status, StatusCode::OK, "{}", text_card.text());
+    let text_body = text_card.text();
+    assert!(
+        !text_body.contains("<video") && !text_body.contains("<audio"),
+        "a text card drew a player: {text_body}"
+    );
+}
+
+/// An audio link wears the same house player — bar above the element,
+/// wiring script included, no native controls, no fullscreen button (that
+/// is the video variant's) — fed by the public `?media=1` stream.
+#[tokio::test]
+async fn audio_link_card_draws_the_house_player() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let tone = file_id(&app, &owner, "tone.ogg", b"OggS\x00\x00\x00\x00").await;
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[("kind", "file"), ("target_id", &tone)],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+
+    let page = app.get(&format!("/s/{token}"), None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    assert!(
+        body.contains("<div class=\"media-player\">"),
+        "no audio player: {body}"
+    );
+    assert!(
+        body.contains(&format!(
+            "<audio class=\"media-el\" src=\"/s/{token}?media=1\" preload=\"metadata\">"
+        )),
+        "audio element not fed by ?media=1: {body}"
+    );
+    // The audio variant draws the bar straight into `.media-player` — no
+    // `.media-controls` wrapper; that is the video layout's.
+    assert!(body.contains("class=\"media-seek\""), "no seek bar: {body}");
+    assert!(
+        body.contains("class=\"media-play\""),
+        "no play toggle: {body}"
+    );
+    assert!(
+        body.contains("__inMediaWired"),
+        "house wiring script missing: {body}"
+    );
+    // The button itself stays video-only; the wiring script's `.media-full`
+    // query is on every player page regardless.
+    assert!(
+        !body.contains("class=\"media-full\""),
+        "audio card drew the fullscreen button: {body}"
+    );
+}
+
+/// The password gate covers the media stream too: a locked browser is
+/// answered with the gate, never the bytes, and an unlocked one streams —
+/// ranges included.
+#[tokio::test]
+async fn password_link_gates_the_media_stream() {
+    let app = TestApp::build().await;
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let clip = file_id(&app, &owner, "clip.mp4", CLIP).await;
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &clip),
+                ("password", "open sesame"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let token = created_token(answer.location.as_deref().unwrap());
+
+    // Locked: the gate, not the clip.
+    let gated = app.get(&format!("/s/{token}?media=1"), None).await;
+    assert_eq!(gated.status, StatusCode::OK);
+    assert!(
+        gated.text().contains("type=\"password\""),
+        "the gate did not gate the stream: {}",
+        gated.text()
+    );
+    assert_ne!(
+        gated.content_type.as_deref(),
+        Some("video/mp4"),
+        "the gate leaked the media mime"
+    );
+
+    // Unlocked: the stream serves, ranges included.
+    let link = &app.store.share_links(&owner).await.unwrap()[0];
+    let proof = in_core::link_unlock_proof(&token, link.password_hash.as_deref().unwrap());
+    let unlocked = format!("in_link_{}={proof}", link.id);
+    let served = app
+        .get(&format!("/s/{token}?media=1"), Some(&unlocked))
+        .await;
+    assert_eq!(served.status, StatusCode::OK, "{}", served.text());
+    assert_eq!(served.content_type.as_deref(), Some("video/mp4"));
+    assert_eq!(served.bytes, CLIP);
+    let span = app
+        .get_with_range(&format!("/s/{token}?media=1"), Some(&unlocked), "bytes=4-")
+        .await;
+    assert_eq!(span.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(span.bytes, &CLIP[4..]);
+    assert_eq!(span.content_range.as_deref(), Some("bytes 4-15/16"));
 }
 
 // -- share review regressions (FullSilkworm) ------------------------------------

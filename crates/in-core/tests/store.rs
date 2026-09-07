@@ -39,8 +39,9 @@ impl Scratch {
         }
     }
 
-    /// Reopens the same database file, running the boot path again — the
-    /// sweep, the prune, the purge — against what the test left behind.
+    /// Reopens the same database file, then runs the hygiene passes the
+    /// server runs in the background after `open` — the upload prune and
+    /// the orphan sweep — against what the test left behind.
     async fn reopen(&mut self) {
         drop(std::mem::replace(
             &mut self.store,
@@ -48,6 +49,7 @@ impl Scratch {
                 .await
                 .unwrap(),
         ));
+        self.store.boot_sweeps().await.unwrap();
     }
 }
 
@@ -1050,6 +1052,73 @@ async fn the_boot_prune_aborts_expired_sessions() {
     let back = scratch.store.upload_session(&session.id).await.unwrap().unwrap();
     assert_eq!(back.state, UploadState::Aborted);
     assert!(!scratch.storage.join("uploads").join(&session.id).exists());
+}
+
+/// The sweep runs beside live traffic now, and a writer's bytes land on
+/// disk before its row commits — both inside one write lock. This pins the
+/// lock's job: a writer mid-insert (its file already on disk, its row
+/// uncommitted, its transaction holding the write lock) must survive a
+/// sweep that starts while it works. The sweep waits for the writer's lock
+/// instead of reading the tree in between, so the committed file and its
+/// bytes both come out the other side — while a stray nothing names still
+/// goes, proving the sweep ran at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sweep_waits_for_a_writer_instead_of_deleting_its_file() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+
+    // A writer the way `insert_file` is built: IMMEDIATE transaction
+    // first, then bytes on disk, then the row — the lock held throughout.
+    let db_path = scratch.db.clone();
+    let file_path = scratch.storage.join("files").join("midwrite");
+    let writer_path = file_path.clone();
+    let (locked, locked_rx) = tokio::sync::oneshot::channel::<()>();
+    let (go, go_rx) = tokio::sync::oneshot::channel::<()>();
+    let writer = tokio::spawn(async move {
+        let db = turso::Builder::new_local(db_path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute("BEGIN IMMEDIATE", ()).await.unwrap();
+        std::fs::write(&writer_path, b"arriving").unwrap();
+        conn.execute(
+            "INSERT INTO file (id, owner_id, folder_id, name, mime, size_bytes, \
+             thumb_state, created_at, updated_at, deleted_at, download_count) \
+             VALUES ('midwrite', ?1, NULL, 'midwrite.txt', 'text/plain', 8, 'none', \
+             '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL, 0)",
+            turso::params![user.id.as_str()],
+        )
+        .await
+        .unwrap();
+        let _ = locked.send(());
+        // Hold the write lock until the sweep is contending on it: only a
+        // sweep that waits can then see the committed row.
+        let _ = go_rx.await;
+        conn.execute("COMMIT", ()).await.unwrap();
+    });
+
+    locked_rx.await.unwrap();
+    std::fs::write(scratch.storage.join("files").join("stray"), b"orphan").unwrap();
+    let sweep = tokio::spawn({
+        let storage = scratch.storage.clone();
+        async move {
+            // The sweep contends here: its BEGIN IMMEDIATE cannot be
+            // granted until the writer commits, and the sleep only makes
+            // that contention certain rather than likely.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let _ = go.send(());
+            storage
+        }
+    });
+    scratch.store.boot_sweeps().await.unwrap();
+    writer.await.unwrap();
+    let storage = sweep.await.unwrap();
+    // The sweep ran — the stray is gone — and the writer's file survived,
+    // row and bytes both.
+    assert!(!storage.join("files").join("stray").exists());
+    assert!(scratch.store.file("midwrite").await.unwrap().is_some());
+    assert!(file_path.exists());
 }
 #[tokio::test]
 async fn email_lookup_folds_case() {

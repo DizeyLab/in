@@ -993,8 +993,16 @@ async fn missing() -> Result {
 /// `style/main.scss`, compiled by `build.rs` into `assets/main.css`.
 const STYLE: Asset = asset!("assets/main.css");
 
-#[layout("/")]
-async fn root_layout(cx: &Cx, slot: Result) -> Result {
+/// The document shell itself: everything from `<html>` to `</html>`, the
+/// part `root_layout` pairs around every page. `#[route]` handlers bypass
+/// layout pairing — the public share pages among them, whose query can ask
+/// for bytes a page-shaped answer cannot carry — so this is `pub(crate)`:
+/// they wrap their views in the same shell by calling it directly instead of
+/// hand-copying the head. Signed-out visitors wear the provision defaults
+/// and the session-gated live stream stays off (`asking` is false without a
+/// session), so a stranger's page carries no user data and opens no
+/// `/api/live` connection.
+pub(crate) async fn document_shell(cx: &Cx, slot: Result) -> Result {
     // The per-user chrome knobs, read off the request's own user: the theme
     // into `data-theme`, the interface into `data-ui`, the language into
     // `<html lang>`. Signed-out (or unreadable) wears the provision defaults —
@@ -1027,6 +1035,7 @@ async fn root_layout(cx: &Cx, slot: Result) -> Result {
     // the client's cue to hard-reload rather than wear the old css.
     let build = STYLE.id().as_u64().to_string();
     view! {
+        cx =>
         <!DOCTYPE html>
         <html lang=(lang.code()) data-theme=(dark.then_some("dark")) data-ui=(ui) data-build=(build)>
             <head>
@@ -1063,4 +1072,11 @@ async fn root_layout(cx: &Cx, slot: Result) -> Result {
             </body>
         </html>
     }
+}
+
+/// The router's own shell route: pairing is by path prefix, so every page
+/// under `/` wears `document_shell` through here.
+#[layout("/")]
+async fn root_layout(cx: &Cx, slot: Result) -> Result {
+    document_shell(cx, slot).await
 }

@@ -488,6 +488,11 @@ a {
   color: var(--muted);
 }
 
+// The public card's image preview is a bare `<img>` — no class of its own —
+// so a picture wider than the card must shrink to it instead of widening
+// the page. Nothing that already fits changes size.
+.scaffold-note img { max-width: 100%; }
+
 // --- Account screens (FirstLogin artboard) ---------------------------------
 
 .auth-stage {
@@ -3160,12 +3165,15 @@ img.avatar {
 
   &:hover { color: var(--ink); }
 }
-
 .settings-title {
   margin: 0;
   font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.01em;
+  // Page titles on the drive surfaces are often file or folder names — an
+  // unbroken run of characters has no space to wrap at, and without this it
+  // runs off the card and the page with it.
+  overflow-wrap: anywhere;
 }
 
 .panel {
@@ -4445,6 +4453,45 @@ input[type="radio"] {
   // -- account screens ---------------------------------------------------------
 
   .auth-stage { padding: 0 16px 24px; }
+
+  // -- the viewer page and the house media player -----------------------------
+  // The bar's fixed controls (play, the two clocks, mute, speed, fullscreen)
+  // plus the seek input's intrinsic width outrun a phone, so the seek input
+  // takes a full-width row of its own and the volume slider folds away — a
+  // phone carries hardware volume keys, and the mute button stays. The bar
+  // fills its card instead of holding a desktop's 560px.
+  // The audio bar's controls are the player's own children (only the video
+  // stacks a separate .media-controls under the picture), so both containers
+  // take the wrap.
+  .media-player:not(.media-player-video),
+  .media-controls { flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px; }
+  .media-seek { flex: 1 1 140px; min-width: 0; }
+  .media-vol-slider { display: none; }
+  .media-player { width: 100%; }
+
+  // A phone's chrome is narrower than the desktop budget the video's
+  // `calc(100vh - 380px)` assumes — and on a short landscape screen the
+  // subtraction would go negative (an invalid height the browser drops).
+  // A plain proportion cannot.
+  .media-player-video .media-el { max-height: 60vh; }
+
+  .viewer-stage { padding: 16px; }
+
+  // The modal viewer's media row: the desktop 24px insets leave a 320px
+  // screen less room than the audio bar needs.
+  .viewer-body { padding: 16px; }
+
+  // -- the public /s cards and the refusal notes -------------------------------
+  // The desktop card spends 24px of margin and 24px of padding on each side —
+  // half of a narrow screen's air, for a surface that is one column of text.
+  .scaffold-note { margin: 16px; padding: 16px 16px 20px; }
+
+  // -- the share modal ---------------------------------------------------------
+  // The add-people row and the public-link create row hold four or five
+  // controls on one desktop line — on a phone they fold instead of pushing
+  // the modal past the viewport. The access list's rows already wrap through
+  // the shared `div.member-row` rule.
+  .share-modal .pop-row-form { flex-wrap: wrap; }
 }
 
 // -- file viewer page ------------------------------------------------------------
