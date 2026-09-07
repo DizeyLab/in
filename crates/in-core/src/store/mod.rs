@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 #[cfg(feature = "server")]
+pub mod blobs;
+#[cfg(feature = "server")]
 pub mod reconcile;
 #[cfg(feature = "server")]
 pub mod schema;
@@ -22,6 +24,8 @@ pub mod secret;
 pub mod sniff;
 #[cfg(feature = "server")]
 pub mod turso_store;
+#[cfg(feature = "server")]
+pub mod r2;
 
 #[cfg(feature = "server")]
 pub use reconcile::{ReconcileOptions, reconcile};

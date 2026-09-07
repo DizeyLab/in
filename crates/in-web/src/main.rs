@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use in_core::Config;
 use in_core::store::{Store, TursoStore};
+use in_core::store::r2::R2Blobs;
 use topcoat::Result;
 use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
 use topcoat::cookie::RouterBuilderCookieExt;
@@ -102,10 +103,60 @@ async fn main() {
     // One process per database file: Turso is a single-writer engine and a
     // second process on the same file loses writes rather than queueing.
     //
-    // `open` applies any unapplied migration before it returns.
-    let store = TursoStore::open(&config.database, Some(config.storage.as_path()))
-        .await
-        .expect("failed to open the database");
+    // `open` applies any unapplied migration before it returns. With
+    // `[storage.r2]` set, the bytes open against the bucket instead of the
+    // tree — the tree keeps staging chunks, the bucket holds `files/` and
+    // `thumbs/`. No `[storage.r2]` is the local backend, today's shape.
+    let store = match &config.r2 {
+        Some(r2) => {
+            // Two lines: the access key id, then the secret. The file is
+            // the deployment's, outside the repository; an unreadable one
+            // stops the boot here rather than letting every write fail
+            // later with the same message.
+            let keys = match std::fs::read_to_string(&r2.key_file) {
+                Ok(keys) => keys,
+                Err(problem) => {
+                    eprintln!("in: could not read {}: {problem}", r2.key_file.display());
+                    std::process::exit(2);
+                }
+            };
+            let mut lines = keys.lines().map(str::trim).filter(|line| !line.is_empty());
+            let access_key_id = lines.next().unwrap_or_default();
+            let secret_access_key = lines.next().unwrap_or_default();
+            if access_key_id.is_empty() || secret_access_key.is_empty() {
+                eprintln!(
+                    "in: {} must carry the access key id on its first line and the secret on its second",
+                    r2.key_file.display()
+                );
+                std::process::exit(2);
+            }
+            let endpoint = format!("https://{}.r2.cloudflarestorage.com", r2.account_id);
+            let blobs = match R2Blobs::open(
+                &endpoint,
+                &r2.bucket,
+                access_key_id,
+                secret_access_key,
+                false,
+            ) {
+                Ok(blobs) => blobs,
+                Err(problem) => {
+                    eprintln!("in: could not open the r2 bucket {}: {problem}", r2.bucket);
+                    std::process::exit(2);
+                }
+            };
+            eprintln!("in    blobs r2 {}", r2.bucket);
+            TursoStore::open_with_blobs(
+                &config.database,
+                Some(config.storage.as_path()),
+                Arc::new(blobs),
+            )
+            .await
+            .expect("failed to open the database")
+        }
+        None => TursoStore::open(&config.database, Some(config.storage.as_path()))
+            .await
+            .expect("failed to open the database"),
+    };
     let store = Arc::new(store);
 
     // Trash purge is policy, not storage hygiene: it happens with the

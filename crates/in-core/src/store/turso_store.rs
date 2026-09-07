@@ -19,6 +19,7 @@ use super::{
     SharedItem, Store, StoreError, ThumbState, UPLOAD_TTL_HOURS, UploadSession, UploadState, User,
 };
 use super::{ReconcileOptions, reconcile, schema, sniff};
+use super::blobs::{Blobs, LocalBlobs};
 use crate::live::{Change, Topic};
 use crate::thumbs;
 
@@ -57,6 +58,12 @@ pub struct TursoStore {
     /// the facts and this tree keeps the bytes; a boot sweep deletes
     /// whichever half outlives the other.
     storage: std::path::PathBuf,
+    /// The backend holding the bytes that `files/<id>` and `thumbs/<id>`
+    /// name. The local tree by default; a swap of backends is a
+    /// constructor's decision ([`Self::open_with_blobs`]), never a change
+    /// to a call site — every files/ and thumbs/ byte path below routes
+    /// through this.
+    blobs: std::sync::Arc<dyn Blobs>,
 }
 
 impl TursoStore {
@@ -92,6 +99,36 @@ impl TursoStore {
     /// first page wait behind a walk of every file on disk. Trash is never
     /// purged here — see the note below.
     pub async fn open(database: &str, storage: Option<&std::path::Path>) -> Result<Self> {
+        let storage_buf;
+        let storage: &std::path::Path = match storage {
+            Some(dir) => dir,
+            None => {
+                // Beside the database: the two are one backup unit, so the
+                // default keeps them siblings.
+                storage_buf = default_storage(database);
+                &storage_buf
+            }
+        };
+        Self::open_with_blobs(
+            database,
+            Some(storage),
+            // No backend configured: the bytes live in the local tree, the
+            // only place they have ever lived.
+            std::sync::Arc::new(LocalBlobs::new(storage)),
+        )
+        .await
+    }
+
+    /// [`Self::open`] with the blob backend named instead of implied. The
+    /// `storage` tree stays local either way: upload chunks stage there and
+    /// an assembled file waits there for placement — the sniffer and the
+    /// thumbnailer need a real local file — so even a bucket-backed store
+    /// keeps a local staging floor.
+    pub async fn open_with_blobs(
+        database: &str,
+        storage: Option<&std::path::Path>,
+        blobs: std::sync::Arc<dyn Blobs>,
+    ) -> Result<Self> {
         let storage_buf;
         let storage: &std::path::Path = match storage {
             Some(dir) => dir,
@@ -144,6 +181,7 @@ impl TursoStore {
             db,
             live,
             storage: storage.to_path_buf(),
+            blobs,
         };
         store.migrate(database).await?;
         // Trash is deliberately NOT swept here either: the age cutoff is
@@ -207,34 +245,28 @@ impl TursoStore {
         )
         .await?;
         for (dir, known, kind) in [
-            (self.storage.join(FILES_DIR), &files, "file"),
-            (self.storage.join(THUMBS_DIR), &thumbs, "thumbnail"),
+            (FILES_DIR, &files, "file"),
+            (THUMBS_DIR, &thumbs, "thumbnail"),
         ] {
+            // One listing per half: the names the tree holds, temp files
+            // included — a `.tmp` is an orphan like any other.
+            let names: std::collections::HashSet<String> = self
+                .blobs
+                .list(dir)
+                .await
+                .map_err(|e| StoreError::Backend(e.to_string()))?
+                .into_iter()
+                .collect();
             for id in known.iter() {
-                if !dir.join(id).is_file() {
+                if !names.contains(id) {
                     eprintln!("{kind} {id} names a file that is not there");
                 }
             }
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(entries) => entries,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(backend(e)),
-            };
-            for entry in entries {
-                let entry = entry.map_err(backend)?;
-                let path = entry.path();
-                if !path.is_file() {
-                    continue;
-                }
-                let named = entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|n| known.contains(n));
-                if !named && let Err(e) = std::fs::remove_file(&path) {
-                    eprintln!(
-                        "could not delete orphaned storage file {}: {e}",
-                        path.display()
-                    );
+            for name in names {
+                if !known.contains(&name) {
+                    if let Err(e) = self.blobs.delete(&[&format!("{dir}/{name}")]).await {
+                        eprintln!("could not delete orphaned storage file {dir}/{name}: {e}");
+                    }
                 }
             }
         }
@@ -649,11 +681,6 @@ fn expected_chunk_len(size_bytes: u64, index: u64) -> u64 {
 /// Where file `id`'s bytes live.
 fn file_path(storage: &std::path::Path, id: &str) -> std::path::PathBuf {
     storage.join(FILES_DIR).join(id)
-}
-
-/// Where `id`'s thumbnail lives.
-fn thumb_path(storage: &std::path::Path, id: &str) -> std::path::PathBuf {
-    storage.join(THUMBS_DIR).join(id)
 }
 
 /// Where session `id`'s chunks stage.
@@ -1382,20 +1409,27 @@ impl Store for TursoStore {
         let name = free_file_name(&tx, owner_id, folder_id, &name, None).await?;
         let mime = sniff::sniff(bytes).to_string();
         let (thumb_state, thumb_bytes) = thumb_for(&mime, size, Some(bytes));
-        // The bytes land first, temp-plus-rename, then the row says they are
-        // there: a crash in between leaves an orphan file the boot sweep
-        // deletes, never a row pointing at nothing.
+        // The bytes land first, then the row says they are there: a crash
+        // in between leaves an orphan blob the boot sweep deletes, never a
+        // row pointing at nothing.
         let id = Ulid::new().to_string();
-        let path = file_path(&self.storage, &id);
-        write_file_atomic(&path, bytes).map_err(|e| StoreError::Backend(e.to_string()))?;
+        let file_key = format!("files/{id}");
+        let thumb_key = format!("thumbs/{id}");
+        self.blobs
+            .put(&file_key, bytes)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        let mut thumb_placed = false;
         if let Some(thumb) = thumb_bytes.as_ref() {
-            if write_file_atomic(&thumb_path(&self.storage, &id), thumb).is_err() {
-                // A thumbnail that cannot be written is a miss, not a failed
-                // upload: the file is what matters, and the row says so.
-                let _ = std::fs::remove_file(thumb_path(&self.storage, &id));
+            // A thumbnail that cannot be written is a miss, not a failed
+            // upload: the file is what matters, and the row says so.
+            if self.blobs.put(&thumb_key, thumb).await.is_ok() {
+                thumb_placed = true;
+            } else {
+                let _ = self.blobs.delete(&[&thumb_key]).await;
             }
         }
-        let stored_thumb = if thumb_bytes.is_some() && thumb_path(&self.storage, &id).is_file() {
+        let stored_thumb = if thumb_placed {
             ThumbState::Ready
         } else if thumb_state == ThumbState::Ready {
             ThumbState::Failed
@@ -1423,8 +1457,7 @@ impl Store for TursoStore {
         if let Err(e) = written {
             // The row was never born, so the bytes must not outlive it under
             // a name nothing points at.
-            let _ = std::fs::remove_file(&path);
-            let _ = std::fs::remove_file(thumb_path(&self.storage, &id));
+            let _ = self.blobs.delete(&[&file_key, &thumb_key]).await;
             return Err(backend(e));
         }
         refresh_usage(&tx, owner_id).await?;
@@ -1549,13 +1582,12 @@ impl Store for TursoStore {
         if !known {
             return Ok(None);
         }
-        match std::fs::read(file_path(&self.storage, id)) {
-            Ok(bytes) => Ok(Some(bytes)),
-            // A row whose file went missing is reported at boot; the read
-            // answers "nothing to serve" rather than failing the panel.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(StoreError::Backend(e.to_string())),
-        }
+        // A row whose file went missing is reported at boot; a missing blob
+        // answers "nothing to serve" rather than failing the panel.
+        self.blobs
+            .get(&format!("files/{id}"))
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
     }
 
     async fn file_stream(&self, id: &str, start: u64, len: u64) -> Result<Option<super::FileSpan>> {
@@ -1569,32 +1601,13 @@ impl Store for TursoStore {
         if !known {
             return Ok(None);
         }
-        let mut file = match tokio::fs::File::open(file_path(&self.storage, id)).await {
-            Ok(file) => file,
-            // Same answer as `file_bytes`: a missing file is "nothing to
-            // serve", not a stack.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(StoreError::Backend(e.to_string())),
-        };
-        // Clamp against the real file, not the row: the span served is the
-        // span that exists.
-        let on_disk = file
-            .metadata()
+        // Same answer as `file_bytes`: a missing file is "nothing to
+        // serve", not a stack. The span clamps against the real blob, not
+        // the row: the span served is the span that exists.
+        self.blobs
+            .span(&format!("files/{id}"), start, len)
             .await
-            .map_err(|e| StoreError::Backend(e.to_string()))?
-            .len();
-        let len = len.min(on_disk.saturating_sub(start));
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        file.seek(std::io::SeekFrom::Start(start))
-            .await
-            .map_err(|e| StoreError::Backend(e.to_string()))?;
-        // 64 KiB frames: big enough that a serve is a handful of reads,
-        // small enough that a canceled download leaves nothing held.
-        let stream = tokio_util::io::ReaderStream::with_capacity(file.take(len), 64 * 1024);
-        Ok(Some(super::FileSpan {
-            len,
-            stream: Box::pin(stream),
-        }))
+            .map_err(|e| StoreError::Backend(e.to_string()))
     }
 
     async fn record_download(&self, id: &str) -> Result<()> {
@@ -1663,11 +1676,10 @@ impl Store for TursoStore {
         if !ready {
             return Ok(None);
         }
-        match std::fs::read(thumb_path(&self.storage, id)) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(StoreError::Backend(e.to_string())),
-        }
+        self.blobs
+            .get(&format!("thumbs/{id}"))
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))
     }
     async fn list_trash(&self, owner_id: &str) -> Result<Listing> {
         let conn = self.conn.lock().await;
@@ -1841,8 +1853,10 @@ impl Store for TursoStore {
         // committed, or a crash in between would leave a row whose file is
         // gone. Best-effort — a file that survives is orphaned bytes the
         // boot sweep collects.
-        let _ = std::fs::remove_file(file_path(&self.storage, id));
-        let _ = std::fs::remove_file(thumb_path(&self.storage, id));
+        let _ = self
+            .blobs
+            .delete(&[&format!("files/{id}"), &format!("thumbs/{id}")])
+            .await;
         self.announce([Topic::Library(owner.clone()), Topic::Trash(owner)]);
         Ok(true)
     }
@@ -1908,8 +1922,13 @@ impl Store for TursoStore {
         // After the delete: bytes may only follow a delete that committed.
         // Best-effort — survivors are orphaned bytes the boot sweep collects.
         for file_id in &file_ids {
-            let _ = std::fs::remove_file(file_path(&self.storage, file_id));
-            let _ = std::fs::remove_file(thumb_path(&self.storage, file_id));
+            let _ = self
+                .blobs
+                .delete(&[
+                    &format!("files/{file_id}"),
+                    &format!("thumbs/{file_id}"),
+                ])
+                .await;
         }
         let purged = (file_ids.len() + folder_ids.len()) as u64;
         self.announce([Topic::Library(owner.clone()), Topic::Trash(owner)]);
@@ -1980,8 +1999,10 @@ impl Store for TursoStore {
         }
         tx.commit().await.map_err(backend)?;
         for (id, _) in &file_ids {
-            let _ = std::fs::remove_file(file_path(&self.storage, id));
-            let _ = std::fs::remove_file(thumb_path(&self.storage, id));
+            let _ = self
+                .blobs
+                .delete(&[&format!("files/{id}"), &format!("thumbs/{id}")])
+                .await;
         }
         let purged = (file_ids.len() + folder_ids.len()) as u64;
         for owner in owners {
@@ -2029,8 +2050,10 @@ impl Store for TursoStore {
         refresh_usage(&tx, owner_id).await?;
         tx.commit().await.map_err(backend)?;
         for id in &file_ids {
-            let _ = std::fs::remove_file(file_path(&self.storage, id));
-            let _ = std::fs::remove_file(thumb_path(&self.storage, id));
+            let _ = self
+                .blobs
+                .delete(&[&format!("files/{id}"), &format!("thumbs/{id}")])
+                .await;
         }
         let purged = (file_ids.len() + folder_ids.len()) as u64;
         self.announce([
@@ -2556,8 +2579,11 @@ impl Store for TursoStore {
         // mid-assemble leaves a temp the sweep deletes, never a half file
         // wearing a real name.
         let file_id = Ulid::new().to_string();
-        let dest = file_path(&self.storage, &file_id);
-        let tmp = dest.with_extension(format!("{}.tmp", Ulid::new()));
+        // Staged in the files directory under a temp name: the sniffer and
+        // the thumbnailer need a real local file, and the adopt that places
+        // the assembled bytes is a same-tree rename away.
+        let tmp = file_path(&self.storage, &file_id)
+            .with_extension(format!("{}.tmp", Ulid::new()));
         {
             use std::io::Write as _;
             let mut out =
@@ -2642,25 +2668,37 @@ impl Store for TursoStore {
                 return Err(e);
             }
         };
-        if std::fs::rename(&tmp, &dest).is_err() {
+        if let Err(e) = self
+            .blobs
+            .adopt(&format!("files/{file_id}"), &tmp, session.size_bytes)
+            .await
+        {
+            // A placement that failed leaves the assembled file staged:
+            // the next attempt starts clean rather than sweeping around a
+            // half-placed name.
             let _ = std::fs::remove_file(&tmp);
-            return Err(StoreError::Backend(
-                "could not place the assembled file".into(),
-            ));
+            return Err(StoreError::Backend(e.to_string()));
         }
+        let mut thumb_placed = false;
         if let Some(thumb) = thumb_bytes.as_ref() {
-            if write_file_atomic(&thumb_path(&self.storage, &file_id), thumb).is_err() {
-                let _ = std::fs::remove_file(thumb_path(&self.storage, &file_id));
+            if self
+                .blobs
+                .put(&format!("thumbs/{file_id}"), thumb)
+                .await
+                .is_ok()
+            {
+                thumb_placed = true;
+            } else {
+                let _ = self.blobs.delete(&[&format!("thumbs/{file_id}")]).await;
             }
         }
-        let stored_thumb =
-            if thumb_state == ThumbState::Ready && thumb_path(&self.storage, &file_id).is_file() {
-                ThumbState::Ready
-            } else if thumb_state == ThumbState::Ready {
-                ThumbState::Failed
-            } else {
-                thumb_state
-            };
+        let stored_thumb = if thumb_state == ThumbState::Ready && thumb_placed {
+            ThumbState::Ready
+        } else if thumb_state == ThumbState::Ready {
+            ThumbState::Failed
+        } else {
+            thumb_state
+        };
         let now = now_text()?;
         let written = tx
             .execute(
@@ -2683,8 +2721,10 @@ impl Store for TursoStore {
             // The row was never born: the assembled bytes must not outlive
             // it, but the chunks stay staged — the attempt, not the upload,
             // is what failed.
-            let _ = std::fs::remove_file(&dest);
-            let _ = std::fs::remove_file(thumb_path(&self.storage, &file_id));
+            let _ = self
+                .blobs
+                .delete(&[&format!("files/{file_id}"), &format!("thumbs/{file_id}")])
+                .await;
             return Err(backend(e));
         }
         tx.execute(

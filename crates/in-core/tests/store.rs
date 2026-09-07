@@ -1764,3 +1764,201 @@ async fn settings_round_trip_from_missing() {
     );
     assert_eq!(store.get_setting("ui.other").await.unwrap(), None);
 }
+
+// -- the r2 backend ---------------------------------------------------------
+//
+// The flows the local tree is tested with, over an in-process S3 server:
+// `s3s` serves a filesystem-backed store on the loopback, `R2Blobs` is the
+// client, and `TursoStore` holds the rows. Nothing reaches past 127.0.0.1
+// and nothing is gated on the environment: the server binds port 0.
+
+use std::sync::Arc;
+
+use futures_util::StreamExt;
+use in_core::store::blobs::Blobs;
+use in_core::store::r2::R2Blobs;
+
+/// Spins the S3 test server: a filesystem store behind `s3s`, bound to an
+/// OS-picked loopback port. Returns the endpoint and the server root, for
+/// cleanup. The bucket directory is made up front — the server creates
+/// buckets on CreateBucket, which an object-store client never calls, so
+/// the directory is the bucket.
+async fn s3_server() -> (String, PathBuf) {
+    let root = std::env::temp_dir().join(format!("in-r2-server-{}", Ulid::new()));
+    std::fs::create_dir_all(root.join("in-test")).unwrap();
+    // The object-store client signs every request; without an auth provider
+    // the server would answer 501 to all of them. The credentials here are
+    // the same pair the client is opened with below.
+    let auth = s3s::auth::SimpleAuth::from_single("test-key", "test-secret");
+    // `set_auth` is `&mut self` in this s3s generation: it mutates in
+    // place instead of chaining.
+    let mut builder =
+        s3s::service::S3ServiceBuilder::new(s3s_fs::FileSystem::new(&root).unwrap());
+    builder.set_auth(auth);
+    let service = builder.build();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let service = service.clone();
+            tokio::spawn(async move {
+                let io = hyper_util::rt::TokioIo::new(stream);
+                let http = hyper_util::server::conn::auto::Builder::new(
+                    hyper_util::rt::TokioExecutor::new(),
+                );
+                let _ = http.serve_connection(io, service).await;
+            });
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), root)
+}
+
+/// A store whose bytes live behind [`R2Blobs`], plus the pieces a test
+/// needs around it: the blobs handle (to plant orphans and to read the
+/// bucket the way the sweep's eyes do) and the scratch paths, cleaned up on
+/// drop.
+struct R2Scratch {
+    dir: PathBuf,
+    root: PathBuf,
+    blobs: Arc<R2Blobs>,
+    store: TursoStore,
+}
+
+impl R2Scratch {
+    async fn open() -> Self {
+        let (endpoint, root) = s3_server().await;
+        let blobs = Arc::new(
+            R2Blobs::open(&endpoint, "in-test", "test-key", "test-secret", true).unwrap(),
+        );
+        let dir = std::env::temp_dir().join(format!("in-r2-{}", Ulid::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("in.db");
+        let storage = dir.join("storage");
+        let store =
+            TursoStore::open_with_blobs(db.to_str().unwrap(), Some(&storage), blobs.clone())
+                .await
+                .unwrap();
+        Self {
+            dir,
+            root,
+            blobs,
+            store,
+        }
+    }
+}
+
+impl Drop for R2Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Collects a [`FileSpan`](in_core::store::FileSpan)'s frames.
+async fn drain(span: in_core::store::FileSpan) -> Vec<u8> {
+    let mut span = span;
+    let mut out = Vec::new();
+    while let Some(frame) = span.stream.next().await {
+        out.extend_from_slice(&frame.unwrap());
+    }
+    out
+}
+
+#[tokio::test]
+async fn r2_insert_round_trips_byte_identical() {
+    let scratch = R2Scratch::open().await;
+    let alice = alice(&scratch.store).await;
+    let bytes: Vec<u8> = (0..256 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let file = scratch
+        .store
+        .insert_file(alice.id.as_str(), None, "data.bin", &bytes)
+        .await
+        .unwrap();
+    assert_eq!(scratch.store.file_bytes(&file.id).await.unwrap().unwrap(), bytes);
+}
+
+#[tokio::test]
+async fn r2_file_stream_serves_the_mid_file_range() {
+    let scratch = R2Scratch::open().await;
+    let alice = alice(&scratch.store).await;
+    let bytes: Vec<u8> = (0..256 * 1024u32).map(|i| (i % 251) as u8).collect();
+    let file = scratch
+        .store
+        .insert_file(alice.id.as_str(), None, "data.bin", &bytes)
+        .await
+        .unwrap();
+    let span = scratch
+        .store
+        .file_stream(&file.id, 1000, 500)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(span.len, 500);
+    let got = drain(span).await;
+    assert_eq!(got, bytes[1000..1500]);
+}
+
+#[tokio::test]
+async fn r2_purge_takes_the_key_and_the_bucket_forgets_it() {
+    let scratch = R2Scratch::open().await;
+    let alice = alice(&scratch.store).await;
+    let file = scratch
+        .store
+        .insert_file(alice.id.as_str(), None, "gone.bin", b"trash me")
+        .await
+        .unwrap();
+    scratch.store.delete_file(&file.id).await.unwrap();
+    scratch.store.purge_file(&file.id).await.unwrap();
+    assert!(scratch.blobs.list("files").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn r2_the_sweep_takes_orphans_and_leaves_known_keys() {
+    let scratch = R2Scratch::open().await;
+    let alice = alice(&scratch.store).await;
+    let file = scratch
+        .store
+        .insert_file(alice.id.as_str(), None, "kept.bin", b"kept bytes")
+        .await
+        .unwrap();
+    // A client-side PUT with no row behind it — the exact shape the boot
+    // sweep's orphan pass exists to clean.
+    scratch
+        .blobs
+        .put("files/orphaned-by-crash", b"stray")
+        .await
+        .unwrap();
+    // `boot_sweeps` runs the orphan sweep over the bucket, exactly as the
+    // server does in its background task.
+    scratch.store.boot_sweeps().await.unwrap();
+    let names = scratch.blobs.list("files").await.unwrap();
+    assert!(!names.iter().any(|name| name.contains("orphaned-by-crash")));
+    // The known key is untouched — the sweep deletes what no row names,
+    // never what a row names.
+    assert_eq!(
+        scratch.store.file_bytes(&file.id).await.unwrap().unwrap(),
+        b"kept bytes"
+    );
+}
+
+#[tokio::test]
+async fn r2_thumbnails_round_trip() {
+    let scratch = R2Scratch::open().await;
+    let alice = alice(&scratch.store).await;
+    let file = scratch
+        .store
+        .insert_file(alice.id.as_str(), None, "red.png", &png_bytes())
+        .await
+        .unwrap();
+    assert_eq!(file.thumb_state, ThumbState::Ready);
+    let served = scratch.store.thumb_bytes(&file.id).await.unwrap().unwrap();
+    assert!(!served.is_empty());
+    // The same bytes sit at the thumbnail key in the bucket.
+    let stored = scratch
+        .blobs
+        .get(&format!("thumbs/{}", file.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored, served);
+}

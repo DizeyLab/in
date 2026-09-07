@@ -15,6 +15,8 @@ server = [
   "dep:async-trait",
   "dep:bytes",
   "dep:futures-core",
+  "dep:futures-util",
+  "dep:object_store",
   "dep:tokio-util",
   "dep:base64",
   "dep:argon2",
@@ -32,6 +34,8 @@ server = [
 async-trait = { version = "0.1.92", optional = true }
 bytes = { version = "1", optional = true }
 futures-core = { version = "0.3", optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+object_store = { workspace = true, optional = true }
 tokio-util = { version = "0.7", features = ["io"], optional = true }
 base64 = { workspace = true, optional = true }
 argon2 = { workspace = true, optional = true }
@@ -54,4 +58,7 @@ async-trait = "0.1.92"
 serde_json.workspace = true
 tokio = { workspace = true }
 tempfile = "3"
+s3s = "=0.15.0"
+s3s-fs = "=0.15.0"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

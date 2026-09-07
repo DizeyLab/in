@@ -168,19 +168,62 @@ struct OidcToml {
     other: std::collections::BTreeMap<String, toml::Value>,
 }
 
+/// The two shapes the `storage` key legally takes. TOML cannot carry a
+/// `storage = "path"` value and a `[storage.r2]` table in one file — a key
+/// cannot be both a value and a table — so the untagged enum reads whichever
+/// is there, and a file claiming both fails to parse, which is the honest
+/// answer.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StorageToml {
+    /// `storage = "path"`: the bytes live in the local tree.
+    Path(String),
+    /// A `[storage]` table; today only `r2` lives under it.
+    Table(StorageTableToml),
+}
+
+/// The `[storage]` table shape. An empty one is legal and means local.
+#[derive(Deserialize)]
+struct StorageTableToml {
+    r2: Option<R2Toml>,
+    #[serde(flatten, default)]
+    other: std::collections::BTreeMap<String, toml::Value>,
+}
+
+/// The `[storage.r2]` table, before the values are checked. A table present
+/// but missing a key is [`ConfigError::Missing`] — absence of the whole
+/// table is the local backend, absence inside the table is a mistake.
+#[derive(Deserialize)]
+struct R2Toml {
+    account_id: Option<String>,
+    bucket: Option<String>,
+    key_file: Option<String>,
+    #[serde(flatten, default)]
+    other: std::collections::BTreeMap<String, toml::Value>,
+}
+
+/// One `[[services]]` entry, before the values are checked.
+#[derive(Deserialize)]
+struct ServiceToml {
+    key: Option<String>,
+    name: Option<String>,
+    url: Option<String>,
+}
+
 /// The shape of `config/in.toml`, before the values are checked. Anything
 /// else the file says lands in `other`, which is read for its key names only
 /// — enough for the report to say a key was seen and not obeyed.
 #[derive(Deserialize)]
 struct Toml {
     database: Option<String>,
-    storage: Option<String>,
+    storage: Option<StorageToml>,
     listen: Option<String>,
     live_seconds: Option<u64>,
     purge_after_days: Option<u32>,
     default_quota_bytes: Option<u64>,
     base_url: Option<String>,
     oidc: Option<OidcToml>,
+    services: Option<Vec<ServiceToml>>,
     #[serde(flatten)]
     other: std::collections::BTreeMap<String, toml::Value>,
 }
@@ -199,6 +242,37 @@ pub struct OidcConfig {
     pub redirect_uri: String,
 }
 
+/// Cloudflare R2 as the blob backend, from the `[storage.r2]` table. The
+/// database keeps every row; only the file bytes move into the bucket.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct R2Config {
+    /// The R2 account id: the endpoint is
+    /// `https://{account_id}.r2.cloudflarestorage.com`.
+    pub account_id: String,
+    /// The bucket the blobs land in, under `files/` and `thumbs/` — the
+    /// same layout the local tree uses, so one `rclone` maps between them.
+    pub bucket: String,
+    /// The key file, resolved against the config directory like every other
+    /// path here. Two lines: the access key id, then the secret. Read by
+    /// the web binary at boot, never logged.
+    pub key_file: PathBuf,
+}
+
+/// One entry of the `[[services]]` list: an app of the suite the signed-in
+/// chrome's switcher links to.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ServiceConfig {
+    /// The word the switcher renders for it — `in`, `im`, `iz`. The entry
+    /// whose key is this app's own (`"in"`) is the one marked as where the
+    /// reader already is.
+    pub key: String,
+    /// The human label — "Files", "Account", "Board" — the link's title.
+    pub name: String,
+    /// The service's base URL: scheme and host, no trailing slash — the
+    /// shape `base_url` has, refused on the same terms.
+    pub url: String,
+}
+
 /// What the process needs to know before it opens a socket.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -209,6 +283,10 @@ pub struct Config {
     /// absolute. Bytes never sit in the database: this directory and the
     /// database file are backed up together, or not at all.
     pub storage: PathBuf,
+    /// The R2 backend when `[storage.r2]` is set; `None` keeps the bytes in
+    /// the local tree. `storage` still names a local directory either way:
+    /// upload chunks stage there before `adopt` streams them up.
+    pub r2: Option<R2Config>,
     /// The address the server binds. The only source for this — `HOST` and
     /// `PORT` environment variables are never read.
     pub listen: SocketAddr,
@@ -327,8 +405,42 @@ impl Config {
         let database = value(toml.database).ok_or(ConfigError::Missing("database"))?;
         let database_path = absolute(dir, Path::new(&database));
 
-        let storage = match value(toml.storage) {
-            Some(raw) => absolute(dir, Path::new(&raw)),
+        // `storage` has two shapes TOML keeps mutually exclusive: a plain
+        // value (the local bytes-tree directory) and a `[storage.r2]` table
+        // (the bytes in a bucket). A table without `r2` inside, and no key
+        // at all, are both the local default — the tree still names where
+        // chunks stage. Absence of the table is what selects the local
+        // backend, so the completion below must never add one.
+        let mut r2: Option<R2Config> = None;
+        let mut storage_ignored: Vec<String> = Vec::new();
+        let storage = match toml.storage {
+            Some(StorageToml::Path(raw)) => match value(Some(raw)) {
+                Some(path) => absolute(dir, Path::new(&path)),
+                None => default_storage(&database_path),
+            },
+            Some(StorageToml::Table(table)) => {
+                storage_ignored
+                    .extend(table.other.into_keys().map(|key| format!("storage.{key}")));
+                if let Some(table) = table.r2 {
+                    let account_id = value(table.account_id)
+                        .ok_or(ConfigError::Missing("storage.r2.account_id"))?;
+                    let bucket =
+                        value(table.bucket).ok_or(ConfigError::Missing("storage.r2.bucket"))?;
+                    let key_file = value(table.key_file)
+                        .ok_or(ConfigError::Missing("storage.r2.key_file"))?;
+                    storage_ignored.extend(
+                        table.other.into_keys().map(|key| format!("storage.r2.{key}")),
+                    );
+                    // The key file is a path like `storage` is: written
+                    // relative to the file that named it.
+                    r2 = Some(R2Config {
+                        account_id,
+                        bucket,
+                        key_file: absolute(dir, Path::new(&key_file)),
+                    });
+                }
+                default_storage(&database_path)
+            }
             None => default_storage(&database_path),
         };
 
@@ -377,11 +489,13 @@ impl Config {
             .unwrap_or_else(|| format!("{}/auth/callback", listen_url_of(&listen)));
 
         let mut ignored: Vec<String> = toml.other.into_keys().collect();
+        ignored.extend(storage_ignored);
         ignored.extend(oidc_toml.other.into_keys().map(|key| format!("oidc.{key}")));
 
         Ok(Config {
             database: database_path.display().to_string(),
             storage,
+            r2,
             listen,
             live_seconds,
             purge_after_days,
@@ -426,6 +540,13 @@ impl Config {
         let mut lines = vec![
             format!("database  {}", self.database),
             format!("storage   {}", self.storage.display()),
+            format!(
+                "blobs     {}",
+                match &self.r2 {
+                    Some(r2) => format!("r2 {}", r2.bucket),
+                    None => "local".to_string(),
+                }
+            ),
             format!("listen    {}", self.listen),
             format!("oidc      {}", self.oidc.issuer),
         ];
@@ -501,7 +622,7 @@ fn complete(path: &Path, text: &str, base: &Path) {
     // `storage` has no fixed default to print: a file silent about it derives
     // the directory from where `database` points, so the completed line says
     // the value this boot actually resolved rather than a placeholder.
-    if !mentions(text, "storage") {
+    if !mentions(text, "storage") && !mentions_storage_table(text) {
         // The same base `parse` resolves against, or the completed line would
         // point somewhere this boot never looks (config/ vs the directory
         // the app runs from).
@@ -581,6 +702,19 @@ fn mentions(text: &str, key: &str) -> bool {
         line.trim_start()
             .strip_prefix(key)
             .is_some_and(|rest| rest.trim_start().starts_with('='))
+    })
+}
+
+/// Whether the file carries a `[storage]` table at all — `[storage.r2]` or
+/// any sibling under it. [`mentions`] cannot see one: a table header is not
+/// a `key = value` line. The check matters because completing a file that
+/// already has the table with a top-level `storage = "..."` would make the
+/// next boot unparseable — one key cannot be both a value and a table.
+fn mentions_storage_table(text: &str) -> bool {
+    text.lines().any(|line| {
+        line.trim_start().strip_prefix('[').is_some_and(|rest| {
+            rest.starts_with("storage]") || rest.starts_with("storage.")
+        })
     })
 }
 
@@ -859,6 +993,72 @@ client_secret = "s3cret"
                 .parent()
                 .unwrap()
                 .join("storage")
+        );
+    }
+
+    #[test]
+    fn storage_r2_absent_means_local() {
+        let scratch = Scratch::new();
+        scratch.write(FULL);
+        let config = scratch.load().unwrap();
+        assert_eq!(config.r2, None);
+        assert!(config.report().iter().any(|line| line == "blobs     local"));
+    }
+
+    #[test]
+    fn storage_r2_table_parses_and_resolves_the_key_file() {
+        let scratch = Scratch::new();
+        scratch.write(
+            r#"database = "in.db"
+[storage.r2]
+account_id = "abc123"
+bucket = "in-blobs"
+key_file = "r2.keys"
+[oidc]
+issuer = "https://id.example.com"
+client_id = "in"
+client_secret = "s3cret"
+"#,
+        );
+        let config = scratch.load().unwrap();
+        let r2 = config.r2.clone().expect("[storage.r2] set");
+        assert_eq!(r2.account_id, "abc123");
+        assert_eq!(r2.bucket, "in-blobs");
+        assert_eq!(r2.key_file, scratch.dir.join("r2.keys"));
+        assert!(config
+            .report()
+            .iter()
+            .any(|line| line == "blobs     r2 in-blobs"));
+        // The storage directory still resolves — chunks stage there — and
+        // the file is completed with no top-level `storage =` line, which
+        // would collide with the table on the next parse.
+        assert_eq!(
+            config.storage,
+            PathBuf::from(&config.database)
+                .parent()
+                .unwrap()
+                .join("storage")
+        );
+        let completed = std::fs::read_to_string(scratch.dir.join(FILE_NAME)).unwrap();
+        assert!(!mentions(&completed, "storage"), "{completed}");
+    }
+
+    #[test]
+    fn an_incomplete_storage_r2_table_is_refused() {
+        let scratch = Scratch::new();
+        scratch.write(
+            r#"database = "in.db"
+[storage.r2]
+account_id = "abc123"
+[oidc]
+issuer = "https://id.example.com"
+client_id = "in"
+client_secret = "s3cret"
+"#,
+        );
+        assert_eq!(
+            scratch.load().unwrap_err(),
+            ConfigError::Missing("storage.r2.bucket")
         );
     }
 }

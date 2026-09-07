@@ -348,6 +348,7 @@ impl TestApp {
             purge_after_days: 30,
             default_quota_bytes: 10 * 1024 * 1024 * 1024,
             base_url: base_url.map(str::to_string),
+            r2: None,
             oidc: OidcConfig {
                 issuer: fake.url(),
                 client_id: "in-test".to_string(),

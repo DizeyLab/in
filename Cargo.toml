@@ -26,6 +26,7 @@ chacha20poly1305 = "0.10.1"
 base64 = "0.22.1"
 toml = "1"
 async-trait = "0.1.92"
+object_store = { version = "=0.14.1", default-features = false, features = ["aws"] }
 image = { version = "0.25", default-features = false, features = [
   "jpeg",
   "png",
