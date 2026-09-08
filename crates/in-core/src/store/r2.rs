@@ -27,7 +27,7 @@ use object_store::{
 };
 
 use super::FileSpan;
-use super::blobs::{BlobError, Blobs};
+use super::blobs::{BlobEntry, BlobError, Blobs};
 
 /// The part size [`R2Blobs::adopt`] streams up in: 8 MiB, the chunk size the
 /// server fixes for uploads, so the staging side and the bucket side speak
@@ -236,10 +236,10 @@ impl Blobs for R2Blobs {
         Ok(())
     }
 
-    async fn list(&self, dir: &str) -> Result<Vec<String>, BlobError> {
+    async fn list_with_times(&self, dir: &str) -> Result<Vec<BlobEntry>, BlobError> {
         let separator = format!("{dir}/");
         let prefix = ObjectPath::from(separator.clone());
-        let mut names = Vec::new();
+        let mut out = Vec::new();
         let mut listing = self.store.list(Some(&prefix));
         while let Some(entry) = listing.next().await {
             let meta = entry?;
@@ -247,8 +247,15 @@ impl Blobs for R2Blobs {
             // sweep compares these names against rows, and a nested name
             // that lost its directory would lie about what it names.
             let full = meta.location.to_string();
-            names.push(full.strip_prefix(&separator).unwrap_or(&full).to_string());
+            // `last_modified` is chrono's; the crate's own clock is `time`,
+            // and a unix second crosses between them without a dependency.
+            let modified = time::OffsetDateTime::from_unix_timestamp(meta.last_modified.timestamp())
+                .ok();
+            out.push(BlobEntry {
+                name: full.strip_prefix(&separator).unwrap_or(&full).to_string(),
+                modified,
+            });
         }
-        Ok(names)
+        Ok(out)
     }
 }

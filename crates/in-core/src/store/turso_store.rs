@@ -220,6 +220,18 @@ impl TursoStore {
     /// whose file is gone is only said out loud and otherwise kept, because
     /// deleting the row would turn a lost file into a lost fact — the row is
     /// still what screens list, and a re-upload replaces it cleanly.
+    ///
+    /// The store outlives any one copy of the database now that the bytes
+    /// sit in a shared bucket, so an unknown object is reclaimed ONLY when
+    /// it is no newer than the newest moment the database knows (the latest
+    /// `file.created_at` / `file.updated_at` / `upload_session.created_at`);
+    /// anything newer is kept and said out loud. A crash orphan is older
+    /// than the next successful upload and goes on a later boot, while
+    /// uploads a stale database never heard of are always newer than its
+    /// newest row and are never touched — a database three days behind the
+    /// bucket once cost four real uploads here. An empty database knows no
+    /// moment at all, which is the stale case at its worst: it deletes
+    /// nothing.
     async fn sweep_orphan_files(&self) -> Result<()> {
         // The whole pass — the id reads and the directory walks — holds the
         // database's write lock. A writer lands a new file while holding
@@ -244,39 +256,67 @@ impl TursoStore {
             "SELECT id FROM upload_session WHERE state = 'active'",
         )
         .await?;
+        // The watermark: the newest moment any row carries. Read under the
+        // same lock as the ids, so a writer that commits mid-sweep either
+        // is in both sets or in neither.
+        let watermark = newest_known(&tx).await?;
+        let mut kept = 0usize;
+        // Whether an unknown object may be reclaimed: only one no newer
+        // than the database's newest moment. An age the backend will not
+        // report, and an empty database, both answer no.
+        let reclaimable = |modified: Option<OffsetDateTime>| match (watermark, modified) {
+            (Some(newest), Some(at)) => at <= newest,
+            _ => false,
+        };
         for (dir, known, kind) in [
             (FILES_DIR, &files, "file"),
             (THUMBS_DIR, &thumbs, "thumbnail"),
         ] {
             // One listing per half: the names the tree holds, temp files
-            // included — a `.tmp` is an orphan like any other.
-            let names: std::collections::HashSet<String> = self
+            // included — a `.tmp` is an orphan like any other — each with
+            // the moment it last changed.
+            let entries = self
                 .blobs
-                .list(dir)
+                .list_with_times(dir)
                 .await
-                .map_err(|e| StoreError::Backend(e.to_string()))?
-                .into_iter()
-                .collect();
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            let names: std::collections::HashSet<&str> =
+                entries.iter().map(|entry| entry.name.as_str()).collect();
             for id in known.iter() {
-                if !names.contains(id) {
+                if !names.contains(id.as_str()) {
                     eprintln!("{kind} {id} names a file that is not there");
                 }
             }
-            for name in names {
-                if !known.contains(&name) {
-                    if let Err(e) = self.blobs.delete(&[&format!("{dir}/{name}")]).await {
-                        eprintln!("could not delete orphaned storage file {dir}/{name}: {e}");
-                    }
+            for entry in &entries {
+                if known.contains(&entry.name) {
+                    continue;
+                }
+                if !reclaimable(entry.modified) {
+                    kept += 1;
+                    eprintln!(
+                        "{kind} {} is newer than anything the database knows and was kept — \
+                         the database may be behind the store",
+                        entry.name
+                    );
+                    continue;
+                }
+                if let Err(e) = self.blobs.delete(&[&format!("{dir}/{}", entry.name)]).await {
+                    eprintln!("could not delete orphaned storage file {dir}/{}: {e}", entry.name);
                 }
             }
         }
         // A staged-chunk directory outlives its session only through a crash
         // between the session write and the first chunk, or a removed session
-        // row — either way nothing will ever finish it, so it goes.
+        // row — either way nothing will ever finish it, so it goes, under the
+        // same watermark rule and with the directory's own mtime as its age.
         let uploads = self.storage.join(UPLOADS_DIR);
         let entries = match std::fs::read_dir(&uploads) {
             Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                report_kept(kept);
+                tx.commit().await.map_err(backend)?;
+                return Ok(());
+            }
             Err(e) => return Err(backend(e)),
         };
         for entry in entries {
@@ -285,17 +325,31 @@ impl TursoStore {
             if !path.is_dir() {
                 continue;
             }
-            let named = entry
-                .file_name()
-                .to_str()
-                .is_some_and(|n| sessions.contains(n));
-            if !named && let Err(e) = std::fs::remove_dir_all(&path) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if sessions.contains(&name) {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .map(OffsetDateTime::from);
+            if !reclaimable(modified) {
+                kept += 1;
+                eprintln!(
+                    "staged upload {name} is newer than anything the database knows and was kept — \
+                     the database may be behind the store"
+                );
+                continue;
+            }
+            if let Err(e) = std::fs::remove_dir_all(&path) {
                 eprintln!(
                     "could not delete orphaned upload directory {}: {e}",
                     path.display()
                 );
             }
         }
+        report_kept(kept);
         // Nothing was written through the transaction: it exists to hold
         // the write lock across the walk, and committing it ends the pass.
         tx.commit().await.map_err(backend)?;
@@ -809,6 +863,40 @@ async fn known_ids(conn: &Connection, sql: &str) -> Result<std::collections::Has
         out.insert(row.get::<String>(0).map_err(backend)?);
     }
     Ok(out)
+}
+
+/// The newest moment the database knows: the latest of the file rows'
+/// stamps and the upload sessions'. `None` for a database with no rows at
+/// all, which is what tells the sweep it may reclaim nothing.
+async fn newest_known(conn: &Connection) -> Result<Option<OffsetDateTime>> {
+    let mut newest: Option<OffsetDateTime> = None;
+    for sql in [
+        "SELECT MAX(created_at) FROM file",
+        "SELECT MAX(updated_at) FROM file",
+        "SELECT MAX(created_at) FROM upload_session",
+    ] {
+        let mut rows = conn.query(sql, ()).await.map_err(backend)?;
+        if let Some(row) = rows.next().await.map_err(backend)?
+            && let Some(raw) = row.get::<Option<String>>(0).map_err(backend)?
+        {
+            let at = parse_stamp(&raw)?;
+            if newest.is_none_or(|seen| at > seen) {
+                newest = Some(at);
+            }
+        }
+    }
+    Ok(newest)
+}
+
+/// The one summary line a sweep that kept something owes the log; a sweep
+/// that kept nothing says nothing.
+fn report_kept(kept: usize) {
+    if kept > 0 {
+        eprintln!(
+            "boot sweep kept {kept} unknown object(s) newer than the database — \
+             this database may be behind the store"
+        );
+    }
 }
 
 /// A database sidecar (`in.db-wal`, `in.db-shm`): the file beside the main

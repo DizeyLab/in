@@ -18,6 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
+use time::OffsetDateTime;
 use ulid::Ulid;
 
 use super::FileSpan;
@@ -76,10 +77,34 @@ pub trait Blobs: Send + Sync + 'static {
     /// not an error.
     async fn delete(&self, keys: &[&str]) -> Result<(), BlobError>;
 
-    /// The names under one directory of the key space (`"files"` or
-    /// `"thumbs"`), temp files included — the orphan sweep's eyes. A
-    /// listing is a walk of one directory, never of the whole tree.
-    async fn list(&self, dir: &str) -> Result<Vec<String>, BlobError>;
+    /// What one directory of the key space (`"files"` or `"thumbs"`) holds,
+    /// temp files included — the orphan sweep's eyes, with the moment each
+    /// object last changed, because the sweep only reclaims what is older
+    /// than the newest row the database knows. A listing is a walk of one
+    /// directory, never of the whole tree.
+    async fn list_with_times(&self, dir: &str) -> Result<Vec<BlobEntry>, BlobError>;
+
+    /// The names alone, for callers that do not weigh ages.
+    async fn list(&self, dir: &str) -> Result<Vec<String>, BlobError> {
+        Ok(self
+            .list_with_times(dir)
+            .await?
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect())
+    }
+}
+
+/// One object in a directory of the key space: its name, and when its bytes
+/// last changed. `modified` is `None` when the backend will not say — an
+/// object whose age is unknown is never reclaimed, because the sweep cannot
+/// prove it predates the database.
+#[derive(Debug, Clone)]
+pub struct BlobEntry {
+    /// The name under the directory, the way a row would name it.
+    pub name: String,
+    /// When the object last changed, as the backend reports it.
+    pub modified: Option<OffsetDateTime>,
 }
 
 /// The blob tree on the local filesystem: `root/files/<id>` and
@@ -194,7 +219,7 @@ impl Blobs for LocalBlobs {
         Ok(())
     }
 
-    async fn list(&self, dir: &str) -> Result<Vec<String>, BlobError> {
+    async fn list_with_times(&self, dir: &str) -> Result<Vec<BlobEntry>, BlobError> {
         let entries = match std::fs::read_dir(self.root.join(dir)) {
             Ok(entries) => entries,
             // A half of the tree that does not exist yet lists empty: a
@@ -202,7 +227,7 @@ impl Blobs for LocalBlobs {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
         };
-        let mut names = Vec::new();
+        let mut out = Vec::new();
         for entry in entries {
             let entry = entry?;
             // Files only: the sweep reads this as "what the tree holds",
@@ -211,9 +236,14 @@ impl Blobs for LocalBlobs {
                 continue;
             }
             if let Ok(name) = entry.file_name().into_string() {
-                names.push(name);
+                let modified = entry
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .map(OffsetDateTime::from);
+                out.push(BlobEntry { name, modified });
             }
         }
-        Ok(names)
+        Ok(out)
     }
 }

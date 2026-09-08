@@ -67,6 +67,12 @@ client_secret = "in-dev-secret"
 # Absence is meaningful: no table, no bucket, local bytes. Nothing here is
 # ever completed into the file for you.
 #
+# A bucket outlives any one copy of the database, so the boot sweep reclaims
+# an object no row names only when it is older than the newest moment the
+# database knows. Booting against a database that is behind the bucket keeps
+# every newer object and says so, one log line each; an empty database
+# deletes nothing at all.
+#
 # Migrating an existing deployment's bytes into the bucket — database and
 # storage tree stay where they are; run once with the server stopped:
 #   rclone copy <storage>/files ":s3,provider=Cloudflare,access_key_id=<key id>,secret_access_key=<secret>,region=auto,endpoint=https://<account_id>.r2.cloudflarestorage.com:<bucket>/files"

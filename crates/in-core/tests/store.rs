@@ -1095,17 +1095,93 @@ async fn search_finds_live_names_and_nothing_else() {
     assert!(scratch.store.search(&user.id, "   ", 50).await.unwrap().files.is_empty());
 }
 
+/// Moves the database's watermark — the newest moment any row carries — to
+/// `stamp`, so a test decides which side of it the planted junk falls on
+/// rather than the clock. `insert_file` writes "now"; a far-future stamp
+/// makes everything on disk older than the database, a far-past one makes
+/// everything newer.
+async fn restamp_files(scratch: &Scratch, stamp: &str) {
+    let conn = raw_conn(scratch).await;
+    conn.execute(
+        "UPDATE file SET created_at = ?1, updated_at = ?1",
+        turso::params![stamp],
+    )
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn the_boot_sweep_deletes_files_no_row_names() {
     let mut scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    scratch.store.insert_file(&user.id, None, "kept", b"data").await.unwrap();
     let stray = scratch.storage.join("files").join("stray");
     std::fs::write(&stray, b"orphan").unwrap();
     let ghost = scratch.storage.join("uploads").join("ghost");
     std::fs::create_dir_all(&ghost).unwrap();
     std::fs::write(ghost.join("0"), b"chunk").unwrap();
+    // Both are older than what the database knows, which is the only case
+    // in which the sweep may reclaim them.
+    restamp_files(&scratch, "2099-01-01T00:00:00Z").await;
     scratch.reopen().await;
     assert!(!stray.exists());
     assert!(!ghost.exists());
+}
+
+/// The incident this rule exists for: a database three days behind the
+/// shared bucket deleted four real uploads. An object newer than the newest
+/// row is an upload the database has not heard of yet, never an orphan.
+#[tokio::test]
+async fn the_boot_sweep_keeps_what_is_newer_than_the_database() {
+    let mut scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    scratch.store.insert_file(&user.id, None, "old", b"data").await.unwrap();
+    // The database is behind the store: its rows are ancient, the objects
+    // beside them arrived since.
+    restamp_files(&scratch, "2000-01-01T00:00:00Z").await;
+    let unknown = scratch.storage.join("files").join("uploaded-elsewhere");
+    std::fs::write(&unknown, b"a real upload").unwrap();
+    let staged = scratch.storage.join("uploads").join("live-session");
+    std::fs::create_dir_all(&staged).unwrap();
+    scratch.reopen().await;
+    assert!(unknown.exists());
+    assert!(staged.exists());
+}
+
+/// A fresh database against a populated bucket is the stale case at its
+/// worst: it knows no moment at all, so it may reclaim nothing.
+#[tokio::test]
+async fn the_boot_sweep_keeps_everything_when_the_database_is_empty() {
+    let mut scratch = Scratch::open().await;
+    let stray = scratch.storage.join("files").join("stray");
+    std::fs::create_dir_all(stray.parent().unwrap()).unwrap();
+    std::fs::write(&stray, b"someone else's upload").unwrap();
+    let ghost = scratch.storage.join("uploads").join("ghost");
+    std::fs::create_dir_all(&ghost).unwrap();
+    scratch.reopen().await;
+    assert!(stray.exists());
+    assert!(ghost.exists());
+}
+
+/// Thumbnails follow the files' rule, both ways.
+#[tokio::test]
+async fn the_boot_sweep_weighs_thumbnails_by_the_same_watermark() {
+    let mut scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    scratch.store.insert_file(&user.id, None, "row", b"data").await.unwrap();
+    let thumbs = scratch.storage.join("thumbs");
+    std::fs::create_dir_all(&thumbs).unwrap();
+    let old = thumbs.join("stale-thumb");
+    std::fs::write(&old, b"orphan").unwrap();
+    restamp_files(&scratch, "2099-01-01T00:00:00Z").await;
+    scratch.reopen().await;
+    assert!(!old.exists());
+
+    let new = thumbs.join("fresh-thumb");
+    std::fs::write(&new, b"newer than the database").unwrap();
+    restamp_files(&scratch, "2000-01-01T00:00:00Z").await;
+    scratch.reopen().await;
+    assert!(new.exists());
 }
 
 #[tokio::test]
@@ -1174,7 +1250,7 @@ async fn the_sweep_waits_for_a_writer_instead_of_deleting_its_file() {
             "INSERT INTO file (id, owner_id, folder_id, name, mime, size_bytes, \
              thumb_state, created_at, updated_at, deleted_at, download_count) \
              VALUES ('midwrite', ?1, NULL, 'midwrite.txt', 'text/plain', 8, 'none', \
-             '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL, 0)",
+             '2099-01-01T00:00:00Z', '2099-01-01T00:00:00Z', NULL, 0)",
             turso::params![user.id.as_str()],
         )
         .await
@@ -1916,16 +1992,19 @@ async fn r2_purge_takes_the_key_and_the_bucket_forgets_it() {
 async fn r2_the_sweep_takes_orphans_and_leaves_known_keys() {
     let scratch = R2Scratch::open().await;
     let alice = alice(&scratch.store).await;
-    let file = scratch
-        .store
-        .insert_file(alice.id.as_str(), None, "kept.bin", b"kept bytes")
-        .await
-        .unwrap();
     // A client-side PUT with no row behind it — the exact shape the boot
-    // sweep's orphan pass exists to clean.
+    // sweep's orphan pass exists to clean. It lands BEFORE the row below,
+    // which is what makes it older than the database's newest moment and so
+    // reclaimable; an object newer than that is an upload the database has
+    // not heard of and is kept.
     scratch
         .blobs
         .put("files/orphaned-by-crash", b"stray")
+        .await
+        .unwrap();
+    let file = scratch
+        .store
+        .insert_file(alice.id.as_str(), None, "kept.bin", b"kept bytes")
         .await
         .unwrap();
     // `boot_sweeps` runs the orphan sweep over the bucket, exactly as the
