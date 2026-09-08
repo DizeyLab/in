@@ -598,7 +598,7 @@ async fn drive(cx: &Cx) -> Result {
                 }
                 <form class="field-box field-box-search" method="get" action="/drive">
                     <input
-                        class="dd-search"
+                        class="filter-search"
                         type="search"
                         name="q"
                         value=(box_text.clone())
@@ -614,7 +614,7 @@ async fn drive(cx: &Cx) -> Result {
     }
                 </form>
                 <form class="field-box field-box-sort" method="get" action="/drive">
-    <select class="status-select" name="sort" data-autosubmit="" data-nosearch="" aria-label=(t(language, Key::Sort))>
+    <select class="status-select" name="sort" data-autosubmit="" aria-label=(t(language, Key::Sort))>
         <option value="name:asc" selected=(sort_value == "name:asc")>(t(language, Key::SortNameAZ))</option>
         <option value="name:desc" selected=(sort_value == "name:desc")>(t(language, Key::SortNameZA))</option>
         <option value="uploaded:desc" selected=(sort_value == "uploaded:desc")>(t(language, Key::SortNewest))</option>

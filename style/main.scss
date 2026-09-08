@@ -714,10 +714,10 @@ a {
   right: 0;
   z-index: 30;
   width: 220px;
-  padding: 8px 0;
+  padding: 8px;
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-2);
   visibility: hidden;
   opacity: 0;
@@ -734,20 +734,20 @@ a {
 .user-menu.user-menu-esc .user-menu-panel { visibility: hidden; opacity: 0; pointer-events: none; }
 
 .user-menu-name {
-  padding: 4px 14px 0;
+  padding: 4px 10px 0;
   font-size: 13px;
   font-weight: 600;
 }
 
 .user-menu-email {
-  padding: 2px 14px 0;
+  padding: 2px 10px 0;
   font-size: 12px;
   color: var(--muted);
   word-break: break-all;
 }
 
 .user-menu-role {
-  padding: 2px 14px 6px;
+  padding: 2px 10px 6px;
   font-size: 12px;
   color: var(--muted-soft);
   text-transform: capitalize;
@@ -758,7 +758,8 @@ a {
   align-items: center;
   width: 100%;
   height: 32px;
-  padding: 0 14px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
   border: none;
   background: none;
   font-family: inherit;
@@ -2269,25 +2270,24 @@ img.avatar {
 }
 
 // The board's search field is the bar's third field-box, and its typing
-// area is the house's own type-as-filter input: the rules `.dd-search`
-// wears inside dropdown panels, freed of the panel-only block geometry and
-// filling the box past its label.
+// area speaks the panel type-to-filter's voice — borderless type on the
+// box — under its own class, so the panel's `.dd-search` block geometry
+// and its :focus-visible underline swap stay inside dropdown panels and
+// the shared focus ring reaches the typing area.
 .field-box-search {
   flex: 0 1 240px;
   min-width: 0;
 
   .field-text { flex: none; }
 
-  .dd-search {
+  .filter-search {
     flex: 1;
     min-width: 0;
-    width: auto;
-    height: auto;
-    margin-bottom: 0;
-    padding: 0;
-    // The panel hairline the base rule draws under the typing area reads as
-    // a stray underline inside the bordered box; the box is the frame.
-    border-bottom: none;
+    border: none;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
   }
 }
 
@@ -3350,9 +3350,10 @@ img.avatar {
 
 // The house dropdown trigger — `dropdown.rs`'s <button> clone of a select —
 // draws the same chevron the rest of the app uses, so the closed look stands
-// in for the field it replaced. A native select keeps the browser's own
-// arrow on the plain .field-input box.
-.dd-trigger {
+// in for the field it replaced. Scoped to the field-input trigger, as the
+// reference app has it: a status-select trigger stays bare — its box is the
+// chrome, and no chevron rides it.
+.field-input.dd-trigger {
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
@@ -3365,7 +3366,7 @@ img.avatar {
 // Dark theme's lighter muted ink, baked into a second copy of the chevron:
 // a data-URI can't read custom properties.
 [data-theme="dark"] {
-  .dd-trigger {
+  .field-input.dd-trigger {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='%238b949e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
   }
 }
@@ -3403,7 +3404,7 @@ input[type="radio"] {
 // The trigger carries the select's own classes (`.status-select` or
 // `.field-input`), so its closed look is already right; this only resets
 // what a bare `<button>` adds on top of that.
-.status-select.dd-trigger { padding: 0 24px 0 0; background-position: right 4px center; }
+.status-select.dd-trigger { padding: 0; }
 .dd-trigger {
   display: flex;
   align-items: center;
@@ -5025,11 +5026,11 @@ div.member-row + div.member-row {
 .entry-options .user-menu-panel .quiet {
   border: none;
   background: none;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   width: 100%;
   height: 32px;
   justify-content: flex-start;
-  padding: 0 14px;
+  padding: 0 10px;
   font-size: 13px;
   color: var(--ink-soft);
 
@@ -5105,6 +5106,63 @@ div.member-row + div.member-row {
   margin: 0 0 16px;
 
   .share-add-email { flex: 1; min-width: 0; }
+  .share-picker { flex: 1 1 100%; }
+  .share-add-access { margin-left: auto; }
+}
+// The multi-select people list: an All row up top, then one checkable row
+// per candidate — the iz pop-panel family, token-painted so every skin
+// carries it without its own rules.
+.pop-panel {
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+}
+.pop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pop-list-scroll { max-height: 220px; overflow-y: auto; }
+.pop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+
+  &:hover { background: var(--row-hover); }
+
+  input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
+}
+.pop-row-name { font-size: 12px; }
+// The All master row: kept apart from the scrolling candidates by a
+// hairline, so it stays visible however long the list grows.
+.share-pick-all {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+}
+// The candidate's address: pinned right, muted, ellipsized like the iz
+// chip names.
+.share-pick-mail {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--muted);
 }
 .share-link-row {
   display: flex;
@@ -5114,6 +5172,16 @@ div.member-row + div.member-row {
 
   .share-link-url { flex: 1; min-width: 0; color: var(--muted); }
   .pop-row-form { flex: none; }
+}
+
+// The legacy-link carry-forward note: its own full-width row under the link
+// row — never a squeezed flex child between the address and the revoke
+// button. Family note voice: plain muted text, no fill, both render sites.
+.share-link-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
 }
 // A section label inside the modal: muted, small, with air above.
 .share-section {
@@ -5180,6 +5248,16 @@ div.member-row + div.member-row {
   grid-template-columns: 40px minmax(0, 1fr) 76px 110px 88px;
   gap: 12px;
   align-items: center;
+}
+
+// The shared page's last column carries the grant's owner and access chip —
+// words, not the download count the drive counts in the same track. The
+// modifier is /shared-only: the track grows with the viewport so a real
+// name ellipsizes only under real pressure, and the drive page keeps its
+// fixed 88px.
+.drive-owner .drive-cols,
+.drive-owner .drive-open {
+  grid-template-columns: 40px minmax(0, 1fr) 76px 110px minmax(150px, 1fr);
 }
 
 .drive-head .drive-cols > span {
@@ -5319,7 +5397,9 @@ div.member-row + div.member-row {
 // fold away instead of crushing the name.
 @media (max-width: 620px) {
   .drive-cols,
-  .drive-open {
+  .drive-open,
+  .drive-owner .drive-cols,
+  .drive-owner .drive-open {
     grid-template-columns: 40px minmax(0, 1fr) 72px;
   }
 

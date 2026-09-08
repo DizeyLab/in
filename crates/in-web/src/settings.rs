@@ -481,9 +481,11 @@ async fn settings(cx: &Cx) -> Result {
                                         <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
                                     } else {
                                         <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>
-                                        <p class="field-note">(t(language, Key::LegacyLinkNote))</p>
                                     }
                                 </div>
+                                if url.is_none() {
+                                    <p class="share-link-note">(t(language, Key::LegacyLinkNote))</p>
+                                }
                             }
                         </div>
                     </section>

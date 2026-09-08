@@ -1996,7 +1996,7 @@ async fn share_modal_offers_the_im_directory() {
         // The owner as im knows her: never offered to share with herself.
         serde_json::json!({"sub": "sub-admin", "email": "ada@in.test", "name": "Ada", "admin": true}),
         // Valid in im but disabled here: sharing with her is sharing with
-        // nobody, so the dropdown never offers her.
+        // nobody, so the picker never offers her.
         serde_json::json!({"sub": "sub-gonca", "email": "gonca@in.test", "name": "Gonca", "admin": false}),
     ]);
     let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
@@ -2017,22 +2017,31 @@ async fn share_modal_offers_the_im_directory() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let text = page.text();
     assert!(
-        text.contains("<select class=\"field-input share-add-email\" name=\"email\""),
-        "modal kept the typed address: {text}"
+        text.contains("<div class=\"share-picker pop-panel\""),
+        "picker panel missing: {text}"
     );
     assert!(
-        text.contains("Pick a person"),
-        "no placeholder option: {text}"
+        text.contains("aria-label=\"Pick a person\""),
+        "no picker group label: {text}"
     );
-    assert!(text.contains("Ember — ember@in.test"), "{}", text);
-    assert!(text.contains("Bora — bora@in.test"), "{}", text);
+    assert!(
+        text.contains("type=\"checkbox\" name=\"email\" value=\"ember@in.test\""),
+        "Ember not offered as a checkable row: {text}"
+    );
+    assert!(
+        text.contains("type=\"checkbox\" name=\"email\" value=\"bora@in.test\""),
+        "Bora not offered as a checkable row: {text}"
+    );
     assert!(
         text.find("Bora").unwrap() < text.find("Ember").unwrap(),
         "directory not offered by name: {text}"
     );
-    assert!(!text.contains("Ada — ada@in.test"), "owner offered: {text}");
     assert!(
-        !text.contains("Gonca — gonca@in.test"),
+        !text.contains("value=\"ada@in.test\""),
+        "owner offered: {text}"
+    );
+    assert!(
+        !text.contains("value=\"gonca@in.test\""),
         "disabled account offered: {text}"
     );
 
@@ -2054,6 +2063,62 @@ async fn share_modal_offers_the_im_directory() {
         .get(&format!("/drive?share=file:{file}"), Some(&admin))
         .await;
     assert!(page.text().contains("Ember"), "{}", page.text());
+}
+
+/// One submit, several people: the picker posts one `email` field per
+/// checked row, and every address lands under Who has access carrying the
+/// one `can_download` the submit chose.
+#[tokio::test]
+async fn share_modal_grants_every_posted_address() {
+    let app = TestApp::build().await;
+    app.fake.set_directory(&[
+        serde_json::json!({"sub": "sub-ember", "email": "ember@in.test", "name": "Ember", "admin": false}),
+        serde_json::json!({"sub": "sub-bora", "email": "bora@in.test", "name": "Bora", "admin": false}),
+    ]);
+    let admin = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "crowd.txt", b"crowd").await;
+
+    // The picker exists only on a rendered modal, and the render is what
+    // provisions im's directory into the store; the post below is the
+    // picker's own submit, so it opens the modal first.
+    let page = app
+        .get(&format!("/drive?share=file:{file}"), Some(&admin))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&admin),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("email", "ember@in.test"),
+                ("email", "bora@in.test"),
+                ("can_download", "0"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "add refused: {:?}", answer.location);
+
+    let grants = app
+        .store
+        .shares_for_target(&owner, ShareKind::File, &file)
+        .await
+        .unwrap();
+    assert_eq!(grants.len(), 2, "not every posted address granted");
+    assert!(
+        grants.iter().all(|grant| !grant.can_download),
+        "view-only not applied to every grant"
+    );
+
+    let page = app
+        .get(&format!("/drive?share=file:{file}"), Some(&admin))
+        .await;
+    let text = page.text();
+    assert!(text.contains("Ember"), "{}", text);
+    assert!(text.contains("Bora"), "{}", text);
 }
 
 /// A directory that does not answer — im without the route, the way an
@@ -2745,7 +2810,10 @@ async fn the_family_flyout_holds_the_siblings_when_the_family_is_mirrored() {
     let nav = &body[nav_start..nav_start + nav_end];
     // Only the siblings hang in the flyout — this app's own row is the mark
     // the flyout hangs from, not an entry in it.
-    assert!(!nav.contains("href=\"https://files.example.com/\""), "{nav}");
+    assert!(
+        !nav.contains("href=\"https://files.example.com/\""),
+        "{nav}"
+    );
     assert!(nav.contains("href=\"https://id.example.com/\""), "{nav}");
     assert!(nav.contains("href=\"https://board.example.com/\""), "{nav}");
     assert!(nav.contains("title=\"Account\""), "{nav}");

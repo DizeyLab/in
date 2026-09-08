@@ -22,7 +22,8 @@
 
 use in_core::store::{File, ShareKind, Store, StoreError, ThumbState, User};
 use in_core::{hash_link_password, hash_share_token, link_password_matches, link_unlock_proof};
-use serde::Deserialize;
+use serde::de::{IgnoredAny, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use time::OffsetDateTime;
 use topcoat::Result;
 use topcoat::context::Cx;
@@ -393,18 +394,62 @@ async fn under_target(store: &dyn Store, owner_id: &str, target_id: &str, at: &s
         }
     }
 }
-#[derive(Deserialize)]
+/// The share form. The picker posts one `email` field per person, and
+/// serde_urlencoded hands a map visitor one pair at a time — a `Vec` field
+/// cannot see the repeats — so the impl below collects them itself. The
+/// typed-address fallback posts a single `email`, which lands the same way.
 struct ShareUserForm {
     kind: String,
     target_id: String,
-    #[serde(default)]
-    email: String,
-    #[serde(default)]
+    email: Vec<String>,
     can_download: Option<String>,
 }
 
-/// Shares one file or folder with one named person. The address is folded to
-/// lowercase before lookup; an unknown address is not-found.
+impl<'de> Deserialize<'de> for ShareUserForm {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct FormVisitor;
+        impl<'de> Visitor<'de> for FormVisitor {
+            type Value = ShareUserForm;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("the share form")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut form = ShareUserForm {
+                    kind: String::new(),
+                    target_id: String::new(),
+                    email: Vec::new(),
+                    can_download: None,
+                };
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "kind" => form.kind = map.next_value()?,
+                        "target_id" => form.target_id = map.next_value()?,
+                        // The repeats are the point: every checked row is
+                        // one pair, collected in post order.
+                        "email" => form.email.push(map.next_value()?),
+                        // Absent means the checkbox came unchecked.
+                        "can_download" => form.can_download = map.next_value()?,
+                        _ => {
+                            let _: IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(form)
+            }
+        }
+        deserializer.deserialize_map(FormVisitor)
+    }
+}
+
+/// Shares one file or folder with the people the form names: one `email`
+/// field per person, so the picker's multi-select posts them all in one
+/// submit. Each address is folded to lowercase before lookup; an unknown
+/// address is not-found.
 #[route(POST "/api/share/user/add")]
 async fn add_share(cx: &Cx, Form(input): Form<ShareUserForm>) -> Redirect {
     let user = match require_user(cx).await {
@@ -419,28 +464,31 @@ async fn add_share(cx: &Cx, Form(input): Form<ShareUserForm>) -> Redirect {
         return redirect_back(cx, "/settings", "add", Some(refusal));
     }
     let store = app(cx).store;
-    let grantee = store
-        .user_by_email(&input.email.trim().to_lowercase())
-        .await
-        .map_err(|_| Refusal::Unavailable);
-    let Ok(Some(grantee)) = grantee else {
+    // Absent means the checkbox came unchecked: view-only, like the
+    // sibling link creator above. One setting covers the whole submit.
+    let can_download = parse_flag(input.can_download.as_deref(), false);
+    // Nothing checked resolves to nobody, like a typed empty address.
+    if input.email.is_empty() {
         return redirect_back(cx, "/settings", "add", Some(Refusal::NotFound));
-    };
-    match store
-        .add_share_user(
-            &user.id,
-            kind,
-            &input.target_id,
-            &grantee.id,
-            // Absent means the checkbox came unchecked: view-only, like the
-            // sibling link creator above.
-            parse_flag(input.can_download.as_deref(), false),
-        )
-        .await
-    {
-        Ok(()) => redirect_back(cx, "/settings", "add", None),
-        Err(error) => redirect_back(cx, "/settings", "add", Some(refusal_of(error))),
     }
+    for email in &input.email {
+        let grantee = store
+            .user_by_email(&email.trim().to_lowercase())
+            .await
+            .map_err(|_| Refusal::Unavailable);
+        let Ok(Some(grantee)) = grantee else {
+            return redirect_back(cx, "/settings", "add", Some(Refusal::NotFound));
+        };
+        // Re-sharing updates the same row — the store upserts — so a name
+        // the list already carries cannot refuse here.
+        if let Err(error) = store
+            .add_share_user(&user.id, kind, &input.target_id, &grantee.id, can_download)
+            .await
+        {
+            return redirect_back(cx, "/settings", "add", Some(refusal_of(error)));
+        }
+    }
+    redirect_back(cx, "/settings", "add", None)
 }
 
 /// Unshares. Removing what was never shared is not an error; only the
@@ -460,8 +508,10 @@ async fn remove_share(cx: &Cx, Form(input): Form<ShareUserForm>) -> Redirect {
         return redirect_back(cx, "/settings", "remove", Some(refusal));
     }
     let store = app(cx).store;
+    // The remove form posts exactly one address.
+    let email = input.email.first().map(String::as_str).unwrap_or("");
     let grantee = store
-        .user_by_email(&input.email.trim().to_lowercase())
+        .user_by_email(&email.trim().to_lowercase())
         .await
         .map_err(|_| Refusal::Unavailable);
     let Ok(Some(grantee)) = grantee else {
@@ -1302,7 +1352,7 @@ async fn shared(cx: &Cx) -> Result {
                 <form class="field-box field-box-search" method="get" action="/shared">
                     <span class="field-text">(t(language, Key::NavSearch))</span>
                     <input
-                        class="dd-search"
+                        class="filter-search"
                         type="search"
                         name="q"
                         value=(box_text.clone())
@@ -1314,7 +1364,7 @@ async fn shared(cx: &Cx) -> Result {
                 </form>
                 <form class="field-box field-box-sort" method="get" action="/shared">
                     <span class="field-text">(t(language, Key::Sort))</span>
-                    <select class="status-select" name="sort" data-autosubmit="" data-nosearch="" aria-label=(t(language, Key::Sort))>
+                    <select class="status-select" name="sort" data-autosubmit="" aria-label=(t(language, Key::Sort))>
                         <option value="name:asc" selected=(sort_value == "name:asc")>(t(language, Key::SortNameAZ))</option>
                         <option value="name:desc" selected=(sort_value == "name:desc")>(t(language, Key::SortNameZA))</option>
                         <option value="uploaded:desc" selected=(sort_value == "uploaded:desc")>(t(language, Key::SortNewest))</option>
@@ -1338,7 +1388,7 @@ async fn shared(cx: &Cx) -> Result {
                     <input type="hidden" name="q" value=(box_text.clone())>
                 </form>
             </div>
-            <section class="panel drive-panel">
+            <section class="panel drive-panel drive-owner">
                 if rows.is_empty() {
                     <div class="drive-empty">
                         <span class="drive-empty-glyph" aria-hidden="true">"▤"</span>
@@ -1526,14 +1576,23 @@ pub(crate) async fn share_modal(
                     if candidates.is_empty() {
                         <input class="field-input share-add-email" type="email" name="email" required="" placeholder=(t(language, Key::SharePlaceholder)) aria-label=(t(language, Key::EmailAddress))>
                     } else {
-                        <select class="field-input share-add-email" name="email" required="" aria-label=(t(language, Key::SharePickPerson))>
-                            <option value="" disabled="" selected="">(t(language, Key::SharePickPerson))</option>
-                            for person in &candidates {
-                                <option value=(person.email.clone())>(format!("{} — {}", person.display_name.clone(), person.email.clone()))</option>
-                            }
-                        </select>
+                        <div class="share-picker pop-panel" role="group" aria-label=(t(language, Key::SharePickPerson))>
+                            <label class="pop-row share-pick-all">
+                                <input type="checkbox" class="share-all-toggle" aria-label=(t(language, Key::ShareEveryone))>
+                                <span class="pop-row-name">(t(language, Key::ShareEveryone))</span>
+                            </label>
+                            <div class="pop-list pop-list-scroll">
+                                for person in &candidates {
+                                    <label class="pop-row">
+                                        <input type="checkbox" name="email" value=(person.email.clone())>
+                                        <span class="pop-row-name">(person.display_name.clone())</span>
+                                        <span class="share-pick-mail">(person.email.clone())</span>
+                                    </label>
+                                }
+                            </div>
+                        </div>
                     }
-                    <select class="field-input" name="can_download" aria-label=(t(language, Key::CanDownload))>
+                    <select class="field-input share-add-access" name="can_download" aria-label=(t(language, Key::CanDownload))>
                         <option value="1">(t(language, Key::CanDownload))</option>
                         <option value="0">(t(language, Key::ViewOnly))</option>
                     </select>
@@ -1581,6 +1640,7 @@ pub(crate) async fn share_modal(
         // away. A link from before the sealing — or one whose key is gone —
         // keeps the masked value and carries the carry-forward note.
         let url = share_link_url(cx, *link).await;
+        let legacy = url.is_none();
         <div class="member-row">
             <span class="member-name">(t(language, Key::AnyoneWithLink))</span>
             <div class="spacer"></div>
@@ -1596,17 +1656,20 @@ pub(crate) async fn share_modal(
                 <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
             } else {
                 <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>
-                <p class="field-note">(t(language, Key::LegacyLinkNote))</p>
             }
             <form class="pop-row-form" method="post" action="/api/share/link/revoke">
                 <input type="hidden" name="id" value=(link.id.clone())>
                 <button class="quiet quiet-danger" type="submit">(t(language, Key::RevokeLink))</button>
             </form>
         </div>
+        if legacy {
+            <p class="share-link-note">(t(language, Key::LegacyLinkNote))</p>
+        }
     }
             </div>
         </div>
         (share_copy_script(cx).await?)
+        (share_pick_script(cx).await?)
     }?))
 }
 
@@ -1627,6 +1690,34 @@ pub(crate) async fn share_copy_script(cx: &Cx) -> Result {
                 var done = function () { b.textContent = b.getAttribute('data-copied-label'); }; \
                 if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(u.value).then(done, done); } \
                 else { try { document.execCommand('copy'); } catch (err) {} done(); } \
+            }); \
+        })();";
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+}
+
+/// The people picker's client half: the All row checks and unchecks every
+/// candidate, and hand-checking rows keeps the All row honest. One delegated
+/// listener, idempotent across the modal's re-renders (`window.__inSharePick`
+/// guards it), so the `in:wire` morph needs no per-element re-init.
+pub(crate) async fn share_pick_script(cx: &Cx) -> Result {
+    use topcoat::view::Unescaped;
+    const JS: &str = "\
+        (function () { \
+            if (window.__inSharePick) { return; } \
+            window.__inSharePick = true; \
+            function rows(box) { return Array.prototype.slice.call(box.querySelectorAll('.pop-list input[type=checkbox]')); } \
+            document.addEventListener('change', function (e) { \
+                var t = e.target; \
+                if (!t || !t.closest) { return; } \
+                var box = t.closest('.share-picker'); \
+                if (!box) { return; } \
+                if (t.classList.contains('share-all-toggle')) { \
+                    rows(box).forEach(function (cb) { cb.checked = t.checked; }); \
+                } else { \
+                    var all = box.querySelector('.share-all-toggle'); \
+                    var list = rows(box); \
+                    if (all) { all.checked = list.length > 0 && list.every(function (cb) { return cb.checked; }); } \
+                } \
             }); \
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }

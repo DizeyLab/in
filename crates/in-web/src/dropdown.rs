@@ -62,6 +62,10 @@ use topcoat::view::{Unescaped, view};
 /// with `?task=` registered it first and the modal chain won, closing
 /// the whole modal over an open dropdown — the registry pins the correct
 /// order; the whole table lives in `layout.rs`'s `escape_manager_script`).
+/// A panel's rows are `white-space: nowrap`, so a long option never wraps —
+/// `place` caps the open panel's width at `innerWidth − 8`, shaving off the
+/// padding and borders a `max-width` does not cover, or its right edge would
+/// clip on a 320px phone no matter where the left clamp puts it.
 pub async fn dropdown_script(cx: &Cx) -> Result {
     const JS: &str = "\
         (function () {\
@@ -76,6 +80,11 @@ pub async fn dropdown_script(cx: &Cx) -> Result {
             }\
             function place(panel, trigger) {\
                 var r = trigger.getBoundingClientRect();\
+                var maxW = window.innerWidth - 8;\
+                panel.style.maxWidth = '';\
+                if (panel.offsetWidth > maxW) { panel.style.maxWidth = maxW + 'px'; }\
+                var over = panel.offsetWidth - maxW;\
+                if (over > 0) { panel.style.maxWidth = (maxW - over) + 'px'; }\
                 var h = panel.offsetHeight;\
                 var w = panel.offsetWidth;\
                 var top = r.bottom + 4;\
@@ -84,7 +93,7 @@ pub async fn dropdown_script(cx: &Cx) -> Result {
                 var left = Math.max(4, Math.min(r.left, window.innerWidth - w - 4));\
                 panel.style.left = left + 'px';\
                 panel.style.top = top + 'px';\
-                panel.style.minWidth = r.width + 'px';\
+                panel.style.minWidth = Math.min(r.width, maxW) + 'px';\
             }\
             function visibleRows(panel) { return Array.prototype.slice.call(panel.querySelectorAll('.dd-option:not(.dd-option-hidden)')); }\
             function activate(panel, row) {\
@@ -192,6 +201,7 @@ pub async fn dropdown_script(cx: &Cx) -> Result {
                    A select without autosubmit still needs its button — hiding \
                    it then strands the form with no way to post at all. */ \
                 var sibs = select.parentNode.children; \
+                var go = null; \
                 for (var si = 0; si < sibs.length; si++) { \
                     if (sibs[si].tagName === 'BUTTON' && sibs[si].type === 'submit' && !sibs[si].classList.contains('dd-trigger')) { go = sibs[si]; break; } \
                 } \
@@ -206,7 +216,7 @@ pub async fn dropdown_script(cx: &Cx) -> Result {
                 select.__ddPanel = panel;\
                 var allOpts = opts(select);\
                 var search = null;\
-                if ((allOpts.length > 7 && !select.hasAttribute('data-nosearch')) || select.hasAttribute('data-search')) {\
+                if (allOpts.length > 7 || select.hasAttribute('data-search')) {\
                     search = document.createElement('input');\
                     search.type = 'text';\
                     search.className = 'dd-search';\
