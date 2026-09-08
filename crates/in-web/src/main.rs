@@ -213,6 +213,17 @@ async fn main() {
         logout_back: config.public_origin(),
     };
 
+    // The same client pair, pointed at im's identity directory: the roster
+    // the mirror below files, the photo bytes the avatar route proxies, and
+    // the live feed that makes both arrive without waiting for a beat.
+    let directory = im_client::directory::DirectoryClient::new(
+        config.oidc.issuer.clone(),
+        config.oidc.client_id.clone(),
+        config.oidc.client_secret.clone(),
+    );
+    let default_quota_bytes = config.default_quota_bytes;
+    tokio::spawn(identity_sync(store.clone(), directory.clone(), default_quota_bytes));
+
     // The suite the switcher's wordmarks link to is im's to keep: im's
     // admin panel owns the list and `/family` serves it to registered
     // apps. This mirror is refreshed on the beat, first pass right away so
@@ -260,6 +271,7 @@ async fn main() {
         config,
         shutdown: in_web::live::Shutdown(stopping),
         link_key: cookie_key,
+        directory,
     })
     .app_context(in_client::LogoutBack(Arc::new(|cx: &Cx| {
         Box::pin(async move { Some(in_web::server::share_origin(cx).await) })
@@ -337,6 +349,82 @@ async fn shutdown_signal() {
     }
 }
 
+/// The longest wait a run of directory failures earns before trying again.
+const IDENTITY_BACKOFF_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Mirrors one member's identity into the local row: the JIT upsert that
+/// keeps address, name, admin flag and photo stamp following im. The store
+/// announces a `profile` change itself when a mirrored field moved, so the
+/// only job left here is the write and its one log line when it fails.
+async fn mirror_member(
+    store: &Arc<dyn in_core::store::Store>,
+    member: &im_client::directory::DirectoryMember,
+    default_quota_bytes: u64,
+) {
+    if let Err(problem) = store
+        .provision_user(
+            &member.sub,
+            &member.email,
+            &member.name,
+            Some(member.admin),
+            member.photo_version,
+            default_quota_bytes,
+        )
+        .await
+    {
+        eprintln!("in: directory mirror of {}: {problem}", member.sub);
+    }
+}
+
+/// Keeps the local user rows a live mirror of im's identity directory.
+///
+/// The shape is one pass, one stream, repeat: a full `/directory` pass
+/// files (or heals) every member row, then `/directory/live` carries each
+/// change as it happens. When the stream ends — im restarting, or its
+/// window closing — the loop simply runs the full pass again: a lagged
+/// reader hears silence, not partial frames, so the re-list is what catches
+/// it up, and the redial is the fast path again. A pass that fails backs
+/// off a second, then doubles to the cap, resetting on the next answer.
+/// Runs the whole life of the process; nothing here is worth keeping alive
+/// past shutdown.
+async fn identity_sync(
+    store: Arc<dyn in_core::store::Store>,
+    client: im_client::directory::DirectoryClient,
+    default_quota_bytes: u64,
+) {
+    let mut backoff = std::time::Duration::from_secs(1);
+    loop {
+        match client.directory().await {
+            Ok(members) => {
+                backoff = std::time::Duration::from_secs(1);
+                for member in &members {
+                    mirror_member(&store, member, default_quota_bytes).await;
+                }
+                match client.open_stream().await {
+                    Ok(mut stream) => {
+                        while let Some(event) = stream.next().await {
+                            match event {
+                                Ok(im_client::directory::DirectoryEvent::Profile(member)) => {
+                                    mirror_member(&store, &member, default_quota_bytes).await;
+                                }
+                                // A network failure ends the stream; the full
+                                // pass below re-lists before the redial.
+                                Err(problem) => {
+                                    eprintln!("in: directory stream failed: {problem}");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(problem) => eprintln!("in: directory stream refused: {problem}"),
+                }
+            }
+            Err(problem) => eprintln!("in: directory pass failed: {problem}"),
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(IDENTITY_BACKOFF_CAP);
+    }
+}
 /// How often the suite list is re-fetched from im. Short enough that a
 /// service the admin adds over there shows up here before anyone goes
 /// looking for its wordmark, long enough that the two are not talking

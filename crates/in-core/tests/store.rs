@@ -71,15 +71,13 @@ impl Drop for Scratch {
 }
 
 async fn alice(store: &TursoStore) -> User {
-    store
-        .provision_user("sub-alice", "alice@example.com", "Alice", 1024 * 1024 * 1024)
+    store.provision_user("sub-alice", "alice@example.com", "Alice", None, 0, 1024 * 1024 * 1024)
         .await
         .unwrap()
 }
 
 async fn bob(store: &TursoStore) -> User {
-    store
-        .provision_user("sub-bob", "bob@example.com", "Bob", 1024 * 1024 * 1024)
+    store.provision_user("sub-bob", "bob@example.com", "Bob", None, 0, 1024 * 1024 * 1024)
         .await
         .unwrap()
 }
@@ -140,8 +138,7 @@ async fn the_first_user_is_admin_and_sign_ins_refresh_the_row() {
     // A returning person keeps their id, admin flag and quota; the provider's
     // new address and name win, and the sighting is stamped.
     let again = scratch
-        .store
-        .provision_user("sub-alice", "alice@new.com", "Alice New", 1)
+        .store.provision_user("sub-alice", "alice@new.com", "Alice New", None, 0, 1)
         .await
         .unwrap();
     assert_eq!(again.id, first.id);
@@ -928,8 +925,7 @@ async fn per_person_shares_gate_visibility() {
     let user = alice(&scratch.store).await;
     let friend = bob(&scratch.store).await;
     let stranger = scratch
-        .store
-        .provision_user("sub-caro", "caro@example.com", "Caro", 1024)
+        .store.provision_user("sub-caro", "caro@example.com", "Caro", None, 0, 1024)
         .await
         .unwrap();
     let file = scratch.store.insert_file(&user.id, None, "shared", b"data").await.unwrap();
@@ -1288,8 +1284,7 @@ async fn the_sweep_waits_for_a_writer_instead_of_deleting_its_file() {
 async fn email_lookup_folds_case() {
     let scratch = Scratch::open().await;
     let user = scratch
-        .store
-        .provision_user("sub-mixed", "Mixed@Example.COM", "Mixed", 1024)
+        .store.provision_user("sub-mixed", "Mixed@Example.COM", "Mixed", None, 0, 1024)
         .await
         .unwrap();
     // Stored folded, found however it is asked.
@@ -1526,7 +1521,7 @@ async fn add_share_user_needs_the_owner() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
     let friend = bob(&scratch.store).await;
-    let stranger = scratch.store.provision_user("sub-caro", "caro@example.com", "Caro", 1024).await.unwrap();
+    let stranger = scratch.store.provision_user("sub-caro", "caro@example.com", "Caro", None, 0, 1024).await.unwrap();
     let file = scratch.store.insert_file(&user.id, None, "mine", b"data").await.unwrap();
     // A stranger naming someone else's file is refused — and names no grant.
     assert!(matches!(
@@ -1549,7 +1544,7 @@ async fn shares_for_target_lists_grants_for_the_owner() {
     let scratch = Scratch::open().await;
     let user = alice(&scratch.store).await;
     let friend = bob(&scratch.store).await;
-    let stranger = scratch.store.provision_user("sub-caro", "caro@example.com", "Caro", 1024).await.unwrap();
+    let stranger = scratch.store.provision_user("sub-caro", "caro@example.com", "Caro", None, 0, 1024).await.unwrap();
     let file = scratch.store.insert_file(&user.id, None, "mine", b"data").await.unwrap();
     // No grants yet.
     assert!(scratch.store.shares_for_target(&user.id, ShareKind::File, &file.id).await.unwrap().is_empty());

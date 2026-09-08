@@ -36,7 +36,7 @@ const UPLOADS_DIR: &str = "uploads";
 /// row wears `failed` rather than pinning memory the size of the file.
 const THUMB_SOURCE_CAP: u64 = 64 * 1024 * 1024;
 
-const USER_COLUMNS: &str = "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, ui, created_at, last_seen_at, theme, language";
+const USER_COLUMNS: &str = "id, oidc_sub, email, display_name, admin, disabled, quota_bytes, used_bytes, ui, created_at, last_seen_at, theme, language, photo_version";
 const FOLDER_COLUMNS: &str = "id, owner_id, parent_id, name, created_at, deleted_at";
 const FILE_COLUMNS: &str = "id, owner_id, folder_id, name, mime, size_bytes, thumb_state, created_at, updated_at, deleted_at, download_count";
 const LINK_COLUMNS: &str = "id, token_hash, kind, target_id, created_by, can_download, created_at, expires_at, revoked_at, password_hash";
@@ -962,6 +962,7 @@ fn user_from(row: &Row) -> Result<User> {
         language: text(row, 12)?,
         created_at: parse_stamp(&text(row, 9)?)?,
         last_seen_at: opt_stamp(row, 10)?,
+        photo_version: row.get::<i64>(13).map_err(backend)?.max(0) as u64,
     })
 }
 
@@ -1081,6 +1082,8 @@ impl Store for TursoStore {
         sub: &str,
         email: &str,
         display_name: &str,
+        admin: Option<bool>,
+        photo_version: u64,
         default_quota_bytes: u64,
     ) -> Result<User> {
         let email = fold_email(email);
@@ -1095,15 +1098,25 @@ impl Store for TursoStore {
         let sql = format!("SELECT {USER_COLUMNS} FROM user WHERE oidc_sub = ?1");
         let mut rows = tx.query(&sql, params![sub]).await.map_err(backend)?;
         if let Some(row) = rows.next().await.map_err(backend)? {
-            let user = user_from(&row)?;
+            let known = user_from(&row)?;
             drop(rows);
-            // A returning person: the provider may have a new address or a
-            // new name for them, and the row follows the provider — but the
-            // admin flag and the quota are ours, and this write touches
-            // neither.
+            // A returning person: the row follows the provider — address,
+            // name, photo stamp, and the admin flag when this sight carries
+            // the directory's word on it. The quota is ours and this write
+            // touches neither it nor a flag nobody spoke about.
+            let admin_changed = admin.is_some_and(|flag| flag != known.admin);
             tx.execute(
-                "UPDATE user SET email = ?1, display_name = ?2, last_seen_at = ?3 WHERE id = ?4",
-                params![email, display_name, now_text()?, user.id],
+                "UPDATE user SET email = ?1, display_name = ?2, photo_version = ?3, \
+                 admin = CASE WHEN ?4 IS NULL THEN admin ELSE ?4 END, last_seen_at = ?5 \
+                 WHERE id = ?6",
+                params![
+                    email,
+                    display_name,
+                    photo_version as i64,
+                    admin.map(|flag| if flag { 1 } else { 0 }),
+                    now_text()?,
+                    known.id
+                ],
             )
             .await
             .map_err(backend)?;
@@ -1116,6 +1129,16 @@ impl Store for TursoStore {
             let user = user_from(&row)?;
             drop(back);
             tx.commit().await.map_err(backend)?;
+            // A mirrored field moved: every signed-in topbar may want the
+            // new face or name. A mere last-seen stamp announces nothing —
+            // a quiet return is not news.
+            if user.email != known.email
+                || user.display_name != known.display_name
+                || user.photo_version != known.photo_version
+                || admin_changed
+            {
+                self.announce([Topic::Profile(user.id.clone())]);
+            }
             return Ok(user);
         }
         drop(rows);
@@ -1128,16 +1151,19 @@ impl Store for TursoStore {
             None => 0,
         };
         drop(count);
-        // The first account ever provisioned is the admin: there is no one
-        // else to make one, and a deployment with no admin is a deployment
-        // nobody can administer.
-        let admin = n == 0;
+        // The provider's word on the person is the admin flag when it has
+        // one; a sight with no directory behind it falls back to the
+        // bootstrap rule — the first account ever provisioned is the admin,
+        // because a deployment with no admin is a deployment nobody can
+        // administer.
+        let admin = admin.unwrap_or(n == 0);
         let id = Ulid::new().to_string();
         let now = now_text()?;
         tx.execute(
             "INSERT INTO user (id, oidc_sub, email, display_name, admin, disabled, \
-             quota_bytes, used_bytes, ui, theme, language, created_at, last_seen_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 0, 'instrument', 'dark', 'en', ?7, ?7)",
+             quota_bytes, used_bytes, ui, theme, language, created_at, last_seen_at, \
+             photo_version) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 0, 'instrument', 'dark', 'en', ?7, ?7, ?8)",
             params![
                 id.clone(),
                 sub,
@@ -1145,7 +1171,8 @@ impl Store for TursoStore {
                 display_name,
                 if admin { 1 } else { 0 },
                 default_quota_bytes as i64,
-                now
+                now,
+                photo_version as i64
             ],
         )
         .await
@@ -1165,10 +1192,12 @@ impl Store for TursoStore {
         let user = user_from(&row)?;
         drop(back);
         tx.commit().await.map_err(backend)?;
-        self.announce([Topic::Admin(user.id.clone())]);
+        self.announce([
+            Topic::Admin(user.id.clone()),
+            Topic::Profile(user.id.clone()),
+        ]);
         Ok(user)
     }
-
     async fn set_user_quota(&self, user_id: &str, quota_bytes: u64) -> Result<()> {
         let conn = self.conn.lock().await;
         let n = conn
@@ -3600,13 +3629,7 @@ mod tests {
         let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
             .await
             .unwrap();
-        let user = store
-            .provision_user(
-                "sub-alice",
-                "alice@example.com",
-                "Alice",
-                1024 * 1024 * 1024,
-            )
+        let user = store.provision_user("sub-alice", "alice@example.com", "Alice", None, 0, 1024 * 1024 * 1024)
             .await
             .unwrap();
 
@@ -3703,13 +3726,7 @@ mod tests {
         let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
             .await
             .unwrap();
-        let user = store
-            .provision_user(
-                "sub-alice",
-                "alice@example.com",
-                "Alice",
-                1024 * 1024 * 1024,
-            )
+        let user = store.provision_user("sub-alice", "alice@example.com", "Alice", None, 0, 1024 * 1024 * 1024)
             .await
             .unwrap();
         let file = store
@@ -3745,13 +3762,7 @@ mod tests {
         let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
             .await
             .unwrap();
-        let user = store
-            .provision_user(
-                "sub-alice",
-                "alice@example.com",
-                "Alice",
-                1024 * 1024 * 1024,
-            )
+        let user = store.provision_user("sub-alice", "alice@example.com", "Alice", None, 0, 1024 * 1024 * 1024)
             .await
             .unwrap();
         let root = store.create_folder(&user.id, None, "root").await.unwrap();
@@ -3816,13 +3827,7 @@ mod tests {
         let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
             .await
             .unwrap();
-        let user = store
-            .provision_user(
-                "sub-alice",
-                "alice@example.com",
-                "Alice",
-                1024 * 1024 * 1024,
-            )
+        let user = store.provision_user("sub-alice", "alice@example.com", "Alice", None, 0, 1024 * 1024 * 1024)
             .await
             .unwrap();
         let session = store

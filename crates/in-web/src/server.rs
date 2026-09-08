@@ -41,6 +41,10 @@ pub struct App {
     /// database copy without the key file carries links that open but can
     /// no longer be re-viewed.
     pub link_key: in_core::store::secret::Key,
+    /// im's identity directory — the roster, the photo bytes and the live
+    /// change feed — authenticated with the same client pair the OIDC side
+    /// holds. Built once at boot; cheap to clone.
+    pub directory: im_client::directory::DirectoryClient,
 }
 
 /// The application context this request runs under.
@@ -173,6 +177,8 @@ pub async fn current_user(cx: &Cx) -> Result<Option<User>, StoreError> {
             &claims.sub,
             &claims.email,
             &claims.name,
+            None,
+            claims.photo_version,
             app.config.default_quota_bytes,
         )
         .await?;

@@ -204,7 +204,7 @@ struct TableMap {
 
 /// Builds the explicit column map. Unchanged tables map every column to its
 /// old self; the user table carries the migration-specific expressions for
-/// `ui`, `theme` and `language`, and the file table one for
+/// `ui`, `theme`, `language` and `photo_version`, and the file table one for
 /// `download_count`: a database old enough to predate a column starts on the
 /// schema's own default rather than on an empty string, which no writer
 /// would ever store and no reader would ever honour. The share-link table
@@ -218,6 +218,7 @@ fn build_maps(
     old_has_language: bool,
     old_has_download_count: bool,
     old_has_password_hash: bool,
+    old_has_photo_version: bool,
 ) -> Vec<TableMap> {
     vec![
         TableMap {
@@ -248,6 +249,11 @@ fn build_maps(
                     ("language", "old.language".into())
                 } else {
                     ("language", "'en'".into())
+                });
+                columns.push(if old_has_photo_version {
+                    ("photo_version", "old.photo_version".into())
+                } else {
+                    ("photo_version", "0".into())
                 });
                 columns
             },
@@ -424,12 +430,14 @@ async fn copy_data(old_conn: &Connection, new_conn: &Connection, path: &str) -> 
     let old_has_language = old_has_column(old_conn, "user", "language").await?;
     let old_has_download_count = old_has_column(old_conn, "file", "download_count").await?;
     let old_has_password_hash = old_has_column(old_conn, "share_link", "password_hash").await?;
+    let old_has_photo_version = old_has_column(old_conn, "user", "photo_version").await?;
     let maps = build_maps(
         old_has_ui,
         old_has_theme,
         old_has_language,
         old_has_download_count,
         old_has_password_hash,
+        old_has_photo_version,
     );
     validate_maps(new_conn, &maps).await?;
 

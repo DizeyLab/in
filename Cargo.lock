@@ -1875,6 +1875,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "im-client"
+version = "0.1.0"
+source = "git+https://github.com/DizeyLab/im?rev=f7b2081#f7b208171820ca309b10043c6e86de12b81f3826"
+dependencies = [
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "rand 0.10.2",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sha2 0.11.0",
+ "subtle",
+ "thiserror",
+ "time",
+ "tokio",
+ "topcoat",
+]
+
+[[package]]
 name = "image"
 version = "0.25.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1967,6 +1988,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "im-client",
  "in-client",
  "in-core",
  "serde",

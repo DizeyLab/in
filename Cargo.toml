@@ -11,6 +11,12 @@ repository = "https://github.com/DizeyLab/in"
 [workspace.dependencies]
 in-core = { path = "crates/in-core", default-features = false }
 in-client = { path = "crates/in-client" }
+# The identity-directory SDK, split out of im: the directory list, the
+# photo proxy and the live change feed, authenticated with the same client
+# pair the OIDC side already holds. The OIDC half stays gated off — this
+# app's own `in-client` fork keeps the auth routes, and two route sets in
+# one binary collide.
+im-client = { git = "https://github.com/DizeyLab/im", rev = "f7b2081", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.145"
 thiserror = "2.0.20"

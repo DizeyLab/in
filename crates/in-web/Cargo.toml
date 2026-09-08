@@ -21,6 +21,7 @@ topcoat = { version = "0.6.2", default-features = false, features = [
 ] }
 in-core = { workspace = true, features = ["server"] }
 in-client.workspace = true
+im-client.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true

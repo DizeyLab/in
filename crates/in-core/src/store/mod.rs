@@ -88,6 +88,11 @@ pub struct User {
     pub email: String,
     pub display_name: String,
     pub admin: bool,
+    /// How many times the person's photo has changed in im — the stamp the
+    /// avatar route turns into its `ETag` and `?v=`. Mirrored from the
+    /// identity directory by the same passes that mirror address and name;
+    /// `0` reads as "no photo known".
+    pub photo_version: u64,
     pub disabled: bool,
     /// The person's ceiling, in bytes. Set at provisioning, changed by an
     /// admin afterwards.
@@ -375,14 +380,22 @@ pub trait Store: 'static + Send + Sync {
     /// Every account, oldest first — the admin's settings screen.
     async fn users(&self) -> Result<Vec<User>>;
 
-    /// JIT upsert on OIDC login: unknown sub inserts (first user ever gets
+    /// JIT upsert on OIDC login and on every identity-directory sight:
+    /// unknown sub inserts (first-ever row with no provider word gets
     /// admin=1, quota = default_quota_bytes), known sub refreshes
-    /// email/display_name and stamps last_seen_at. Returns the row.
+    /// email/display_name/photo_version and stamps last_seen_at. `admin`
+    /// is the provider's word when the caller carries one — `Some` from the
+    /// directory and its stream, `None` from a claims-only introspection —
+    /// and absent it, the row's flag stands. A change to any mirrored
+    /// field announces [`Topic::Profile`](crate::live::Topic); a fresh row
+    /// also announces [`Topic::Admin`](crate::live::Topic). Returns the row.
     async fn provision_user(
         &self,
         sub: &str,
         email: &str,
         display_name: &str,
+        admin: Option<bool>,
+        photo_version: u64,
         default_quota_bytes: u64,
     ) -> Result<User>;
 

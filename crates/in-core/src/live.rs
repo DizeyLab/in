@@ -24,6 +24,11 @@ pub enum Topic {
     Trash(String),
     /// Shares: links created or revoked, per-person grants added or removed.
     Shares(String),
+    /// A member's identity as im tells it — address, display name, admin
+    /// flag, photo version. Not per-user data: a person's face renders in
+    /// every signed-in topbar, so every reader may hear that some member
+    /// moved and re-fetch through the ordinary gated route.
+    Profile(String),
     /// Users, quotas, disablements — the admin's surface.
     Admin(String),
 }
@@ -36,6 +41,7 @@ impl Topic {
             Topic::Library(_) => "library",
             Topic::Trash(_) => "trash",
             Topic::Shares(_) => "shares",
+            Topic::Profile(_) => "profile",
             Topic::Admin(_) => "admin",
         }
     }
@@ -44,7 +50,8 @@ impl Topic {
     /// is its own id — or, for [`Topic::Admin`], when it is an admin.
     pub fn id(&self) -> &str {
         match self {
-            Topic::Library(id) | Topic::Trash(id) | Topic::Shares(id) | Topic::Admin(id) => id,
+            Topic::Library(id) | Topic::Trash(id) | Topic::Shares(id) | Topic::Profile(id)
+            | Topic::Admin(id) => id,
         }
     }
 }

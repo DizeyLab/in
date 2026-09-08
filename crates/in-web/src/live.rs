@@ -57,6 +57,12 @@ fn may_hear(topic: &Topic, me: &str, admin: bool) -> bool {
     if topic.id() == me {
         return true;
     }
+    // A member's profile is not per-user data: every signed-in topbar
+    // renders coworkers' faces and names, so every reader may hear that
+    // some member moved and re-fetch through the ordinary gated route.
+    if matches!(topic, Topic::Profile(_)) {
+        return true;
+    }
     matches!(topic, Topic::Admin(_)) && admin
 }
 
@@ -156,4 +162,26 @@ async fn live(cx: &Cx) -> topcoat::Result<Response> {
     Sse::new(events)
         .keep_alive(KeepAlive::new())
         .into_response(cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::live::Topic;
+
+    #[test]
+    fn a_profile_change_is_heard_by_every_signed_in_reader() {
+        // A coworker's face renders in every topbar, so a member's profile
+        // move is not per-user data: the reader it names and a stranger and
+        // an admin all hear it. What nobody hears is another person's drive.
+        let moved = Topic::Profile("member-id".to_string());
+        assert!(may_hear(&moved, "member-id", false));
+        assert!(may_hear(&moved, "someone-else", false));
+        assert!(may_hear(&moved, "someone-else", true));
+        assert!(!may_hear(
+            &Topic::Library("member-id".to_string()),
+            "someone-else",
+            false
+        ));
+    }
 }

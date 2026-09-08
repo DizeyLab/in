@@ -1,0 +1,12 @@
+-- The stamp that lets a proxied face be cached hard and still arrive fresh.
+--
+-- `user.photo_version` counts how many times the person's photo has changed
+-- in im — the identity directory's word, mirrored here by the same passes
+-- that mirror email, name and admin. The avatar route turns it into the
+-- `ETag` and the `/avatar/{id}?v=` stamp, so a changed photo is a changed
+-- URL and a browser never pins an old face behind a year of `immutable`.
+-- `0` is "no photo known"; the DEFAULT is the backfill, SQLite filling every
+-- existing row with it as the column is added. Databases already carrying
+-- the column never see this file applied piecemeal — they reach the declared
+-- shape through `in reconcile`, whose copy map backfills the same value.
+ALTER TABLE user ADD COLUMN photo_version INTEGER NOT NULL DEFAULT 0;

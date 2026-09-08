@@ -151,71 +151,6 @@ pub async fn current_user(cx: &Cx) -> Option<User> {
     }
 }
 
-/// The person's profile photo from im, if im has one. `None` on 404 and on
-/// anything else that is not the bytes — a dropped connection, a body that
-/// will not read, a reply without a mime — because a missing face must never
-/// fail the page around it: the caller renders its initials instead.
-///
-/// Authenticated as the app, not the browser: `Authorization: Basic
-/// base64(client_id ":" client_secret)` against im's `/photo/{user_id}`,
-/// the same credentials the introspection round-trip posts with.
-pub async fn photo_for(cx: &Cx, user_id: &str) -> Option<(Vec<u8>, String)> {
-    let state = client(cx);
-    let reply = state
-        .http
-        .get(format!("{}/photo/{user_id}", state.config.issuer))
-        .basic_auth(&state.config.client_id, Some(&state.config.client_secret))
-        .send()
-        .await
-        .ok()?;
-    if !reply.status().is_success() {
-        return None;
-    }
-    let mime = reply
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)?
-        .to_str()
-        .ok()?
-        .to_string();
-    let bytes = reply.bytes().await.ok()?.to_vec();
-    Some((bytes, mime))
-}
-
-/// One entry of im's directory: the stable subject, the address, the
-/// display name, and whether im calls the person an admin — exactly what
-/// mirroring the directory into local user rows needs.
-#[derive(Debug, Clone, Deserialize)]
-pub struct DirectoryMember {
-    pub sub: String,
-    pub email: String,
-    pub name: String,
-    pub admin: bool,
-}
-
-/// im's family phonebook: every person im knows, fetched as the app
-/// (`Authorization: Basic base64(client_id ":" client_secret)`, the same
-/// credentials the photo route and the introspection round-trip take) from
-/// `{issuer}/directory`. Only a registered app gets an answer at all.
-///
-/// `None` on anything that is not a readable list — a refused pair, a
-/// dropped connection, a body that is not the array — because a missed
-/// beat must never look like an empty directory: the caller keeps the
-/// rows it has and asks again next time.
-pub async fn directory(cx: &Cx) -> Option<Vec<DirectoryMember>> {
-    let state = client(cx);
-    let reply = state
-        .http
-        .get(format!("{}/directory", state.config.issuer))
-        .basic_auth(&state.config.client_id, Some(&state.config.client_secret))
-        .send()
-        .await
-        .ok()?;
-    if !reply.status().is_success() {
-        return None;
-    }
-    reply.json().await.ok()
-}
-
 /// One entry of im's family list: the word the switcher renders, the
 /// human label for its title, and the service's base URL — the shape im's
 /// `/family` answers with.
@@ -355,6 +290,9 @@ async fn introspect(state: &InClient, token: &str) -> Introspected {
             sub: sub.to_string(),
             email: email.to_string(),
             name: name.to_string(),
+            // Additive on im's answer: an im predating the field reads as
+            // "no photo stamp known", which only softens caching.
+            photo_version: answer["photo_version"].as_u64().unwrap_or(0),
         },
         exp,
     )
@@ -366,6 +304,10 @@ pub struct User {
     pub sub: String,
     pub email: String,
     pub name: String,
+    /// How many times the person's photo has changed in im — the `?v=` the
+    /// app's avatar route caches by. Mirrored out of introspection; `0`
+    /// reads as "no stamp known".
+    pub photo_version: u64,
 }
 
 // ---------------------------------------------------------------------------

@@ -90,7 +90,7 @@ pub(crate) async fn avatar(cx: &Cx, user: &User, extra: &str) -> Result {
     let class = format!("avatar avatar-tone-{tone} {extra}");
     let name = user.display_name.clone();
     let initials = initials_of(&user.display_name);
-    let src = format!("/avatar/{}", user.id);
+    let src = format!("/avatar/{}?v={}", user.id, user.photo_version);
     view! {
         cx =>
         <span class="avatar-stack">
@@ -896,6 +896,7 @@ pub async fn live_script(cx: &Cx) -> Result {
             } \
             function wanted(topic) { \
                 if (topic === 'resync') { return true; } \
+                if (topic === 'profile') { return true; } \
                 var path = window.location.pathname; \
                 if (path.indexOf('/settings') === 0) { return topic === 'admin'; } \
                 if (path.indexOf('/shared') === 0) { return topic === 'shares'; } \
