@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Domain model and storage for In"
+description = "Domain model and storage for in"
 
 [features]
 # The domain vocabulary (record shapes) compiles anywhere, including the wasm

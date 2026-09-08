@@ -23,7 +23,7 @@ use in_core::store::User;
 use crate::i18n::{Key, Lang, t};
 use crate::server::{app, current_user};
 
-/// The In monogram again, as the tab icon: the same drawing as `mark`,
+/// The in monogram again, as the tab icon: the same drawing as `mark`,
 /// inlined because it must carry its own colours — a data URI has no page to
 /// inherit `currentColor` or the accent token from, so the two themes are
 /// spelled out in a media query inside the SVG.
@@ -37,7 +37,7 @@ const FAVICON: &str = "data:image/svg+xml,\
     <path class='s' d='M11.4 19.8V10.6h2.4c2.6 0 4.2 1.7 4.2 4.3v4.9' fill='none' \
     stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/></svg>";
 
-/// The In monogram — a dotted `i` beside a stroked `n`. It takes
+/// The in monogram — a dotted `i` beside a stroked `n`. It takes
 /// `currentColor` for its strokes and the accent for its tittle, so one
 /// drawing serves both skins and both themes.
 ///
@@ -49,7 +49,7 @@ const FAVICON: &str = "data:image/svg+xml,\
 pub(crate) async fn mark(cx: &Cx) -> Result {
     view! {
         cx =>
-        <a class="wordmark" href="/" aria-label="In">
+        <a class="wordmark" href="/" aria-label="in">
             <svg class="wordmark-mark" width="24" height="24" viewBox="0 0 24 24"
                 aria-hidden="true">
                 <rect x="3.1" y="9.4" width="4.4" height="11.6" rx="2.2"
@@ -69,7 +69,7 @@ pub(crate) async fn wordmark(cx: &Cx) -> Result {
     view! {
         cx =>
         <a class="wordmark wordmark-lone" href="/">
-            <span class="wordmark-text">"In"</span>
+            <span class="wordmark-text">"in"</span>
         </a>
     }
 }
@@ -236,7 +236,7 @@ async fn family_of(cx: &Cx) -> Vec<in_client::ServiceJson> {
     }
 }
 
-/// The monogram with the family behind it: the In mark as ever, and the
+/// The monogram with the family behind it: the in mark as ever, and the
 /// sibling services' wordmarks in a flyout that opens under it on hover
 /// and on keyboard focus — the mark is an `<a href="/">`, so it is already
 /// focusable and `:focus-within` needs nothing added. Middots between,
@@ -1102,7 +1102,7 @@ pub(crate) async fn document_shell(cx: &Cx, slot: Result) -> Result {
                     rel="stylesheet"
                     href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:ital,wght@0,400;0,600;1,400;1,600&display=swap"
                 >
-                <title>"In"</title>
+                <title>"in"</title>
                 <link rel="icon" href=(FAVICON)>
                 <link rel="stylesheet" href=(STYLE)>
                 topcoat::runtime::script()

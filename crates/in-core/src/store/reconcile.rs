@@ -5,7 +5,7 @@
 //! column map, the copy is verified, and only then the files are swapped. The
 //! original file is kept as a timestamped backup and is never deleted.
 //!
-//! Binary is the one thing that needs no extraction here: In never kept
+//! Binary is the one thing that needs no extraction here: in never kept
 //! bytes in its tables — files, thumbnails and chunks live under the storage
 //! directory from the first schema, keyed by row id — so the copy moves rows
 //! only, and the tree beside the database is untouched throughout.
@@ -29,7 +29,7 @@ pub struct ReconcileOptions {
 /// - A differing database is backed up, rebuilt, verified and swapped into
 ///   place.
 /// - `storage` is accepted for the call shape the boot path shares with
-///   databases that once kept binary in their tables; In never did, so the
+///   databases that once kept binary in their tables; in never did, so the
 ///   tree beside the database is left exactly as it was.
 /// - A rebuild that fails verification deletes the `.rebuilt` file and leaves
 ///   the original untouched.

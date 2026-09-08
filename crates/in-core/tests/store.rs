@@ -840,7 +840,7 @@ async fn a_password_link_round_trips_its_hash() {
 }
 #[tokio::test]
 async fn a_pre_password_link_reconciles_to_no_password_and_a_new_one_survives_reopen() {
-    // A database built from 0001+0004 — the shape In ran with before links
+    // A database built from 0001+0004 — the shape in ran with before links
     // could carry passwords — has a share_link table with no
     // `password_hash` column. Opening it with the current code reconciles
     // it onto the declared schema: the link row is carried across and wears
@@ -1627,7 +1627,7 @@ async fn preferences_round_trip_and_refuse_what_is_not_offered() {
 
 #[tokio::test]
 async fn a_second_migration_database_gains_the_preference_columns_on_open() {
-    // A database built from 0001+0002 — the shape In ran with an interface
+    // A database built from 0001+0002 — the shape in ran with an interface
     // picker and no theme or language — carries no `theme` or `language`
     // column. Opening it with the current code reconciles it onto the
     // declared schema: its interface choice is carried across, and the two

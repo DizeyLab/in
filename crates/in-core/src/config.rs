@@ -1,9 +1,9 @@
-//! Everything In reads from `config/in.toml`, in one place.
+//! Everything in reads from `config/in.toml`, in one place.
 //!
 //! Nothing here has a silent default once the file exists. A key that is
 //! missing, empty or unusable stops the boot and says which key and which
 //! file, because the alternative is worse than not starting: a wrong
-//! `database` does not mean "no data", it means a second In quietly
+//! `database` does not mean "no data", it means a second in quietly
 //! writing a different file while everyone believes they are looking at the
 //! same drive — and Turso is single-writer, so the two are not even
 //! reconcilable afterwards.
@@ -49,7 +49,7 @@ const FILE_NAME: &str = "config/in.toml";
 const DEVELOPMENT_DEFAULTS: &str = r#"# Where the one database file lives. One process holds it.
 database = "in.db"
 # The address the server listens on. Environment variables are ignored —
-# this is the only thing that decides where In binds.
+# this is the only thing that decides where in binds.
 listen = "127.0.0.1:7655"
 # How long a live-update connection is held before the browser is asked to
 # reconnect, in seconds. The reconnect is what re-checks the session, so a
@@ -60,7 +60,7 @@ live_seconds = 300
 purge_after_days = 30
 # The quota a newly provisioned account starts on, in bytes. 10 GiB.
 default_quota_bytes = 10737418240
-# The base of the share links In hands out. Set it when In answers on a
+# The base of the share links in hands out. Set it when in answers on a
 # different address than it binds — a domain, or a proxy in front. Left
 # empty, links follow the listen address.
 base_url = ""
@@ -70,9 +70,9 @@ base_url = ""
 [oidc]
 # The provider that signs people in. Required: no default is guessed.
 issuer = ""
-# The client id In presents to the provider. Required.
+# The client id in presents to the provider. Required.
 client_id = ""
-# The client secret In presents to the provider. Required. The file holds a
+# The client secret in presents to the provider. Required. The file holds a
 # live credential once this is filled in, so it is created mode 0600.
 client_secret = ""
 # Where the provider sends the browser back after sign-in. Not written here:
@@ -116,7 +116,7 @@ const OPTIONAL_KEYS: &[(&str, &str)] = &[
         "listen",
         concat!(
             "# The address the server listens on. Environment variables are ignored —\n",
-            "# this is the only thing that decides where In binds.\n",
+            "# this is the only thing that decides where in binds.\n",
             "listen = \"127.0.0.1:7655\"\n"
         ),
     ),
@@ -147,7 +147,7 @@ const OPTIONAL_KEYS: &[(&str, &str)] = &[
     (
         "base_url",
         concat!(
-            "# The base of the share links In hands out. Set it when In answers on a\n",
+            "# The base of the share links in hands out. Set it when in answers on a\n",
             "# different address than it binds — a domain, or a proxy in front. Left\n",
             "# empty, links follow the listen address.\n",
             "base_url = \"\"\n"
@@ -219,14 +219,14 @@ struct Toml {
     other: std::collections::BTreeMap<String, toml::Value>,
 }
 
-/// The OIDC provider In trusts, and how In presents itself to it.
+/// The OIDC provider in trusts, and how in presents itself to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OidcConfig {
     /// The provider's issuer URL. Sign-ins from anywhere else are refused.
     pub issuer: String,
-    /// The client id In presents to the provider.
+    /// The client id in presents to the provider.
     pub client_id: String,
-    /// The client secret In presents to the provider. Never printed.
+    /// The client secret in presents to the provider. Never printed.
     pub client_secret: String,
     /// Where the provider sends the browser after sign-in. Defaults from
     /// `listen` when the file is silent about it.
@@ -278,7 +278,7 @@ pub struct Config {
     /// banners that mint them — when the file sets one. `None` follows the
     /// address bound.
     pub base_url: Option<String>,
-    /// The OIDC provider In trusts.
+    /// The OIDC provider in trusts.
     pub oidc: OidcConfig,
     /// Keys the file sets that nothing here reads, in the order the file
     /// gives them. Named at startup so a typo is visible.
@@ -493,7 +493,7 @@ impl Config {
     /// A bind that names no interface — `0.0.0.0`, `::` — answers everywhere
     /// and is reachable at none of it by name, so the loopback stands in: a
     /// link somebody on the box can click beats a link nobody can. Whoever
-    /// puts In behind a proxy sets the real address where it is needed —
+    /// puts in behind a proxy sets the real address where it is needed —
     /// `base_url` for the public links, `redirect_uri` in `[oidc]` for
     /// sign-ins — which is the only thing this defers to.
     pub fn listen_url(&self) -> String {
@@ -570,7 +570,7 @@ impl Config {
         }
         if value.ends_with('/') {
             return Err(format!(
-                "{value:?} ends in a slash — set the bare origin; In joins the /s/ path itself"
+                "{value:?} ends in a slash — set the bare origin; in joins the /s/ path itself"
             ));
         }
         Ok(())
@@ -839,7 +839,7 @@ redirect_uri = "https://files.example.com/auth/callback"
         );
     }
 
-    /// The links In hands out follow `listen` unless the file says a public
+    /// The links in hands out follow `listen` unless the file says a public
     /// base — the mirror of `redirect_uri`, which is why the tests read the
     /// same way.
     #[test]

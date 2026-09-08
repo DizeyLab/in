@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "In web app: topcoat UI, routes and the server"
+description = "in web app: topcoat UI, routes and the server"
 
 [dependencies]
 topcoat = { version = "0.6.2", default-features = false, features = [

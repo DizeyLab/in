@@ -1,7 +1,7 @@
 # Where the one database file lives. One process holds it.
 database = "in.db"
 # The address the server listens on. Environment variables are ignored —
-# this is the only thing that decides where In binds.
+# this is the only thing that decides where in binds.
 listen = "127.0.0.1:7655"
 # How long a live-update connection is held before the browser is asked to
 # reconnect, in seconds. The reconnect is what re-checks the session, so a
@@ -12,7 +12,7 @@ live_seconds = 300
 purge_after_days = 30
 # The quota a newly provisioned account starts on, in bytes. 10 GiB.
 default_quota_bytes = 10737418240
-# The base of the share links In hands out. Set it when In answers on a
+# The base of the share links in hands out. Set it when in answers on a
 # different address than it binds — a domain, or a proxy in front. Left
 # empty, links follow the listen address.
 base_url = ""
@@ -21,8 +21,8 @@ base_url = ""
 # and the boot completes this file with the value it resolved.
 
 # The suite the switcher's wordmarks link to is im's to keep — im's admin
-# panel owns the list, and In fetches it from im and keeps a mirror. On
-# every beat In also announces itself to im under the key "in" at the
+# panel owns the list, and in fetches it from im and keeps a mirror. On
+# every beat in also announces itself to im under the key "in" at the
 # address `base_url` gives, so the suite lists it without anyone typing it.
 # This file no longer names the suite; a `[[services]]` block left behind by an
 # older file is reported as ignored and then passed over.
@@ -32,9 +32,9 @@ storage = "/home/tahinli/Documents/Code/Rust/in/storage"
 [oidc]
 # The provider that signs people in. Required: no default is guessed.
 issuer = "http://127.0.0.1:7650"
-# The client id In presents to the provider. Required.
+# The client id in presents to the provider. Required.
 client_id = "in-dev-capture"
-# The client secret In presents to the provider. Required. Filled in only on
+# The client secret in presents to the provider. Required. Filled in only on
 # the machine that runs the server — the committed copy stays empty.
 client_secret = "in-dev-secret"
 # Where the provider sends the browser back after sign-in. Not written here:

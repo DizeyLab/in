@@ -90,7 +90,7 @@ fn renders_inline(mime: &str) -> bool {
 
 /// Whether `inline` disposition is safe for this mime: an uploaded HTML or
 /// SVG file stays `attachment` either way, so it is offered to save rather
-/// than run on In's origin.
+/// than run on in's origin.
 fn inline_ok(mime: &str) -> bool {
     renders_inline(mime) && mime != "image/svg+xml" && mime != "text/html"
 }

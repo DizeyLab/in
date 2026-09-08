@@ -1,4 +1,4 @@
-//! Domain model and storage for In.
+//! Domain model and storage for in.
 //!
 //! The vocabulary — the account, folder, file, share and upload shapes —
 //! compiles everywhere, so the UI and the server speak the same types. The

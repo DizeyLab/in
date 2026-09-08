@@ -1,4 +1,4 @@
--- In's schema, whole, in one file.
+-- in's schema, whole, in one file.
 --
 -- One plain SQL file, applied at boot to an empty database: Turso has no
 -- migration runner of its own, and keeping the schema as SQL is what makes

@@ -80,7 +80,7 @@ pub async fn share_link_url(cx: &Cx, link: &in_core::store::ShareLink) -> Option
 }
 
 /// A stable-enough label for the client, for rate limiting. A proxy header is
-/// only trusted because In is meant to sit behind one; the address bucket is
+/// only trusted because in is meant to sit behind one; the address bucket is
 /// the limit that actually protects the login round-trip either way.
 ///
 /// topcoat 0.6.2 exposes no peer address; x-forwarded-for or nothing.
@@ -445,7 +445,7 @@ pub fn back_to(cx: &Cx, nowhere: &str) -> String {
 /// function handler answers with a redirect back to the page it came from, and
 /// the value — the whole refusal — sits in a body nobody will ever look at.
 /// The click then looks like nothing happening, which is the worst answer
-/// In can give.
+/// in can give.
 ///
 /// So the refusal is copied onto the `Location`, as `?refusal=<code>&on=<call>`,
 /// and the page renders it from the query. This is one place rather than a
@@ -523,7 +523,7 @@ fn carrying(location: &str, code: &str, called: &str) -> Option<String> {
     }
     // The Location we are rewriting came from the form post's Referer, and on a
     // cross-origin post the Referer is whatever the other site is. Sending the
-    // browser back there would make In an open redirect, so the address is
+    // browser back there would make in an open redirect, so the address is
     // rebuilt from its path and query alone and anything that is not a plain
     // absolute path is answered with the drive.
     let here = same_origin(location);

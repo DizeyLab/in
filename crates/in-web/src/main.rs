@@ -60,7 +60,7 @@ async fn main() {
     // config/in.toml is read here, before anything is opened, and written with
     // development defaults if it is not there yet. A broken key stops the
     // boot with its name in the message: the failure this prevents is not an
-    // empty database, it is a second In writing a different file while
+    // empty database, it is a second in writing a different file while
     // everyone believes they share a drive.
     let config = match Config::load() {
         Ok(config) => config,
