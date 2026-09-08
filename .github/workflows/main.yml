@@ -99,6 +99,7 @@ jobs:
           # embedded in the binary it produced.
           topcoat asset bundle --package in-web --profile "$PROFILE" --out stage/assets
           cp "target/$TARGET/$PROFILE/in-web" stage/in-web
+          cp deploy/in.service stage/in.service
           strip stage/in-web
           ls -l stage stage/assets
 
@@ -167,6 +168,13 @@ jobs:
             mv -- "$deploy_path/current" "$deploy_path/current.previous"
           fi
           mv -- "$deploy_path/current.new" "$deploy_path/current"
+          # The unit ships with the release: a freshly provisioned box has
+          # no unit until the first deploy writes it, and a changed unit
+          # lands with the code that needs it. Enabling is idempotent.
+          mkdir -p -- "$HOME/.config/systemd/user"
+          install -m 644 -- "$deploy_path/current/in.service" "$HOME/.config/systemd/user/$service.service"
+          systemctl --user daemon-reload
+          systemctl --user enable -- "$service"
           systemctl --user restart "$service"
           # The unit is Type=simple, so a restart returns before the new
           # process has bound its port — and before an old one has let go

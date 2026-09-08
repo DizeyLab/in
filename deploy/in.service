@@ -1,0 +1,20 @@
+# The systemd user unit in runs under on the server. The deploy workflow
+# installs this file as ~/.config/systemd/user/in.service on every release,
+# reloads the manager, enables the unit and restarts it, so a freshly
+# provisioned box needs nothing but the SSH user, the deploy directory and
+# `loginctl enable-linger` (once, so the unit outlives the login).
+#
+# The working directory is the deploy path itself, not the release: the
+# binary reads config/in.toml, the database and the key relative to it,
+# and only current/ is swapped by a deploy.
+[Unit]
+Description=in
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/in
+ExecStart=%h/in/current/in-web
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
