@@ -219,10 +219,16 @@ async fn main() {
     // a fresh deploy shows the trio at boot; an im that does not answer —
     // down, restarting, mid-deploy — costs one log line and nothing else:
     // the last list filed keeps the switcher alive until the next beat.
-    // The address the app registers itself under: the same origin the
-    // logout walk and the share links carry, without the trailing slash im
-    // keeps its entries free of.
-    let public_origin = config.public_origin().trim_end_matches('/').to_string();
+    // The address the app registers itself under: `base_url` alone, without
+    // the trailing slash im keeps its entries free of. The bound address is
+    // no fallback here — a loopback bind is not an address anyone else can
+    // reach, and filing it would overwrite the real one in every switcher.
+    let public_origin = config
+        .base_url
+        .as_deref()
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_string();
     tokio::spawn(family_sync(
         store.clone(),
         in_client::InClient::new(oidc.clone()),
