@@ -1648,7 +1648,7 @@ impl Store for TursoStore {
         let now = now_text()?;
         let conn = self.conn.lock().await;
         conn.execute(
-            "UPDATE file SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
+            "UPDATE file SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2 AND deleted_at IS NULL",
             params![now, id],
         )
         .await
@@ -1934,7 +1934,13 @@ impl Store for TursoStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .await
             .map_err(backend)?;
-        delete_file_rows(&tx, &[id.to_string()]).await?;
+        let deleted = delete_file_rows(&tx, &[id.to_string()], &TrashGuard::Trashed).await?;
+        if deleted.is_empty() {
+            // A restore landed between the live-check and this
+            // transaction: the file is live again, and a live file is not
+            // trash — the purge answers so truthfully.
+            return Ok(false);
+        }
         refresh_usage(&tx, &owner).await?;
         tx.commit().await.map_err(backend)?;
         // After the delete: the bytes may only follow a delete that
@@ -2003,13 +2009,14 @@ impl Store for TursoStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .await
             .map_err(backend)?;
-        delete_file_rows(&tx, &file_ids).await?;
-        delete_folder_rows(&tx, &folder_ids).await?;
+        let deleted_files = delete_file_rows(&tx, &file_ids, &TrashGuard::Trashed).await?;
+        let deleted_folders = delete_folder_rows(&tx, &folder_ids, &TrashGuard::Trashed).await?;
         refresh_usage(&tx, &owner).await?;
         tx.commit().await.map_err(backend)?;
-        // After the delete: bytes may only follow a delete that committed.
-        // Best-effort — survivors are orphaned bytes the boot sweep collects.
-        for file_id in &file_ids {
+        // After the delete: bytes may only follow a delete that committed,
+        // and only for rows that went — a restore that landed in the read
+        // window keeps its bytes.
+        for file_id in &deleted_files {
             let _ = self
                 .blobs
                 .delete(&[
@@ -2018,7 +2025,7 @@ impl Store for TursoStore {
                 ])
                 .await;
         }
-        let purged = (file_ids.len() + folder_ids.len()) as u64;
+        let purged = (deleted_files.len() + deleted_folders.len()) as u64;
         self.announce([Topic::Library(owner.clone()), Topic::Trash(owner)]);
         Ok(purged)
     }
@@ -2026,130 +2033,46 @@ impl Store for TursoStore {
     async fn purge_expired(&self, before: OffsetDateTime) -> Result<u64> {
         let before = stamp(before)?;
         let conn = self.conn.lock().await;
-        let mut file_ids = Vec::new();
-        let mut rows = conn
-            .query(
-                "SELECT id, owner_id FROM file WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
-                params![before.as_str()],
-            )
-            .await
-            .map_err(backend)?;
-        while let Some(row) = rows.next().await.map_err(backend)? {
-            file_ids.push((text(&row, 0)?, text(&row, 1)?));
-        }
-        let mut folder_rows = Vec::new();
-        let mut rows = conn
-            .query(
-                "SELECT id, owner_id, parent_id FROM folder \
-                 WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
-                params![before],
-            )
-            .await
-            .map_err(backend)?;
-        while let Some(row) = rows.next().await.map_err(backend)? {
-            folder_rows.push((text(&row, 0)?, text(&row, 1)?, opt_text(&row, 2)?));
-        }
+        let (file_ids, folder_rows) = select_expired(&conn, before.as_str()).await?;
         drop(conn);
         if file_ids.is_empty() && folder_rows.is_empty() {
             return Ok(0);
         }
-        // Folders deepest first: a parent row cannot go while a child row
-        // still names it.
-        let folder_ids = order_deepest_first(
-            &folder_rows
-                .iter()
-                .map(|(id, _, parent)| (id.clone(), parent.clone()))
-                .collect::<Vec<_>>(),
-        );
-        let owners = {
-            let mut owners: Vec<String> = file_ids.iter().map(|(_, o)| o.clone()).collect();
-            owners.extend(folder_rows.iter().map(|(_, o, _)| o.clone()));
-            owners.sort();
-            owners.dedup();
-            owners
-        };
-        let mut conn = self.tx_conn().await?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .await
-            .map_err(backend)?;
-        delete_file_rows(
-            &tx,
-            &file_ids
-                .iter()
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>(),
+        let (deleted_files, deleted_folders) = commit_trash_purge(
+            self,
+            file_ids,
+            folder_rows,
+            &TrashGuard::Expired {
+                before: before.as_str(),
+            },
         )
         .await?;
-        delete_folder_rows(&tx, &folder_ids).await?;
-        for owner in &owners {
-            refresh_usage(&tx, owner).await?;
-        }
-        tx.commit().await.map_err(backend)?;
-        for (id, _) in &file_ids {
-            let _ = self
-                .blobs
-                .delete(&[&format!("files/{id}"), &format!("thumbs/{id}")])
-                .await;
-        }
-        let purged = (file_ids.len() + folder_ids.len()) as u64;
-        for owner in owners {
-            self.announce([Topic::Library(owner.clone()), Topic::Trash(owner)]);
-        }
-        Ok(purged)
+        Ok((deleted_files.len() + deleted_folders.len()) as u64)
     }
 
     async fn empty_trash(&self, owner_id: &str) -> Result<u64> {
         let conn = self.conn.lock().await;
-        let mut file_ids = Vec::new();
-        let mut rows = conn
-            .query(
-                "SELECT id FROM file WHERE owner_id = ?1 AND deleted_at IS NOT NULL",
-                params![owner_id],
-            )
-            .await
-            .map_err(backend)?;
-        while let Some(row) = rows.next().await.map_err(backend)? {
-            file_ids.push(text(&row, 0)?);
-        }
-        let mut folder_rows = Vec::new();
-        let mut rows = conn
-            .query(
-                "SELECT id, parent_id FROM folder WHERE owner_id = ?1 AND deleted_at IS NOT NULL",
-                params![owner_id],
-            )
-            .await
-            .map_err(backend)?;
-        while let Some(row) = rows.next().await.map_err(backend)? {
-            folder_rows.push((text(&row, 0)?, opt_text(&row, 1)?));
-        }
+        let (file_ids, folder_rows) = select_trash(&conn, owner_id).await?;
         drop(conn);
         if file_ids.is_empty() && folder_rows.is_empty() {
             return Ok(0);
         }
-        let folder_ids = order_deepest_first(&folder_rows);
-        let mut conn = self.tx_conn().await?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .await
-            .map_err(backend)?;
-        delete_file_rows(&tx, &file_ids).await?;
-        delete_folder_rows(&tx, &folder_ids).await?;
-        refresh_usage(&tx, owner_id).await?;
-        tx.commit().await.map_err(backend)?;
-        for id in &file_ids {
-            let _ = self
-                .blobs
-                .delete(&[&format!("files/{id}"), &format!("thumbs/{id}")])
-                .await;
-        }
-        let purged = (file_ids.len() + folder_ids.len()) as u64;
-        self.announce([
-            Topic::Library(owner_id.to_string()),
-            Topic::Trash(owner_id.to_string()),
-        ]);
-        Ok(purged)
+        let (deleted_files, deleted_folders) = commit_trash_purge(
+            self,
+            file_ids
+                .into_iter()
+                .map(|id| (id, owner_id.to_string()))
+                .collect::<Vec<_>>(),
+            folder_rows
+                .into_iter()
+                .map(|(id, parent)| (id, owner_id.to_string(), parent))
+                .collect::<Vec<_>>(),
+            &TrashGuard::Trashed,
+        )
+        .await?;
+        Ok((deleted_files.len() + deleted_folders.len()) as u64)
     }
+
     async fn create_share_link(
         &self,
         created_by: &str,
@@ -2734,6 +2657,10 @@ impl Store for TursoStore {
             .await
             .map_err(backend)?;
         let vetted: Result<String> = async {
+            // The session was vetted outside this transaction; the window
+            // since then belongs to abort, expiry and a second finish. The
+            // row itself is the last word under the write lock.
+            finishable_session(&tx, id).await?;
             check_live_parent(&tx, &session.owner_id, session.folder_id.as_deref()).await?;
             let (quota, used) = check_quota(&tx, &session.owner_id).await?;
             fit_quota(quota, used, session.size_bytes)?;
@@ -3265,11 +3192,207 @@ async fn target_owner(
     }
 }
 
+/// The trash predicate a delete re-tests inside its own transaction. The
+/// candidate lists of a purge are read before the delete transaction
+/// opens; a restore committing in that window must keep its row, so the
+/// guarded deletes re-check `deleted_at` under the write lock the
+/// immediate transaction holds from begin to commit.
+enum TrashGuard<'a> {
+    /// Unconditional: the caller vetted the rows itself (`purge_file`,
+    /// `purge_folder`).
+    None,
+    /// The row must still be trashed (`empty_trash`).
+    Trashed,
+    /// The row must still be trashed before the cutoff (`purge_expired`).
+    Expired { before: &'a str },
+}
+
+/// Whether `id` still satisfies the guard, re-read inside the delete
+/// transaction. The write lock an immediate transaction holds makes this
+/// the last word: a restore either committed before it and shows up live
+/// here, or waits behind the delete and cannot resurrect the row.
+async fn passes_trash_guard(
+    tx: &Transaction<'_>,
+    table: &str,
+    id: &str,
+    guard: &TrashGuard<'_>,
+) -> Result<bool> {
+    let (sql, bind) = match guard {
+        TrashGuard::None => return Ok(true),
+        TrashGuard::Trashed => (
+            format!("SELECT 1 FROM {table} WHERE id = ?1 AND deleted_at IS NOT NULL"),
+            vec![id],
+        ),
+        TrashGuard::Expired { before } => (
+            format!(
+                "SELECT 1 FROM {table} WHERE id = ?1 \
+                 AND deleted_at IS NOT NULL AND deleted_at < ?2"
+            ),
+            vec![id, *before],
+        ),
+    };
+    let mut rows = tx.query(&sql, bind).await.map_err(backend)?;
+    Ok(rows.next().await.map_err(backend)?.is_some())
+}
+
+/// The delete side of a trash purge. The candidates were read outside any
+/// transaction; this opens the immediate transaction, re-validates every
+/// candidate against `guard` under its write lock, takes the survivors'
+/// rows and shares, recomputes each owner's usage, and commits. Only then
+/// do the bytes go, and only for rows that actually went — a restore that
+/// landed in the selection window keeps its row, shares and bytes. The
+/// return carries what was really deleted.
+async fn commit_trash_purge(
+    store: &TursoStore,
+    files: Vec<(String, String)>,
+    folders: Vec<(String, String, Option<String>)>,
+    guard: &TrashGuard<'_>,
+) -> Result<(Vec<String>, Vec<String>)> {
+    // Folders deepest first: a parent row cannot go while a child row
+    // still names it.
+    let folder_ids = order_deepest_first(
+        &folders
+            .iter()
+            .map(|(id, _, parent)| (id.clone(), parent.clone()))
+            .collect::<Vec<_>>(),
+    );
+    let mut owners: Vec<String> = files.iter().map(|(_, owner)| owner.clone()).collect();
+    owners.extend(folders.iter().map(|(_, owner, _)| owner.clone()));
+    owners.sort();
+    owners.dedup();
+    let file_ids = files.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+    let mut conn = store.tx_conn().await?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await
+        .map_err(backend)?;
+    let deleted_files = delete_file_rows(&tx, &file_ids, guard).await?;
+    let deleted_folders = delete_folder_rows(&tx, &folder_ids, guard).await?;
+    for owner in &owners {
+        refresh_usage(&tx, owner).await?;
+    }
+    tx.commit().await.map_err(backend)?;
+    // After the delete: bytes may only follow a delete that committed.
+    // Best-effort — survivors are orphaned bytes the boot sweep collects.
+    if !deleted_files.is_empty() {
+        let mut keys = Vec::with_capacity(deleted_files.len() * 2);
+        for id in &deleted_files {
+            keys.push(format!("{FILES_DIR}/{id}"));
+            keys.push(format!("{THUMBS_DIR}/{id}"));
+        }
+        let keys = keys.iter().map(String::as_str).collect::<Vec<_>>();
+        let _ = store.blobs.delete(&keys).await;
+    }
+    for owner in owners {
+        store.announce([Topic::Library(owner.clone()), Topic::Trash(owner)]);
+    }
+    Ok((deleted_files, deleted_folders))
+}
+
+/// The trash candidates for `purge_expired`, read off the shared
+/// connection: files as `(id, owner)`, folders as `(id, owner, parent)`.
+/// Reading is deliberately outside the delete transaction — the two are
+/// separate moments, and `commit_trash_purge` re-validates every candidate
+/// under the write lock before taking it.
+async fn select_expired(
+    conn: &Connection,
+    before: &str,
+) -> Result<(Vec<(String, String)>, Vec<(String, String, Option<String>)>)> {
+    let mut file_ids = Vec::new();
+    let mut rows = conn
+        .query(
+            "SELECT id, owner_id FROM file WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+            params![before],
+        )
+        .await
+        .map_err(backend)?;
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        file_ids.push((text(&row, 0)?, text(&row, 1)?));
+    }
+    let mut folder_rows = Vec::new();
+    let mut rows = conn
+        .query(
+            "SELECT id, owner_id, parent_id FROM folder \
+             WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+            params![before],
+        )
+        .await
+        .map_err(backend)?;
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        folder_rows.push((text(&row, 0)?, text(&row, 1)?, opt_text(&row, 2)?));
+    }
+    Ok((file_ids, folder_rows))
+}
+
+/// The trash candidates for `empty_trash`: the owner's files as bare ids
+/// and folders as `(id, parent_id)`, read off the shared connection with
+/// the same outside-the-transaction caveat as `select_expired`.
+async fn select_trash(
+    conn: &Connection,
+    owner_id: &str,
+) -> Result<(Vec<String>, Vec<(String, Option<String>)>)> {
+    let mut file_ids = Vec::new();
+    let mut rows = conn
+        .query(
+            "SELECT id FROM file WHERE owner_id = ?1 AND deleted_at IS NOT NULL",
+            params![owner_id],
+        )
+        .await
+        .map_err(backend)?;
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        file_ids.push(text(&row, 0)?);
+    }
+    let mut folder_rows = Vec::new();
+    let mut rows = conn
+        .query(
+            "SELECT id, parent_id FROM folder WHERE owner_id = ?1 AND deleted_at IS NOT NULL",
+            params![owner_id],
+        )
+        .await
+        .map_err(backend)?;
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        folder_rows.push((text(&row, 0)?, opt_text(&row, 1)?));
+    }
+    Ok((file_ids, folder_rows))
+}
+
+/// The last word on an upload session, re-read inside the finish
+/// transaction: the row was vetted outside it, and the window since then
+/// belongs to abort, expiry and a second finish. Every expiry wears the
+/// same stamp format, so the text order is the time order.
+async fn finishable_session(tx: &Transaction<'_>, id: &str) -> Result<()> {
+    let mut rows = tx
+        .query(
+            "SELECT 1 FROM upload_session \
+             WHERE id = ?1 AND state = 'active' AND expires_at > ?2",
+            params![id, now_text()?],
+        )
+        .await
+        .map_err(backend)?;
+    let live = rows.next().await.map_err(backend)?.is_some();
+    drop(rows);
+    if !live {
+        return Err(StoreError::UploadExpired);
+    }
+    Ok(())
+}
+
 /// Deletes file rows and every share naming them: links and grants onto a
 /// purged file are dead, and the purge is what says so. Upload sessions that
-/// named these files never exist — sessions name folders, not files.
-async fn delete_file_rows(tx: &Transaction<'_>, ids: &[String]) -> Result<()> {
+/// named these files never exist — sessions name folders, not files. Rows
+/// the guard finds alive again are skipped whole — row and shares both,
+/// a live file keeps its grants — and the return carries the ids that
+/// actually went.
+async fn delete_file_rows(
+    tx: &Transaction<'_>,
+    ids: &[String],
+    guard: &TrashGuard<'_>,
+) -> Result<Vec<String>> {
+    let mut deleted = Vec::with_capacity(ids.len());
     for id in ids {
+        if !passes_trash_guard(tx, "file", id, guard).await? {
+            continue;
+        }
         tx.execute(
             "DELETE FROM share_link WHERE target_id = ?1 AND kind = 'file'",
             params![id.as_str()],
@@ -3285,16 +3408,26 @@ async fn delete_file_rows(tx: &Transaction<'_>, ids: &[String]) -> Result<()> {
         tx.execute("DELETE FROM file WHERE id = ?1", params![id.as_str()])
             .await
             .map_err(backend)?;
+        deleted.push(id.clone());
     }
-    Ok(())
+    Ok(deleted)
 }
 
 /// Deletes folder rows deepest first, with every share naming them. Active
 /// upload sessions staged into these folders keep their rows — the upload
 /// may still finish into the root's listing — but lose the folder: a session
-/// cannot finish into trash that has been purged.
-async fn delete_folder_rows(tx: &Transaction<'_>, ids: &[String]) -> Result<()> {
+/// cannot finish into trash that has been purged. Rows the guard finds
+/// alive again are skipped whole; the return carries the ids that went.
+async fn delete_folder_rows(
+    tx: &Transaction<'_>,
+    ids: &[String],
+    guard: &TrashGuard<'_>,
+) -> Result<Vec<String>> {
+    let mut deleted = Vec::with_capacity(ids.len());
     for id in ids {
+        if !passes_trash_guard(tx, "folder", id, guard).await? {
+            continue;
+        }
         tx.execute(
             "DELETE FROM share_link WHERE target_id = ?1 AND kind = 'folder'",
             params![id.as_str()],
@@ -3316,8 +3449,9 @@ async fn delete_folder_rows(tx: &Transaction<'_>, ids: &[String]) -> Result<()> 
         tx.execute("DELETE FROM folder WHERE id = ?1", params![id.as_str()])
             .await
             .map_err(backend)?;
+        deleted.push(id.clone());
     }
-    Ok(())
+    Ok(deleted)
 }
 
 /// Orders `(id, parent_id)` rows deepest first, so a purge deletes children
@@ -3463,5 +3597,225 @@ mod tests {
         assert_eq!(cut.chars().count(), MAX_NAME_CHARS);
         assert!(cut.ends_with(" (2)"));
         assert!(cut.starts_with("é"));
+    }
+
+    #[tokio::test]
+    async fn a_restore_landing_between_select_and_delete_keeps_the_file() {
+        use time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("storage");
+        let store = TursoStore::open(
+            dir.path().join("in.db").to_str().unwrap(),
+            Some(&storage),
+        )
+        .await
+        .unwrap();
+        let user = store
+            .provision_user("sub-alice", "alice@example.com", "Alice", 1024 * 1024 * 1024)
+            .await
+            .unwrap();
+
+        // The purge_expired window: candidates read, then a restore lands,
+        // then the delete transaction opens on the stale candidates.
+        let file = store
+            .insert_file(&user.id, None, "keep.txt", b"precious")
+            .await
+            .unwrap();
+        store.delete_file(&file.id).await.unwrap();
+        let before = stamp(OffsetDateTime::now_utc() + Duration::days(31)).unwrap();
+        let conn = store.conn.lock().await;
+        let (files, folders) = select_expired(&conn, &before).await.unwrap();
+        drop(conn);
+        assert_eq!(files, vec![(file.id.clone(), user.id.clone())]);
+        assert!(folders.is_empty());
+        store.restore_file(&file.id).await.unwrap();
+        let (deleted_files, deleted_folders) = commit_trash_purge(
+            &store,
+            files,
+            folders,
+            &TrashGuard::Expired { before: &before },
+        )
+        .await
+        .unwrap();
+        assert!(deleted_files.is_empty());
+        assert!(deleted_folders.is_empty());
+        let live = store.file(&file.id).await.unwrap().unwrap();
+        assert!(live.deleted_at.is_none());
+        assert!(storage.join(FILES_DIR).join(&file.id).is_file());
+
+        // The empty_trash window, same interleave.
+        store.delete_file(&file.id).await.unwrap();
+        let conn = store.conn.lock().await;
+        let (files, folders) = select_trash(&conn, &user.id).await.unwrap();
+        drop(conn);
+        assert_eq!(files, vec![file.id.clone()]);
+        assert!(folders.is_empty());
+        store.restore_file(&file.id).await.unwrap();
+        let (deleted_files, deleted_folders) = commit_trash_purge(
+            &store,
+            files
+                .into_iter()
+                .map(|id| (id, user.id.clone()))
+                .collect::<Vec<_>>(),
+            folders
+                .into_iter()
+                .map(|(id, parent)| (id, user.id.clone(), parent))
+                .collect::<Vec<_>>(),
+            &TrashGuard::Trashed,
+        )
+        .await
+        .unwrap();
+        assert!(deleted_files.is_empty());
+        assert!(deleted_folders.is_empty());
+        assert!(store.file(&file.id).await.unwrap().unwrap().deleted_at.is_none());
+        assert!(storage.join(FILES_DIR).join(&file.id).is_file());
+
+        // The guards refuse only the resurrected: real trash still purges
+        // through the public paths, rows then bytes.
+        store.delete_file(&file.id).await.unwrap();
+        assert_eq!(store.empty_trash(&user.id).await.unwrap(), 1);
+        assert!(store.file(&file.id).await.unwrap().is_none());
+        assert!(!storage.join(FILES_DIR).join(&file.id).is_file());
+
+        let other = store
+            .insert_file(&user.id, None, "also-doomed.txt", b"precious")
+            .await
+            .unwrap();
+        store.delete_file(&other.id).await.unwrap();
+        assert_eq!(
+            store
+                .purge_expired(OffsetDateTime::now_utc() + Duration::days(31))
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(store.file(&other.id).await.unwrap().is_none());
+        assert!(!storage.join(FILES_DIR).join(&other.id).is_file());
+    }
+
+    #[tokio::test]
+    async fn a_purge_file_refuses_what_a_restore_brought_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("storage");
+        let store = TursoStore::open(
+            dir.path().join("in.db").to_str().unwrap(),
+            Some(&storage),
+        )
+        .await
+        .unwrap();
+        let user = store
+            .provision_user("sub-alice", "alice@example.com", "Alice", 1024 * 1024 * 1024)
+            .await
+            .unwrap();
+        let file = store
+            .insert_file(&user.id, None, "back.txt", b"precious")
+            .await
+            .unwrap();
+        store.delete_file(&file.id).await.unwrap();
+        store.restore_file(&file.id).await.unwrap();
+        // The restore won the window: the purge answers false for a live
+        // file and leaves row and bytes alone.
+        assert!(!store.purge_file(&file.id).await.unwrap());
+        assert!(store.file(&file.id).await.unwrap().unwrap().deleted_at.is_none());
+        assert!(storage.join(FILES_DIR).join(&file.id).is_file());
+        // Actual trash still purges, rows then bytes.
+        store.delete_file(&file.id).await.unwrap();
+        assert!(store.purge_file(&file.id).await.unwrap());
+        assert!(store.file(&file.id).await.unwrap().is_none());
+        assert!(!storage.join(FILES_DIR).join(&file.id).is_file());
+    }
+
+    #[tokio::test]
+    async fn a_purge_folder_refuses_what_a_restore_brought_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("storage");
+        let store = TursoStore::open(
+            dir.path().join("in.db").to_str().unwrap(),
+            Some(&storage),
+        )
+        .await
+        .unwrap();
+        let user = store
+            .provision_user("sub-alice", "alice@example.com", "Alice", 1024 * 1024 * 1024)
+            .await
+            .unwrap();
+        let root = store.create_folder(&user.id, None, "root").await.unwrap();
+        let kid = store
+            .create_folder(&user.id, Some(&root.id), "kid")
+            .await
+            .unwrap();
+        let file = store
+            .insert_file(&user.id, Some(&kid.id), "inside.txt", b"precious")
+            .await
+            .unwrap();
+        store.delete_folder(&root.id).await.unwrap();
+        store.restore_folder(&root.id).await.unwrap();
+        // The restore won the window: a live folder is never purged, and
+        // the refusal is the public face of that — nothing of the subtree
+        // goes.
+        assert!(matches!(
+            store.purge_folder(&root.id).await,
+            Err(StoreError::NotFound)
+        ));
+        assert!(store.folder(&root.id).await.unwrap().unwrap().deleted_at.is_none());
+        assert!(store.folder(&kid.id).await.unwrap().unwrap().deleted_at.is_none());
+        assert!(store.file(&file.id).await.unwrap().unwrap().deleted_at.is_none());
+        assert!(storage.join(FILES_DIR).join(&file.id).is_file());
+        // Trashed again, the whole subtree goes, rows then bytes.
+        store.delete_folder(&root.id).await.unwrap();
+        assert_eq!(store.purge_folder(&root.id).await.unwrap(), 3);
+        assert!(store.folder(&root.id).await.unwrap().is_none());
+        assert!(store.folder(&kid.id).await.unwrap().is_none());
+        assert!(store.file(&file.id).await.unwrap().is_none());
+        assert!(!storage.join(FILES_DIR).join(&file.id).is_file());
+    }
+
+    #[tokio::test]
+    async fn an_upload_finishes_once_and_never_after_an_abort() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = dir.path().join("storage");
+        let store = TursoStore::open(
+            dir.path().join("in.db").to_str().unwrap(),
+            Some(&storage),
+        )
+        .await
+        .unwrap();
+        let user = store
+            .provision_user("sub-alice", "alice@example.com", "Alice", 1024 * 1024 * 1024)
+            .await
+            .unwrap();
+        let session = store
+            .create_upload_session(&user.id, None, "once.bin", 4)
+            .await
+            .unwrap();
+        store.record_chunk(&session.id, 0, b"1234").await.unwrap();
+        let file = store.finish_upload(&session.id).await.unwrap();
+        assert_eq!(file.name, "once.bin");
+        // A racing second finish already assembled its view while the
+        // session was active — its chunks sit staged. The finished row
+        // itself must refuse it.
+        let chunk = chunk_path(&storage, &session.id, 0);
+        std::fs::create_dir_all(chunk.parent().unwrap()).unwrap();
+        std::fs::write(chunk, b"1234").unwrap();
+        assert!(matches!(
+            store.finish_upload(&session.id).await,
+            Err(StoreError::UploadExpired)
+        ));
+        let files = store.list_children(&user.id, None).await.unwrap().files.len();
+        assert_eq!(files, 1);
+        // An aborted session never finishes: no file row, ever.
+        let session = store
+            .create_upload_session(&user.id, None, "gone.bin", 4)
+            .await
+            .unwrap();
+        store.record_chunk(&session.id, 0, b"1234").await.unwrap();
+        store.abort_upload(&session.id).await.unwrap();
+        assert!(matches!(
+            store.finish_upload(&session.id).await,
+            Err(StoreError::UploadExpired)
+        ));
+        let files = store.list_children(&user.id, None).await.unwrap().files.len();
+        assert_eq!(files, 1);
     }
 }
