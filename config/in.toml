@@ -21,8 +21,10 @@ base_url = ""
 # and the boot completes this file with the value it resolved.
 
 # The suite the switcher's wordmarks link to is im's to keep — im's admin
-# panel owns the list, and In fetches it from im and keeps a mirror. This
-# file no longer names the suite; a `[[services]]` block left behind by an
+# panel owns the list, and In fetches it from im and keeps a mirror. On
+# every beat In also announces itself to im under the key "in" at the
+# address `base_url` gives, so the suite lists it without anyone typing it.
+# This file no longer names the suite; a `[[services]]` block left behind by an
 # older file is reported as ignored and then passed over.
 # Where drive files, thumbnails and staged upload chunks live as files, created on boot.
 storage = "/home/tahinli/Documents/Code/Rust/in/storage"

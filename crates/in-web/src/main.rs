@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use in_core::Config;
-use in_core::store::{Store, TursoStore};
 use in_core::store::r2::R2Blobs;
+use in_core::store::{Store, TursoStore};
 use topcoat::Result;
 use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
 use topcoat::context::Cx;
@@ -219,9 +219,14 @@ async fn main() {
     // a fresh deploy shows the trio at boot; an im that does not answer —
     // down, restarting, mid-deploy — costs one log line and nothing else:
     // the last list filed keeps the switcher alive until the next beat.
+    // The address the app registers itself under: the same origin the
+    // logout walk and the share links carry, without the trailing slash im
+    // keeps its entries free of.
+    let public_origin = config.public_origin().trim_end_matches('/').to_string();
     tokio::spawn(family_sync(
         store.clone(),
         in_client::InClient::new(oidc.clone()),
+        public_origin,
     ));
 
     // Told when the process is stopping, so the live streams end instead of
@@ -337,8 +342,23 @@ const FAMILY_SECONDS: u64 = 300;
 /// `family` setting — the one row the switcher reads, so a beat that
 /// answers simply replaces what is filed. Runs the whole life of the
 /// process; nothing here is worth keeping alive past shutdown.
-async fn family_sync(store: Arc<dyn in_core::store::Store>, client: in_client::InClient) {
+async fn family_sync(
+    store: Arc<dyn in_core::store::Store>,
+    client: in_client::InClient,
+    origin: String,
+) {
+    if origin.is_empty() {
+        eprintln!("family: no public address to register; set base_url");
+    }
     loop {
+        // Announced before every fetch, so an im that was down, restarted
+        // or freshly seeded learns this app on the next beat. A refusal is
+        // one log line: the mirror below runs either way.
+        if !origin.is_empty()
+            && let Err(problem) = client.register_family("in", "Files", &origin).await
+        {
+            eprintln!("family register: {problem}");
+        }
         match client.family().await {
             Some(family) => match serde_json::to_string(&family) {
                 Ok(json) => {

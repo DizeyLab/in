@@ -243,6 +243,49 @@ impl InClient {
         }
         reply.json().await.ok()
     }
+
+    /// Tells im this app is one of the family: the key the switcher inks,
+    /// the label its title wears, and the address it lives at, posted as
+    /// this app (Basic client credentials) to `{issuer}/family/register`.
+    /// Sent on every family beat, not only at boot, so a moved address
+    /// corrects itself and a fresh im learns the app without an admin
+    /// typing anything.
+    ///
+    /// `Ok` on any 2xx — im filed the entry or it already reads that way.
+    /// `Err` names the status and whatever im said about it (`error` /
+    /// `reason`), including the 404 or 405 an im too old to register with
+    /// answers; the caller logs and carries on, because a refused
+    /// registration must never stop the mirror that follows.
+    pub async fn register_family(&self, key: &str, name: &str, url: &str) -> Result<(), String> {
+        let reply = self
+            .http
+            .post(format!("{}/family/register", self.config.issuer))
+            .basic_auth(&self.config.client_id, Some(&self.config.client_secret))
+            .json(&ServiceJson {
+                key: key.to_string(),
+                name: name.to_string(),
+                url: url.to_string(),
+            })
+            .send()
+            .await
+            .map_err(|problem| format!("im did not answer: {problem}"))?;
+        let status = reply.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let said = reply.json::<serde_json::Value>().await.ok();
+        let detail = said.as_ref().and_then(|said| {
+            let error = said.get("error")?.as_str()?;
+            Some(match said.get("reason").and_then(|r| r.as_str()) {
+                Some(reason) => format!("{error}: {reason}"),
+                None => error.to_string(),
+            })
+        });
+        Err(match detail {
+            Some(detail) => format!("im refused with {status}: {detail}"),
+            None => format!("im refused with {status}"),
+        })
+    }
 }
 
 /// im's family list — the suite the signed-in chrome's switcher renders —
@@ -626,7 +669,9 @@ async fn in_logout(cx: &Cx) -> Result<Response, topcoat::Error> {
     let state = client(cx);
     clear_cookie(cx, &state.config.cookie_name);
     let back = match try_app_context::<LogoutBack>(cx) {
-        Some(ask) => (ask.0)(cx).await.unwrap_or_else(|| state.config.logout_back.clone()),
+        Some(ask) => (ask.0)(cx)
+            .await
+            .unwrap_or_else(|| state.config.logout_back.clone()),
         None => state.config.logout_back.clone(),
     };
     see(
@@ -700,7 +745,9 @@ async fn exchange_code(state: &InClient, code: &str, flight: &InFlight) -> Resul
     let (_user, exp) = match introspect(state, &app_session).await {
         Introspected::Active(user, exp) => (user, exp),
         Introspected::Revoked | Introspected::Unanswered => {
-            return Err(Error::Refused("fresh app session does not introspect".into()));
+            return Err(Error::Refused(
+                "fresh app session does not introspect".into(),
+            ));
         }
     };
     Ok(Session { app_session, exp })
@@ -836,9 +883,9 @@ mod tests {
     use super::*;
     use rsa::signature::{SignatureEncoding, Signer};
     use rsa::traits::PublicKeyParts;
+    use std::sync::{Arc, OnceLock};
     use topcoat::cookie::RouterBuilderCookieExt;
     use topcoat::router::{Body, Router, to_bytes};
-    use std::sync::{Arc, OnceLock};
 
     fn keypair() -> (rsa::RsaPrivateKey, rsa::RsaPublicKey) {
         // 2048-bit generation is slow for a unit test; 1024 is the smallest
@@ -975,7 +1022,10 @@ mod tests {
     fn next_allows_plain_local_paths() {
         assert_eq!(safe_next("/"), "/");
         assert_eq!(safe_next("/drive/folder/a"), "/drive/folder/a");
-        assert_eq!(safe_next("/?auth_error=exchange_failed"), "/?auth_error=exchange_failed");
+        assert_eq!(
+            safe_next("/?auth_error=exchange_failed"),
+            "/?auth_error=exchange_failed"
+        );
     }
 
     #[test]
@@ -1007,7 +1057,10 @@ mod tests {
         // `HeaderValue` refuses the injected bytes; the redirect must land
         // on `/` rather than panic its handler.
         assert!(HeaderValue::from_str("/\r\nX-evil:1").is_err());
-        assert_eq!(location_value("/\r\nX-evil:1"), HeaderValue::from_static("/"));
+        assert_eq!(
+            location_value("/\r\nX-evil:1"),
+            HeaderValue::from_static("/")
+        );
         assert_eq!(
             location_value("/drive"),
             HeaderValue::from_str("/drive").unwrap()
@@ -1131,6 +1184,10 @@ mod tests {
         token: Arc<OnceLock<String>>,
         jwks: Arc<OnceLock<String>>,
         introspect: Arc<OnceLock<String>>,
+        /// `POST /family/register`, with the status im answers it under —
+        /// the one canned reply whose status the test chooses, because a
+        /// refusal is what the caller is meant to name.
+        register: Arc<OnceLock<(u16, String)>>,
     }
 
     struct FakeIm {
@@ -1162,8 +1219,7 @@ mod tests {
                                 }
                                 req.extend_from_slice(&buf[..n]);
                                 if let Some(end) = headers_end(&req) {
-                                    let head =
-                                        String::from_utf8_lossy(&req[..end]).to_string();
+                                    let head = String::from_utf8_lossy(&req[..end]).to_string();
                                     let len = content_length(&head);
                                     if req.len() >= end + len {
                                         break end;
@@ -1173,20 +1229,25 @@ mod tests {
                                     return;
                                 }
                             };
-                            let head =
-                                String::from_utf8_lossy(&req[..body_start]).to_string();
+                            let head = String::from_utf8_lossy(&req[..body_start]).to_string();
                             let first = head.lines().next().unwrap_or("").to_string();
                             let len = content_length(&head);
                             req.drain(..body_start + len);
-                            let payload = if first.starts_with("POST /token ") {
-                                canned.token.get().cloned().unwrap_or_default()
+                            let (status, payload) = if first.starts_with("POST /token ") {
+                                (200, canned.token.get().cloned().unwrap_or_default())
                             } else if first.starts_with("GET /jwks.json ") {
-                                canned.jwks.get().cloned().unwrap_or_default()
+                                (200, canned.jwks.get().cloned().unwrap_or_default())
+                            } else if first.starts_with("POST /family/register ") {
+                                canned
+                                    .register
+                                    .get()
+                                    .cloned()
+                                    .unwrap_or((200, String::new()))
                             } else {
-                                canned.introspect.get().cloned().unwrap_or_default()
+                                (200, canned.introspect.get().cloned().unwrap_or_default())
                             };
                             let response = format!(
-                                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: keep-alive\r\n\r\n",
+                                "HTTP/1.1 {status} x\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: keep-alive\r\n\r\n",
                                 payload.len()
                             );
                             if socket.write_all(response.as_bytes()).await.is_err() {
@@ -1281,23 +1342,23 @@ mod tests {
         let _ = canned
             .jwks
             .set(serde_json::json!({"keys": [jwk_of(&public, "test")]}).to_string());
-        let _ = canned
-            .token
-            .set(serde_json::json!({
+        let _ = canned.token.set(
+            serde_json::json!({
                 "id_token": id_token,
                 "app_session": "tok-1",
             })
-            .to_string());
-        let _ = canned
-            .introspect
-            .set(serde_json::json!({
+            .to_string(),
+        );
+        let _ = canned.introspect.set(
+            serde_json::json!({
                 "active": true,
                 "sub": "user-1",
                 "email": "ann@example.com",
                 "name": "Ann",
                 "exp": now + 3600,
             })
-            .to_string());
+            .to_string(),
+        );
 
         let router = test_router(test_config(fake.url()));
         let callback = TestResponse::of(
@@ -1344,23 +1405,23 @@ mod tests {
         let _ = canned
             .jwks
             .set(serde_json::json!({"keys": [jwk_of(&public, "test")]}).to_string());
-        let _ = canned
-            .token
-            .set(serde_json::json!({
+        let _ = canned.token.set(
+            serde_json::json!({
                 "id_token": id_token,
                 "app_session": "tok-1",
             })
-            .to_string());
-        let _ = canned
-            .introspect
-            .set(serde_json::json!({
+            .to_string(),
+        );
+        let _ = canned.introspect.set(
+            serde_json::json!({
                 "active": true,
                 "sub": "user-1",
                 "email": "ann@example.com",
                 "name": "Ann",
                 "exp": now + 3600,
             })
-            .to_string());
+            .to_string(),
+        );
 
         let router = test_router(test_config(fake.url()));
         let callback = TestResponse::of(
@@ -1467,16 +1528,16 @@ mod tests {
     async fn current_user_serves_the_introspected_user() {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let canned = CannedIm::default();
-        let _ = canned
-            .introspect
-            .set(serde_json::json!({
+        let _ = canned.introspect.set(
+            serde_json::json!({
                 "active": true,
                 "sub": "user-1",
                 "email": "ann@example.com",
                 "name": "Ann",
                 "exp": now + 3600,
             })
-            .to_string());
+            .to_string(),
+        );
         let fake = FakeIm::spawn(canned).await;
         let router = test_router(test_config(fake.url()));
         let res = TestResponse::of(
@@ -1491,5 +1552,53 @@ mod tests {
             "a live session must not clear the cookie: {:?}",
             res.set_cookies
         );
+    }
+
+    #[tokio::test]
+    async fn register_family_files_the_entry() {
+        let canned = CannedIm::default();
+        let _ = canned.register.set((
+            200,
+            serde_json::json!({"key": "in", "name": "Files", "url": "http://app.test"}).to_string(),
+        ));
+        let fake = FakeIm::spawn(canned).await;
+        let client = InClient::new(test_config(fake.url()));
+        assert_eq!(
+            client
+                .register_family("in", "Files", "http://app.test")
+                .await,
+            Ok(())
+        );
+    }
+
+    #[tokio::test]
+    async fn register_family_names_a_key_another_app_owns() {
+        let canned = CannedIm::default();
+        let _ = canned
+            .register
+            .set((409, serde_json::json!({"error": "owned"}).to_string()));
+        let fake = FakeIm::spawn(canned).await;
+        let client = InClient::new(test_config(fake.url()));
+        let problem = client
+            .register_family("in", "Files", "http://app.test")
+            .await
+            .unwrap_err();
+        assert!(problem.contains("owned"), "{problem}");
+        assert!(problem.contains("409"), "{problem}");
+    }
+
+    /// An im too old to know the route answers 404 — an `Err` the caller
+    /// logs, never a panic and never a success.
+    #[tokio::test]
+    async fn register_family_survives_an_im_without_the_route() {
+        let canned = CannedIm::default();
+        let _ = canned.register.set((404, String::new()));
+        let fake = FakeIm::spawn(canned).await;
+        let client = InClient::new(test_config(fake.url()));
+        let problem = client
+            .register_family("in", "Files", "http://app.test")
+            .await
+            .unwrap_err();
+        assert!(problem.contains("404"), "{problem}");
     }
 }
