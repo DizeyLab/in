@@ -13,13 +13,13 @@ use turso::transaction::{Transaction, TransactionBehavior};
 use turso::{Builder, Connection, Row, params};
 use ulid::Ulid;
 
+use super::blobs::{Blobs, LocalBlobs};
 use super::secret;
 use super::{
     CHUNK_SIZE, CreatedLink, File, Folder, Listing, Result, ShareKind, ShareLink, ShareUser,
     SharedItem, Store, StoreError, ThumbState, UPLOAD_TTL_HOURS, UploadSession, UploadState, User,
 };
 use super::{ReconcileOptions, reconcile, schema, sniff};
-use super::blobs::{Blobs, LocalBlobs};
 use crate::live::{Change, Topic};
 use crate::thumbs;
 
@@ -211,7 +211,6 @@ impl TursoStore {
         self.sweep_orphan_files().await
     }
 
-
     /// Sets the storage tree against the database, once per boot. The
     /// database and the tree are two halves of one state, and a crash between
     /// a row write and its file write — either order — leaves exactly one
@@ -251,11 +250,8 @@ impl TursoStore {
             .map_err(backend)?;
         let files = known_ids(&tx, "SELECT id FROM file").await?;
         let thumbs = known_ids(&tx, "SELECT id FROM file WHERE thumb_state = 'ready'").await?;
-        let sessions = known_ids(
-            &tx,
-            "SELECT id FROM upload_session WHERE state = 'active'",
-        )
-        .await?;
+        let sessions =
+            known_ids(&tx, "SELECT id FROM upload_session WHERE state = 'active'").await?;
         // The watermark: the newest moment any row carries. Read under the
         // same lock as the ids, so a writer that commits mid-sweep either
         // is in both sets or in neither.
@@ -301,7 +297,10 @@ impl TursoStore {
                     continue;
                 }
                 if let Err(e) = self.blobs.delete(&[&format!("{dir}/{}", entry.name)]).await {
-                    eprintln!("could not delete orphaned storage file {dir}/{}: {e}", entry.name);
+                    eprintln!(
+                        "could not delete orphaned storage file {dir}/{}: {e}",
+                        entry.name
+                    );
                 }
             }
         }
@@ -2019,10 +2018,7 @@ impl Store for TursoStore {
         for file_id in &deleted_files {
             let _ = self
                 .blobs
-                .delete(&[
-                    &format!("files/{file_id}"),
-                    &format!("thumbs/{file_id}"),
-                ])
+                .delete(&[&format!("files/{file_id}"), &format!("thumbs/{file_id}")])
                 .await;
         }
         let purged = (deleted_files.len() + deleted_folders.len()) as u64;
@@ -2593,8 +2589,7 @@ impl Store for TursoStore {
         // Staged in the files directory under a temp name: the sniffer and
         // the thumbnailer need a real local file, and the adopt that places
         // the assembled bytes is a same-tree rename away.
-        let tmp = file_path(&self.storage, &file_id)
-            .with_extension(format!("{}.tmp", Ulid::new()));
+        let tmp = file_path(&self.storage, &file_id).with_extension(format!("{}.tmp", Ulid::new()));
         {
             use std::io::Write as _;
             let mut out =
@@ -3198,10 +3193,8 @@ async fn target_owner(
 /// guarded deletes re-check `deleted_at` under the write lock the
 /// immediate transaction holds from begin to commit.
 enum TrashGuard<'a> {
-    /// Unconditional: the caller vetted the rows itself (`purge_file`,
-    /// `purge_folder`).
-    None,
-    /// The row must still be trashed (`empty_trash`).
+    /// The row must still be trashed (`purge_file`, `purge_folder`,
+    /// `empty_trash`).
     Trashed,
     /// The row must still be trashed before the cutoff (`purge_expired`).
     Expired { before: &'a str },
@@ -3218,7 +3211,6 @@ async fn passes_trash_guard(
     guard: &TrashGuard<'_>,
 ) -> Result<bool> {
     let (sql, bind) = match guard {
-        TrashGuard::None => return Ok(true),
         TrashGuard::Trashed => (
             format!("SELECT 1 FROM {table} WHERE id = ?1 AND deleted_at IS NOT NULL"),
             vec![id],
@@ -3605,14 +3597,16 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("storage");
-        let store = TursoStore::open(
-            dir.path().join("in.db").to_str().unwrap(),
-            Some(&storage),
-        )
-        .await
-        .unwrap();
+        let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
+            .await
+            .unwrap();
         let user = store
-            .provision_user("sub-alice", "alice@example.com", "Alice", 1024 * 1024 * 1024)
+            .provision_user(
+                "sub-alice",
+                "alice@example.com",
+                "Alice",
+                1024 * 1024 * 1024,
+            )
             .await
             .unwrap();
 
@@ -3668,7 +3662,15 @@ mod tests {
         .unwrap();
         assert!(deleted_files.is_empty());
         assert!(deleted_folders.is_empty());
-        assert!(store.file(&file.id).await.unwrap().unwrap().deleted_at.is_none());
+        assert!(
+            store
+                .file(&file.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .deleted_at
+                .is_none()
+        );
         assert!(storage.join(FILES_DIR).join(&file.id).is_file());
 
         // The guards refuse only the resurrected: real trash still purges
@@ -3698,14 +3700,16 @@ mod tests {
     async fn a_purge_file_refuses_what_a_restore_brought_back() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("storage");
-        let store = TursoStore::open(
-            dir.path().join("in.db").to_str().unwrap(),
-            Some(&storage),
-        )
-        .await
-        .unwrap();
+        let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
+            .await
+            .unwrap();
         let user = store
-            .provision_user("sub-alice", "alice@example.com", "Alice", 1024 * 1024 * 1024)
+            .provision_user(
+                "sub-alice",
+                "alice@example.com",
+                "Alice",
+                1024 * 1024 * 1024,
+            )
             .await
             .unwrap();
         let file = store
@@ -3717,7 +3721,15 @@ mod tests {
         // The restore won the window: the purge answers false for a live
         // file and leaves row and bytes alone.
         assert!(!store.purge_file(&file.id).await.unwrap());
-        assert!(store.file(&file.id).await.unwrap().unwrap().deleted_at.is_none());
+        assert!(
+            store
+                .file(&file.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .deleted_at
+                .is_none()
+        );
         assert!(storage.join(FILES_DIR).join(&file.id).is_file());
         // Actual trash still purges, rows then bytes.
         store.delete_file(&file.id).await.unwrap();
@@ -3730,14 +3742,16 @@ mod tests {
     async fn a_purge_folder_refuses_what_a_restore_brought_back() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("storage");
-        let store = TursoStore::open(
-            dir.path().join("in.db").to_str().unwrap(),
-            Some(&storage),
-        )
-        .await
-        .unwrap();
+        let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
+            .await
+            .unwrap();
         let user = store
-            .provision_user("sub-alice", "alice@example.com", "Alice", 1024 * 1024 * 1024)
+            .provision_user(
+                "sub-alice",
+                "alice@example.com",
+                "Alice",
+                1024 * 1024 * 1024,
+            )
             .await
             .unwrap();
         let root = store.create_folder(&user.id, None, "root").await.unwrap();
@@ -3758,9 +3772,33 @@ mod tests {
             store.purge_folder(&root.id).await,
             Err(StoreError::NotFound)
         ));
-        assert!(store.folder(&root.id).await.unwrap().unwrap().deleted_at.is_none());
-        assert!(store.folder(&kid.id).await.unwrap().unwrap().deleted_at.is_none());
-        assert!(store.file(&file.id).await.unwrap().unwrap().deleted_at.is_none());
+        assert!(
+            store
+                .folder(&root.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .deleted_at
+                .is_none()
+        );
+        assert!(
+            store
+                .folder(&kid.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .deleted_at
+                .is_none()
+        );
+        assert!(
+            store
+                .file(&file.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .deleted_at
+                .is_none()
+        );
         assert!(storage.join(FILES_DIR).join(&file.id).is_file());
         // Trashed again, the whole subtree goes, rows then bytes.
         store.delete_folder(&root.id).await.unwrap();
@@ -3775,14 +3813,16 @@ mod tests {
     async fn an_upload_finishes_once_and_never_after_an_abort() {
         let dir = tempfile::tempdir().unwrap();
         let storage = dir.path().join("storage");
-        let store = TursoStore::open(
-            dir.path().join("in.db").to_str().unwrap(),
-            Some(&storage),
-        )
-        .await
-        .unwrap();
+        let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
+            .await
+            .unwrap();
         let user = store
-            .provision_user("sub-alice", "alice@example.com", "Alice", 1024 * 1024 * 1024)
+            .provision_user(
+                "sub-alice",
+                "alice@example.com",
+                "Alice",
+                1024 * 1024 * 1024,
+            )
             .await
             .unwrap();
         let session = store
@@ -3802,7 +3842,12 @@ mod tests {
             store.finish_upload(&session.id).await,
             Err(StoreError::UploadExpired)
         ));
-        let files = store.list_children(&user.id, None).await.unwrap().files.len();
+        let files = store
+            .list_children(&user.id, None)
+            .await
+            .unwrap()
+            .files
+            .len();
         assert_eq!(files, 1);
         // An aborted session never finishes: no file row, ever.
         let session = store
@@ -3815,7 +3860,12 @@ mod tests {
             store.finish_upload(&session.id).await,
             Err(StoreError::UploadExpired)
         ));
-        let files = store.list_children(&user.id, None).await.unwrap().files.len();
+        let files = store
+            .list_children(&user.id, None)
+            .await
+            .unwrap()
+            .files
+            .len();
         assert_eq!(files, 1);
     }
 }

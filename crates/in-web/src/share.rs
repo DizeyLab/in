@@ -1221,13 +1221,6 @@ impl SharedRow {
     fn size(&self) -> u64 {
         self.file.as_ref().map(|file| file.size_bytes).unwrap_or(0)
     }
-
-    fn downloads(&self) -> u64 {
-        self.file
-            .as_ref()
-            .map(|file| file.download_count)
-            .unwrap_or(0)
-    }
 }
 
 /// Everything others shared with the reader, folders and files in one
