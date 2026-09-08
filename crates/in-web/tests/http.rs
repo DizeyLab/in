@@ -2715,7 +2715,7 @@ async fn topbar_nav_has_no_search_link() {
 }
 
 #[tokio::test]
-async fn the_suite_switcher_renders_when_the_family_is_mirrored() {
+async fn the_family_flyout_holds_the_siblings_when_the_family_is_mirrored() {
     // No mirrored family: no switcher — the chrome as it always was.
     let bare = TestApp::build().await;
     let cookie = bare
@@ -2743,12 +2743,16 @@ async fn the_suite_switcher_renders_when_the_family_is_mirrored() {
         .find("</nav>")
         .expect("switcher never closes");
     let nav = &body[nav_start..nav_start + nav_end];
-    assert!(nav.contains("href=\"https://files.example.com/\""), "{nav}");
+    // Only the siblings hang in the flyout — this app's own row is the mark
+    // the flyout hangs from, not an entry in it.
+    assert!(!nav.contains("href=\"https://files.example.com/\""), "{nav}");
     assert!(nav.contains("href=\"https://id.example.com/\""), "{nav}");
     assert!(nav.contains("href=\"https://board.example.com/\""), "{nav}");
-    assert!(nav.contains("title=\"Files\""), "{nav}");
-    // Exactly the app the reader is already in is marked.
-    assert_eq!(nav.matches("aria-current").count(), 1, "{nav}");
+    assert!(nav.contains("title=\"Account\""), "{nav}");
+    assert_eq!(nav.matches("app-switcher-mark").count(), 2, "{nav}");
+    assert_eq!(nav.matches("app-switcher-sep").count(), 1, "{nav}");
+    // The flyout hangs off the monogram, not the page nav.
+    assert!(body.contains("wordmark-family"), "{body}");
 }
 
 /// The `back` the sign-out hands im is read per sign-out: an origin saved

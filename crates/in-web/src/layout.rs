@@ -236,47 +236,54 @@ async fn family_of(cx: &Cx) -> Vec<in_client::ServiceJson> {
     }
 }
 
-/// The topbar's suite switcher: every family entry as its wordmark,
-/// beside the page nav, the current one marked. Rendered only when a
-/// mirrored list is actually there. The links point at the services' own
-/// addresses, so the cross-origin ones navigate the browser natively;
-/// this app's entry lands where a soft-nav swap would have gone anyway.
-async fn app_switcher(cx: &Cx) -> Result {
+/// The monogram with the family behind it: the In mark as ever, and the
+/// sibling services' wordmarks in a flyout that opens under it on hover
+/// and on keyboard focus — the mark is an `<a href="/">`, so it is already
+/// focusable and `:focus-within` needs nothing added. Middots between,
+/// each a plain link to the service's own address, so the cross-origin
+/// hop navigates the browser natively. No script: the flyout is CSS on
+/// `:hover` / `:focus-within`, and it stays in the DOM at opacity zero so
+/// Tab reaches its links. A family that is absent, or holds no one but
+/// this app, renders the bare mark — there is nothing to reveal.
+async fn family_mark(cx: &Cx) -> Result {
     let family = family_of(cx).await;
-    let empty = family.is_empty();
+    let siblings: Vec<_> = family
+        .into_iter()
+        .filter(|service| service.key != SELF_KEY)
+        .collect();
+    if siblings.is_empty() {
+        return mark(cx).await;
+    }
     view! {
         cx =>
-        if !empty {
+        <div class="wordmark-family">
+            (mark(cx).await?)
             <nav class="app-switcher">
-                for service in &family {
+                for (i, service) in siblings.iter().enumerate() {
+                    if i > 0 {
+                        <span class="app-switcher-sep">"·"</span>
+                    }
                     <a
-                        class=(if service.key == SELF_KEY {
-                            "app-switcher-mark app-switcher-here"
-                        } else {
-                            "app-switcher-mark"
-                        })
+                        class="app-switcher-mark"
                         href=(format!("{}/", service.url))
                         title=(service.name.clone())
-                        aria-current=((service.key == SELF_KEY).then_some("page"))
                     >
                         (service.key.clone())
                     </a>
                 }
             </nav>
-            <span class="topbar-divider"></span>
-        }
+        </div>
     }
 }
 
-/// The signed-in chrome: the monogram, the page nav, the suite switcher,
-/// the identity menu. Wave-2 pages render their content under this.
+/// The signed-in chrome: the monogram with the family behind it, the page
+/// nav, the identity menu. Wave-2 pages render their content under this.
 pub async fn topbar(cx: &Cx, active: NavPage, user: &User, lang: Lang) -> Result {
     view! {
         cx =>
         <header class="topbar">
-            (mark(cx).await?)
+            (family_mark(cx).await?)
             (topbar_nav(cx, active, lang).await?)
-            (app_switcher(cx).await?)
             (user_menu(cx, user, lang).await?)
         </header>
         (avatar_script(cx).await?)

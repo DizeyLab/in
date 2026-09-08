@@ -443,12 +443,6 @@ a {
   }
 }
 
-.topbar-divider {
-  width: 1px;
-  height: 20px;
-  background: var(--border);
-}
-
 .topbar-nav-links {
   display: flex;
   gap: 16px;
@@ -479,16 +473,47 @@ a {
   }
 }
 
-// The suite switcher: the other apps of the family, as their wordmarks,
-// beside the page nav. Rendered only when `[[services]]` is set; the app
-// the reader is already in is marked the way the page nav marks itself.
-.app-switcher {
+// The family behind the monogram: the sibling apps' wordmarks, middots
+// between, in a flyout that hangs under the mark and shows on hover or on
+// keyboard focus (the mark is a link, so it focuses itself). Absolutely
+// placed, so the chrome keeps the bare monogram's width; it stays in the
+// DOM so the links are reachable by tab, which is what opens it for a
+// keyboard. No gap between mark and flyout, so the pointer can travel down
+// into it without it closing.
+.wordmark-family {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 14px;
-  // The trio keeps its width at every width: the page nav beside it is the
+  // The mark keeps its width at every width: the page nav beside it is the
   // region that pans under the finger, this never squishes.
   flex: none;
+
+  &:hover .app-switcher,
+  &:focus-within .app-switcher {
+    opacity: 1;
+    transform: translate(0, 0);
+    pointer-events: auto;
+  }
+}
+
+.app-switcher {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  // Over the page, under the house dropdown's panel (60), which may open
+  // from a row the flyout hangs across.
+  z-index: 50;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  opacity: 0;
+  transform: translate(0, -4px);
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease;
 
   &-mark {
     font-family: var(--font-mono);
@@ -500,12 +525,8 @@ a {
 
     &:hover { color: var(--ink); }
   }
-  // The current app, spelled out — `&` stays at the head of a compound
-  // selector here, so the pair of classes cannot ride the ampersand.
-  .app-switcher-mark.app-switcher-here {
-    color: var(--ink);
-    box-shadow: inset 0 -2px 0 var(--ink);
-  }
+
+  &-sep { color: var(--muted-soft); }
 }
 .scaffold-note {
   margin: 24px;
@@ -4346,8 +4367,6 @@ input[type="radio"] {
     &::-webkit-scrollbar { display: none; }
   }
 
-  .app-switcher { gap: 10px; }
-
   // The avatar says who is signed in at this width; the name is the menu's.
   .user-menu-trigger-name { display: none; }
 
@@ -4360,8 +4379,6 @@ input[type="radio"] {
     }
 
     .topbar-nav-links { gap: 10px; }
-
-    .app-switcher { gap: 8px; }
   }
 
   // -- board -----------------------------------------------------------------
@@ -4375,7 +4392,6 @@ input[type="radio"] {
   }
 
   // A rule floating alone at the head of a wrapped row says nothing.
-  .filterbar .topbar-divider { display: none; }
 
   .filterbar .primary,
   .filterbar .chip { flex: none; }
