@@ -477,7 +477,7 @@ async fn settings(cx: &Cx) -> Result {
                                 // the sealing.
                                 <div class="share-link-row">
                                     if let Some(url) = url {
-                                        <input class="field-input share-link-url" readonly="" value=(url.clone()) aria-label=(t(language, Key::ShareLink))>
+                                        <p class="member-link-value share-link-url" aria-label=(t(language, Key::ShareLink))>(url.clone())</p>
                                         <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
                                     } else {
                                         <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>

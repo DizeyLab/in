@@ -1559,7 +1559,7 @@ pub(crate) async fn share_modal(
                 if let Some(token) = created {
                     <p class="field-note share-modal-note">(t(language, Key::CopyLinkOnce))</p>
                     <div class="share-link-row">
-                        <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/{token}")) aria-label=(t(language, Key::ShareLink))>
+                        <p class="member-link-value share-link-url" aria-label=(t(language, Key::ShareLink))>(format!("{origin}/s/{token}"))</p>
                         <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
                     </div>
                 }
@@ -1645,7 +1645,7 @@ pub(crate) async fn share_modal(
         </div>
         <div class="share-link-row">
             if let Some(url) = url {
-                <input class="field-input share-link-url" readonly="" value=(url) aria-label=(t(language, Key::ShareLink))>
+                <p class="member-link-value share-link-url" aria-label=(t(language, Key::ShareLink))>(url)</p>
                 <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
             } else {
                 <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>
@@ -1666,8 +1666,12 @@ pub(crate) async fn share_modal(
     }?))
 }
 
-/// The copy button's client half: one delegated listener, idempotent across
-/// the modal's re-renders (the `share-modal-copy` class marks a wired row).
+/// The link row's copy client: one delegated listener, idempotent across
+/// re-renders (`window.__inShareCopy` guards it), so the `in:wire` morph
+/// needs no per-element re-init. A click on the copy button or on the
+/// wrapping link text itself copies the full address — and only where a
+/// copy button is present: the masked legacy rows carry none, so their
+/// placeholder can never reach a clipboard.
 pub(crate) async fn share_copy_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
@@ -1675,13 +1679,20 @@ pub(crate) async fn share_copy_script(cx: &Cx) -> Result {
             if (window.__inShareCopy) { return; } \
             window.__inShareCopy = true; \
             document.addEventListener('click', function (e) { \
-                var b = e.target.closest ? e.target.closest('.share-copy') : null; \
-                if (!b) { return; } \
-                var u = b.parentNode.querySelector('.share-link-url'); \
-                if (!u) { return; } \
-                u.select(); \
+                if (!e.target || !e.target.closest) { return; } \
+                var hit = e.target.closest('.share-copy, .share-link-url'); \
+                if (!hit) { return; } \
+                var row = hit.closest('.share-link-row'); \
+                if (!row) { return; } \
+                var b = row.querySelector('.share-copy'); \
+                var u = row.querySelector('.share-link-url'); \
+                if (!b || !u) { return; } \
+                if (document.createRange && window.getSelection) { \
+                    var r = document.createRange(); r.selectNodeContents(u); \
+                    var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); \
+                } \
                 var done = function () { b.textContent = b.getAttribute('data-copied-label'); }; \
-                if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(u.value).then(done, done); } \
+                if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(u.textContent).then(done, done); } \
                 else { try { document.execCommand('copy'); } catch (err) {} done(); } \
             }); \
         })();";

@@ -5098,10 +5098,13 @@ div.member-row + div.member-row {
 .share-modal-note {
   margin: 0 0 10px;
 }
-// The add-people row and the link row: input takes the room, controls pin
-// right — one line each, like the reference design.
+// The add-people row and the link row: the address takes the room, controls
+// pin right. In the add form the picker panel owns a full row of its own —
+// wrap plus its 100% basis — and the access select and Share button drop to
+// a right-aligned row beneath it.
 .share-add {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 16px;
 
@@ -5170,7 +5173,9 @@ div.member-row + div.member-row {
   align-items: center;
   margin: 6px 0 4px;
 
-  .share-link-url { flex: 1; min-width: 0; color: var(--muted); }
+  .share-link-url { flex: 1; min-width: 0; margin: 0; color: var(--muted); }
+  // The wrapping value text doubles as the copy field.
+  .member-link-value { cursor: pointer; }
   .pop-row-form { flex: none; }
 }
 

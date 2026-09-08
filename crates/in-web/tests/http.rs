@@ -2197,7 +2197,7 @@ async fn created_link_is_revisible_and_copyable_everywhere() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let text = page.text();
     assert!(
-        text.contains(&format!("value=\"{url}\"")),
+        text.contains(&format!("\">{url}</p>")),
         "no full url in the modal: {text}"
     );
     assert!(
@@ -2214,7 +2214,7 @@ async fn created_link_is_revisible_and_copyable_everywhere() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let text = page.text();
     assert!(
-        text.contains(&format!("value=\"{url}\"")),
+        text.contains(&format!("\">{url}</p>")),
         "no full url in settings: {text}"
     );
     assert!(
