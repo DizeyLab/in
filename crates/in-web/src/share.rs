@@ -1,6 +1,7 @@
 //! Sharing: public links, per-user grants, and the shared-with-me page.
 //!
-//! `POST /api/share/link/create|revoke` mints and kills bearer links over a
+//! `POST /api/share/link/create|revoke|remint` mints, kills, and re-mints
+//! bearer links over a
 //! file or folder (`can_download`, optional expiry in days; only the token
 //! hash is stored). `POST /api/share/user/add|remove` grants and revokes
 //! named users the same way. `GET /s/{token}` is public — no auth —
@@ -368,6 +369,108 @@ async fn revoke_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
             cx,
             "/settings?section=links",
             "revoke",
+            Some(refusal_of(error)),
+        ),
+    }
+}
+
+/// Carries a legacy link forward: a fresh mint over the same target, with
+/// the old row's `can_download`, its password, and a still-future expiry —
+/// an elapsed one drops, since a minted expiry opens for no one. Only its
+/// creator may; a foreign or unknown link is answered as if it never
+/// existed. The old row and its sealed setting die with the mint, the
+/// revoke path's exact semantics: the address remint replaces was already
+/// unrecoverable.
+#[route(POST "/api/share/link/remint")]
+async fn remint_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
+    let user = match require_user(cx).await {
+        Ok(user) => user,
+        Err(refusal) => {
+            return redirect_back(cx, "/settings?section=links", "remint", Some(refusal));
+        }
+    };
+    let store = app(cx).store;
+    let mine = store
+        .share_links(&user.id)
+        .await
+        .map_err(|_| Refusal::Unavailable);
+    let Ok(links) = mine else {
+        return redirect_back(
+            cx,
+            "/settings?section=links",
+            "remint",
+            Some(Refusal::Unavailable),
+        );
+    };
+    let Some(old) = links
+        .iter()
+        .find(|link| link.id == input.id && link.created_by == user.id)
+    else {
+        return redirect_back(
+            cx,
+            "/settings?section=links",
+            "remint",
+            Some(Refusal::NotFound),
+        );
+    };
+    // A still-future expiry carries over; an elapsed one would mint a link
+    // that is dead on arrival.
+    let expires_at = old.expires_at.filter(|at| *at > OffsetDateTime::now_utc());
+    let created = store
+        .create_share_link(
+            &user.id,
+            old.kind.clone(),
+            &old.target_id,
+            old.can_download,
+            expires_at,
+            old.password_hash.clone(),
+        )
+        .await;
+    match created {
+        Ok(minted) => match store.revoke_share_link(&input.id).await {
+            Ok(()) => {
+                // The sealed address dies with the link — part of the
+                // remint, not cleanup after it, so a failed delete reports
+                // the remint as refused.
+                match store
+                    .delete_setting(&format!("share_token:{}", input.id))
+                    .await
+                {
+                    Ok(()) => {
+                        // The fresh token gets the seal, exactly as a
+                        // creation seals its own; a failed seal is lived
+                        // with, because the redirect below shows the full
+                        // address regardless.
+                        let sealed =
+                            in_core::store::secret::seal(&app(cx).link_key, &minted.token);
+                        let _ = app(cx)
+                            .store
+                            .set_setting(&format!("share_token:{}", minted.link.id), &sealed)
+                            .await;
+                        let back = back_to(cx, "/settings?section=links");
+                        let separator = if back.contains('?') { '&' } else { '?' };
+                        let location = format!("{back}{separator}created={}", minted.token);
+                        Ok((StatusCode::SEE_OTHER, [(header::LOCATION, location)]))
+                    }
+                    Err(error) => redirect_back(
+                        cx,
+                        "/settings?section=links",
+                        "remint",
+                        Some(refusal_of(error)),
+                    ),
+                }
+            }
+            Err(error) => redirect_back(
+                cx,
+                "/settings?section=links",
+                "remint",
+                Some(refusal_of(error)),
+            ),
+        },
+        Err(error) => redirect_back(
+            cx,
+            "/settings?section=links",
+            "remint",
             Some(refusal_of(error)),
         ),
     }
@@ -1520,10 +1623,17 @@ pub(crate) async fn share_modal(
     // leaves the typed-address field in place below.
     let default_quota = app(cx).config.default_quota_bytes;
     let mut candidates: Vec<User> = Vec::new();
-    if let Some(members) = in_client::directory(cx).await {
+    if let Ok(members) = app(cx).directory.directory().await {
         for member in members {
             let row = store
-                .provision_user(&member.sub, &member.email, &member.name, default_quota)
+                .provision_user(
+                    &member.sub,
+                    &member.email,
+                    &member.name,
+                    Some(member.admin),
+                    member.photo_version,
+                    default_quota,
+                )
                 .await?;
             if !row.disabled
                 && row.id != user.id
@@ -1629,9 +1739,9 @@ pub(crate) async fn share_modal(
         </form>
     }
     for link in live.iter().take(1) {
-        // The full address, re-derived from the token the creation sealed
         // away. A link from before the sealing — or one whose key is gone —
-        // keeps the masked value and carries the carry-forward note.
+        // has no address to re-show: the row carries the mint action and the
+        // note below states the fact.
         let url = share_link_url(cx, *link).await;
         let legacy = url.is_none();
         <div class="member-row">
@@ -1648,7 +1758,10 @@ pub(crate) async fn share_modal(
                 <p class="member-link-value share-link-url" aria-label=(t(language, Key::ShareLink))>(url)</p>
                 <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
             } else {
-                <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>
+                <form class="pop-row-form" method="post" action="/api/share/link/remint">
+                    <input type="hidden" name="id" value=(link.id.clone())>
+                    <button class="quiet" type="submit">(t(language, Key::RemintLink))</button>
+                </form>
             }
             <form class="pop-row-form" method="post" action="/api/share/link/revoke">
                 <input type="hidden" name="id" value=(link.id.clone())>

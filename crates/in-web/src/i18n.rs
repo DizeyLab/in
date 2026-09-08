@@ -238,6 +238,7 @@ pub enum Key {
     // Re-viewable share links (LinkVisible owns this block).
     Shared,
     LegacyLinkNote,
+    RemintLink,
 }
 
 pub fn t(lang: Lang, key: Key) -> &'static str {
@@ -403,6 +404,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             LegacyLinkNote => {
                 "This link predates re-viewable addresses — revoke and mint a new one to carry it forward."
             }
+            RemintLink => "Mint a new link",
         },
         Lang::Tr => match key {
             Cancel => "Vazgeç",
@@ -566,6 +568,7 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             LegacyLinkNote => {
                 "Bu bağlantı, adreslerin yeniden görüntülenebildiği dönemden önce oluşturuldu — devam ettirmek için iptal edip yeni bir tane oluşturun."
             }
+            RemintLink => "Yeni bağlantı oluştur",
         },
     }
 }

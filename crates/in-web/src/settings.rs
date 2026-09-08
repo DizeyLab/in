@@ -472,7 +472,7 @@ async fn settings(cx: &Cx) -> Result {
                                 </div>
                                 // The same affordance the modal's live row
                                 // carries: the full address with its copy
-                                // button, or the masked value plus the
+                                // button, or the one-click mint plus the
                                 // carry-forward note for a link from before
                                 // the sealing.
                                 <div class="share-link-row">
@@ -480,7 +480,10 @@ async fn settings(cx: &Cx) -> Result {
                                         <p class="member-link-value share-link-url" aria-label=(t(language, Key::ShareLink))>(url.clone())</p>
                                         <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::CopyLink))</button>
                                     } else {
-                                        <input class="field-input share-link-url" readonly="" value=(format!("{origin}/s/…")) aria-label=(t(language, Key::ShareLink))>
+                                        <form class="pop-row-form" method="post" action="/api/share/link/remint">
+                                            <input type="hidden" name="id" value=(link.id.clone())>
+                                            <button class="quiet" type="submit">(t(language, Key::RemintLink))</button>
+                                        </form>
                                     }
                                 </div>
                                 if url.is_none() {

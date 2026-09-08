@@ -396,6 +396,11 @@ impl TestApp {
             // Deliberately not the cookie key: the sealing helpers must
             // reach for `link_key`, not for whatever key sits nearest.
             link_key: [11u8; 32],
+            directory: im_client::directory::DirectoryClient::new(
+                fake.url(),
+                "in-test".to_string(),
+                "s3cr3t".to_string(),
+            ),
         })
         .app_context(in_client::LogoutBack(Arc::new(|cx: &Cx| {
             Box::pin(async move { Some(in_web::server::share_origin(cx).await) })
@@ -417,7 +422,14 @@ impl TestApp {
     async fn sign_in(&self, sub: &str, email: &str, name: &str) -> String {
         let user = self
             .store
-            .provision_user(sub, email, name, self.config.default_quota_bytes)
+            .provision_user(
+                sub,
+                email,
+                name,
+                None,
+                0,
+                self.config.default_quota_bytes,
+            )
             .await
             .unwrap();
         let token = format!("tok-{}", Ulid::new());
@@ -755,7 +767,7 @@ async fn file_id(app: &TestApp, owner: &str, name: &str, bytes: &[u8]) -> String
 
 async fn owner_of(app: &TestApp, sub: &str) -> String {
     app.store
-        .provision_user(sub, "x@y.z", "X", app.config.default_quota_bytes)
+        .provision_user(sub, "x@y.z", "X", None, 0, app.config.default_quota_bytes)
         .await
         .unwrap()
         .id
@@ -2264,10 +2276,10 @@ async fn revoke_deletes_the_sealed_token_row() {
 }
 
 /// A link minted before the sealing has no row to open: the modal and the
-/// settings panel keep the masked value and carry the carry-forward note
-/// instead of a copy button.
+/// settings panel state the carry-forward fact and offer the one-click
+/// mint — no masked value, nothing that reads as an address.
 #[tokio::test]
-async fn legacy_link_stays_masked_with_the_carry_forward_note() {
+async fn legacy_link_states_the_carry_forward_note_and_offers_the_mint() {
     let app = TestApp::build().await;
     let ada = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
     let owner = owner_of(&app, "sub-admin").await;
@@ -2284,7 +2296,12 @@ async fn legacy_link_stays_masked_with_the_carry_forward_note() {
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let text = page.text();
-    assert!(text.contains("/s/…"), "no masked value: {text}");
+    assert!(!text.contains("/s/…"), "masked value on a legacy link: {text}");
+    assert!(
+        text.contains("action=\"/api/share/link/remint\""),
+        "no mint action on a legacy link: {text}"
+    );
+    assert!(text.contains("Mint a new link"), "no mint button: {text}");
     assert!(
         text.contains("predates re-viewable addresses"),
         "no carry-forward note: {text}"
@@ -2297,7 +2314,11 @@ async fn legacy_link_stays_masked_with_the_carry_forward_note() {
     let page = app.get("/settings?section=links", Some(&ada)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let text = page.text();
-    assert!(text.contains("/s/…"), "no masked value: {text}");
+    assert!(!text.contains("/s/…"), "masked value on a legacy link: {text}");
+    assert!(
+        text.contains("action=\"/api/share/link/remint\""),
+        "no mint action on a legacy link: {text}"
+    );
     assert!(
         text.contains("predates re-viewable addresses"),
         "no carry-forward note: {text}"
@@ -2305,6 +2326,107 @@ async fn legacy_link_stays_masked_with_the_carry_forward_note() {
     assert!(
         !text.contains("class=\"quiet share-copy\""),
         "copy button on a link with no re-derivable address: {text}"
+    );
+}
+
+/// Reminting carries a legacy link forward: the fresh token opens the same
+/// target with the carried rights, the old token is dead, the old row and
+/// its seal are gone, and the settings panel shows the new full address
+/// with its copy button.
+#[tokio::test]
+async fn remint_carries_a_legacy_link_forward() {
+    let app = TestApp::build().await;
+    let ada = app.sign_in("sub-admin", "ada@in.test", "Ada").await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = file_id(&app, &owner, "carried.txt", b"carried").await;
+    let answer = app
+        .post(
+            "/api/share/link/create",
+            Some(&ada),
+            &[
+                ("kind", "file"),
+                ("target_id", &file),
+                ("can_download", "1"),
+                ("expires_in_days", "30"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let old_token = created_token(answer.location.as_deref().unwrap());
+    let old_id = app.store.share_links(&owner).await.unwrap()[0].id.clone();
+    // Lose the seal: the address is unrecoverable, the link reads legacy.
+    app.store
+        .delete_setting(&format!("share_token:{old_id}"))
+        .await
+        .unwrap();
+
+    let answer = app
+        .post("/api/share/link/remint", Some(&ada), &[("id", &old_id)])
+        .await;
+    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{:?}", answer.location);
+    let location = answer.location.as_deref().expect("remint set no location");
+    let new_token = created_token(location);
+    assert!(!new_token.is_empty(), "remint minted no token: {location}");
+
+    // The fresh token opens the same file; the old one is dead.
+    let card = app.get(&format!("/s/{new_token}"), None).await;
+    assert_eq!(card.status, StatusCode::OK, "{}", card.text());
+    assert!(
+        card.text().contains("carried.txt"),
+        "the fresh token did not open the file: {}",
+        card.text()
+    );
+    let dead = app.get(&format!("/s/{old_token}"), None).await;
+    assert!(
+        dead.text().contains("no longer works"),
+        "the old token still opens: {}",
+        dead.text()
+    );
+
+    // The old row died with its seal; the carried rights ride the new row.
+    let links = app.store.share_links(&owner).await.unwrap();
+    assert_ne!(links[0].id, old_id, "the old row survived the remint");
+    assert!(links[0].can_download, "remint dropped the download right");
+    assert!(links[0].expires_at.is_some(), "remint dropped the expiry");
+    assert!(
+        app.store
+            .get_setting(&format!("share_token:{}", links[0].id))
+            .await
+            .unwrap()
+            .is_some(),
+        "the fresh token came unsealed"
+    );
+    assert!(
+        app.store
+            .get_setting(&format!("share_token:{old_id}"))
+            .await
+            .unwrap()
+            .is_none(),
+        "the old seal survived the remint"
+    );
+
+    // The settings panel shows the new full address with its copy button —
+    // no masked placeholder, no legacy row left to carry forward.
+    let page = app
+        .get(
+            &format!("/settings?section=links&created={new_token}"),
+            Some(&ada),
+        )
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let text = page.text();
+    assert!(
+        text.contains(&format!("\">http://127.0.0.1:7655/s/{new_token}</p>")),
+        "no full new url row in settings: {text}"
+    );
+    assert!(
+        text.contains("class=\"quiet share-copy\""),
+        "no copy button in settings: {text}"
+    );
+    assert!(!text.contains("/s/…"), "masked value after remint: {text}");
+    assert!(
+        !text.contains("predates re-viewable addresses"),
+        "a legacy row survived the remint: {text}"
     );
 }
 
@@ -4543,35 +4665,40 @@ async fn settings_lives_in_the_user_menu_not_the_topbar() {
 }
 
 #[tokio::test]
-async fn avatar_serves_own_photo_with_etag() {
+async fn avatar_serves_photo_with_a_version_etag() {
     let app = TestApp::build().await;
     let cookie = app.sign_in("sub-face", "face@in.test", "Face").await;
     let me = owner_of(&app, "sub-face").await;
     app.fake.set_photo("sub-face", tiny_png(), "image/png");
 
+    // Unstamped, the route answers and revalidates: no-cache, the etag the
+    // row's photo_version spells, a 304 on a matching If-None-Match.
     let face = app.get(&format!("/avatar/{me}"), Some(&cookie)).await;
     assert_eq!(face.status, StatusCode::OK);
     assert_eq!(face.content_type.as_deref(), Some("image/png"));
     assert_eq!(
         face.cache_control.as_deref(),
-        Some("private, max-age=31536000, immutable")
+        Some("private, no-cache"),
+        "unstamped avatar must revalidate: {:?}",
+        face.cache_control
     );
+    assert_eq!(face.etag.as_deref(), Some("\"p0\""));
     assert_eq!(face.bytes, tiny_png());
 
-    let etag = face.etag.clone().expect("no etag on the avatar");
     let cached = app
-        .get_with_if_none_match(&format!("/avatar/{me}"), Some(&cookie), &etag)
+        .get_with_if_none_match(&format!("/avatar/{me}"), Some(&cookie), "\"p0\"")
         .await;
     assert_eq!(cached.status, StatusCode::NOT_MODIFIED);
     assert!(cached.bytes.is_empty());
 
-    // The user menu wears the photo over the initials, with the fallback script.
+    // The user menu wears the photo over the initials, stamped with the
+    // row's version so a changed photo is a changed URL.
     let page = app.get("/drive", Some(&cookie)).await;
     assert_eq!(page.status, StatusCode::OK);
     let body = page.text();
     assert!(
-        body.contains(&format!("src=\"/avatar/{me}\"")),
-        "menu wears no photo img"
+        body.contains(&format!("src=\"/avatar/{me}?v=0\"")),
+        "menu wears no versioned photo img"
     );
     assert!(
         body.contains("avatar-stack"),
@@ -4581,18 +4708,33 @@ async fn avatar_serves_own_photo_with_etag() {
 }
 
 #[tokio::test]
-async fn avatar_without_photo_is_not_found() {
+async fn avatar_version_stamped_url_caches_immutable() {
     let app = TestApp::build().await;
-    let cookie = app.sign_in("sub-noface", "noface@in.test", "NoFace").await;
-    let me = owner_of(&app, "sub-noface").await;
+    let cookie = app.sign_in("sub-stamp", "stamp@in.test", "Stamp").await;
+    let me = owner_of(&app, "sub-stamp").await;
+    app.fake.set_photo("sub-stamp", tiny_png(), "image/png");
 
-    let face = app.get(&format!("/avatar/{me}"), Some(&cookie)).await;
-    assert_eq!(face.status, StatusCode::NOT_FOUND);
-    assert!(face.bytes.is_empty());
+    // `?v` equal to the row's version: a year of immutable, no revalidation.
+    let fresh = app
+        .get(&format!("/avatar/{me}?v=0"), Some(&cookie))
+        .await;
+    assert_eq!(fresh.status, StatusCode::OK);
+    assert_eq!(
+        fresh.cache_control.as_deref(),
+        Some("private, max-age=31536000, immutable")
+    );
+    // A stale stamp — the browser holds a face the row has moved past —
+    // falls back to revalidate, so the next answer is the truth.
+    let stale = app
+        .get(&format!("/avatar/{me}?v=7"), Some(&cookie))
+        .await;
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_eq!(stale.cache_control.as_deref(), Some("private, no-cache"));
+    assert_eq!(stale.etag.as_deref(), Some("\"p0\""));
 }
 
 #[tokio::test]
-async fn avatar_for_someone_else_is_not_found() {
+async fn avatar_serves_any_member_to_any_signed_in_user() {
     let app = TestApp::build().await;
     let alice = app
         .sign_in("sub-alice-face", "alice@in.test", "Alice")
@@ -4601,13 +4743,13 @@ async fn avatar_for_someone_else_is_not_found() {
     let bob_id = owner_of(&app, "sub-bob-face").await;
     app.fake.set_photo("sub-bob-face", tiny_png(), "image/png");
 
-    // Bob's face through Alice's session: the same 404 as no photo at all,
-    // never a hint that Bob has one.
+    // Bob's face through Alice's session: a coworker's face renders in her
+    // topbar too, so the gate is the session, not the id.
     let face = app.get(&format!("/avatar/{bob_id}"), Some(&alice)).await;
-    assert_eq!(face.status, StatusCode::NOT_FOUND);
-    assert!(face.bytes.is_empty());
+    assert_eq!(face.status, StatusCode::OK);
+    assert_eq!(face.bytes, tiny_png());
 
-    // And an id that names nobody at all.
+    // An id that names nobody provisioned stays the empty answer.
     let ghost = app
         .get("/avatar/00000000000000000000000000", Some(&alice))
         .await;
