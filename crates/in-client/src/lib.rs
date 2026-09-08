@@ -89,7 +89,15 @@ impl InClient {
     pub fn new(config: Config) -> Self {
         InClient {
             config,
-            http: reqwest::Client::new(),
+            // Every issuer call — introspection on the render path, the
+            // family and directory mirrors on their beat — carries a
+            // ceiling: a provider that stalls (mid-deploy, half-open
+            // socket) otherwise parks the caller forever, and a parked
+            // mirror task never asks again.
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("reqwest client with a timeout"),
             jwks: tokio::sync::RwLock::new(None),
         }
     }
