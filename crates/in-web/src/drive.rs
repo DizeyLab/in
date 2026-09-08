@@ -919,6 +919,10 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 /// drops it from the stack and the mirror, so the record lingers exactly
 /// as long as the reader wants it.
 ///
+/// While a flight is live, leaving the page — reload above all — is
+/// intercepted by the browser's own confirm (`beforeunload` reading the
+/// mirror at ask time, so it never asks for a row that has already landed).
+///
 /// The form wears `data-hard` so the soft-nav's multipart replay leaves it
 /// alone — two uploaders racing the same bytes would double-insert, and the
 /// progress the soft-nav draws knows nothing of chunks. Without script the
@@ -1079,6 +1083,17 @@ async fn upload_script(cx: &Cx) -> Result {
             function finishRow(u) { u.done = true; renderUploads(); } \
             document.addEventListener('in:wire', renderUploads); \
             renderUploads(); \
+            /* A reload cuts a flight dead — the small path's XHR dies \
+               unrecoverable, and the chunked walk, though it can resume, \
+               stops mid-air — so the browser's own leave-confirm asks \
+               first. The guard is armed once and reads the mirror at ask \
+               time, so there is no arm/disarm bookkeeping to forget; a \
+               done row is only a record and never holds the page \
+               hostage. */ \
+            window.addEventListener('beforeunload', function (ev) { \
+                var flying = (window.__inUploads || []).some(function (u) { return !u.done; }); \
+                if (flying) { ev.preventDefault(); ev.returnValue = ''; } \
+            }); \
             function notify(kind, message) { \
                 if (window.__inNotify) { window.__inNotify(kind, message); } \
             } \
