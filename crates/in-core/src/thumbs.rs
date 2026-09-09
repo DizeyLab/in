@@ -51,9 +51,13 @@ pub fn thumbnailed(mime: &str) -> bool {
 }
 
 /// Whether `mime` is a video container this crate frames via `ffmpeg`:
-/// exactly the video mimes the sniffer can name.
+/// exactly the video mimes the sniffer can name — including the Matroska
+/// spelling it gives a file whose tracks are not webm-legal.
 pub fn is_video_mime(mime: &str) -> bool {
-    matches!(mime, "video/mp4" | "video/webm" | "video/quicktime")
+    matches!(
+        mime,
+        "video/mp4" | "video/webm" | "video/quicktime" | "video/x-matroska"
+    )
 }
 
 /// Whether `ffmpeg` is on `PATH`. The verdict comes from one `ffmpeg

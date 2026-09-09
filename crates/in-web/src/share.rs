@@ -994,7 +994,15 @@ async fn download_bytes(
         HeaderValue::from_static("private, no-cache"),
     );
     let Some(parts) =
-        crate::files::bytes_response(store, file_id, size_bytes, range, headers).await
+        crate::files::bytes_response(
+            store,
+            file_id,
+            size_bytes,
+            range,
+            headers,
+            crate::files::ByteSource::Original,
+        )
+        .await
     else {
         return dead_link(cx).await;
     };
@@ -1029,6 +1037,19 @@ async fn media_bytes(
     let range = request_headers(cx)
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok());
+    // The derivative, when the stored tracks need one and it can be had:
+    // the player draws webm/mp4 it can actually demux. Preview is what a
+    // view-only link grants, and this grants nothing beyond it — there is
+    // no download shape on this route, and `?dl=1` still answers the
+    // original or the dead card.
+    let (mime, total, source) = match store.media_derivative(file_id).await {
+        Ok(Some(derivative)) => (
+            derivative.mime,
+            derivative.size,
+            crate::files::ByteSource::Preview,
+        ),
+        _ => (mime, size_bytes, crate::files::ByteSource::Original),
+    };
     let mut headers = HeaderMap::new();
     if let Ok(value) = HeaderValue::from_str(mime) {
         headers.insert(header::CONTENT_TYPE, value);
@@ -1045,7 +1066,7 @@ async fn media_bytes(
         HeaderValue::from_static("private, no-cache"),
     );
     let Some(parts) =
-        crate::files::bytes_response(store, file_id, size_bytes, range, headers).await
+        crate::files::bytes_response(store, file_id, total, range, headers, source).await
     else {
         return dead_link(cx).await;
     };

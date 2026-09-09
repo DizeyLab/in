@@ -301,9 +301,10 @@ async fn main() {
 }
 
 /// Makes the storage tree the store keeps binary files in, if it is not
-/// there: `<storage>/files`, `<storage>/thumbs` and `<storage>/uploads`,
-/// private to the user the process runs as. A directory that exists is left
-/// exactly as it is; one that cannot be made stops the boot — the failure
+/// there: `<storage>/files`, `<storage>/thumbs`, `<storage>/previews` and
+/// `<storage>/uploads`, private to the user the process runs as. A
+/// directory that exists is left exactly as it is; one that cannot be made
+/// stops the boot — the failure
 /// this prevents is an upload landing in a tree that is not there, and it is
 /// better met before anything is opened.
 fn ensure_storage_tree(storage: &std::path::Path) {
@@ -323,7 +324,7 @@ fn ensure_storage_tree(storage: &std::path::Path) {
         }
     };
     make(storage);
-    for name in ["files", "thumbs", "uploads"] {
+    for name in ["files", "thumbs", "previews", "uploads"] {
         make(&storage.join(name));
     }
 }

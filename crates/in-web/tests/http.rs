@@ -9,12 +9,13 @@
 //!
 //! New HTTP tests belong in this file rather than a new `tests/*.rs`: one
 //! test binary links and runs once.
+use http::{HeaderValue, Request, StatusCode, header};
 use in_core::{Config, OidcConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use http::{HeaderValue, Request, StatusCode, header};
 use in_core::store::{ShareKind, Store, TursoStore};
 use in_web::server::App;
 use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
@@ -1655,6 +1656,185 @@ async fn view_only_link_download_is_dead_card() {
 
     let blocked = app.get(&format!("/s/{token}?dl=1"), None).await;
     assert_eq!(blocked.status, StatusCode::OK, "{}", blocked.text());
+    assert!(
+        blocked.text().contains("no longer works"),
+        "view-only download showed: {}",
+        blocked.text()
+    );
+}
+
+/// A tiny VP9+AAC Matroska, made by the system `ffmpeg` the way the
+/// thumbnailer drives it: a test pattern and a tone, half a second. Small,
+/// but exactly the file a browser refuses to play as a webm — VP9 video
+/// with AAC audio. `None` skips the tests where ffmpeg is not installed.
+fn vp9_aac_matroska() -> Option<Vec<u8>> {
+    if !in_core::thumbs::ffmpeg_available() {
+        eprintln!("skipping matroska preview tests: no ffmpeg on PATH");
+        return None;
+    }
+    let dir = std::env::temp_dir().join(format!("in-mkv-{}", Ulid::new()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("clip.mkv");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=0.5:size=128x96:rate=10",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=0.5",
+            "-c:v",
+            "libvpx-vp9",
+            "-c:a",
+            "aac",
+        ])
+        .arg(&out)
+        .status()
+        .ok()?;
+    let bytes = if status.success() {
+        std::fs::read(&out).ok()
+    } else {
+        None
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    bytes
+}
+
+/// What a cached derivative is replaced with to prove a later serve draws
+/// the cache instead of rebuilding: a webm's magic and a body no transcode
+/// could produce. The head stays a container the cache probe accepts.
+fn cached_marker() -> Vec<u8> {
+    let mut marker = vec![0x1A, 0x45, 0xDF, 0xA3];
+    marker.extend_from_slice(b"cached-derivative");
+    marker
+}
+
+/// A VP9+AAC mkv is stored under its honest Matroska name, the media route
+/// serves it a webm derivative — built on the first ask, then cached, then
+/// range-servable — and `?dl=1` still hands over the original bytes, byte
+/// for byte.
+#[tokio::test]
+async fn a_webm_illegal_matroska_gains_a_derivative_preview() {
+    let Some(mkv) = vp9_aac_matroska() else {
+        return;
+    };
+    let app = TestApp::build().await;
+    let cookie = app
+        .sign_in("sub-matroska", "matroska@in.test", "Matroska")
+        .await;
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-matroska")
+        .await
+        .unwrap()
+        .unwrap();
+
+    app.post_multipart(
+        "/files",
+        Some(&cookie),
+        &[("folder_id", "")],
+        &[("clip.mkv", "video/x-matroska", &mkv)],
+    )
+    .await;
+    let file = app
+        .store
+        .list_children(&user.id, None)
+        .await
+        .unwrap()
+        .files
+        .into_iter()
+        .next()
+        .unwrap();
+    // The sniffer no longer calls these tracks a webm.
+    let stored = app.store.file(&file.id).await.unwrap().unwrap();
+    assert_eq!(stored.mime, "video/x-matroska");
+
+    // The first inline serve builds the derivative and answers with it.
+    let inline = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
+    assert_eq!(inline.status, StatusCode::OK);
+    assert_eq!(inline.content_type.as_deref(), Some("video/webm"));
+    assert_ne!(inline.bytes, mkv, "the preview was the original bytes");
+    // The serve's length is the derivative's own: the body is exactly the
+    // blob the build placed, never a clamp against the original's size.
+    let placed = std::fs::read(app.config.storage.join("previews").join(&file.id)).unwrap();
+    assert!(!placed.is_empty());
+    assert_eq!(inline.bytes, placed, "the preview was not the derivative");
+
+    // The second serve answers the cache, whatever it holds — a rebuild
+    // would have replaced this marker with fresh transcode output.
+    let derivative_key = app.config.storage.join("previews").join(&file.id);
+    let marker = cached_marker();
+    std::fs::write(&derivative_key, &marker).unwrap();
+    let again = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.bytes, marker, "the second serve rebuilt the cache");
+
+    // A range reads the derivative's span, against its own length.
+    let probe = app
+        .get_with_range(&format!("/file/{}", file.id), Some(&cookie), "bytes=0-3")
+        .await;
+    assert_eq!(probe.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(probe.bytes, &marker[0..4]);
+    assert_eq!(
+        probe.content_range.as_deref(),
+        Some(&format!("bytes 0-3/{}", marker.len())[..])
+    );
+
+    // The download is the original, byte for byte, whatever the preview is.
+    let taken = app
+        .get(&format!("/file/{}?dl=1", file.id), Some(&cookie))
+        .await;
+    assert_eq!(taken.status, StatusCode::OK);
+    assert_eq!(taken.bytes, mkv);
+    assert_eq!(taken.bytes.len(), mkv.len());
+    assert_eq!(taken.content_type.as_deref(), Some("video/x-matroska"));
+    assert!(
+        taken
+            .disposition
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("attachment")
+    );
+}
+
+/// A view-only public link previews the derivative — that is what the
+/// media stream is for — and still cannot be downloaded: `?dl=1` stays the
+/// dead card, and the original never travels.
+#[tokio::test]
+async fn view_only_link_previews_a_matroska_but_cannot_download() {
+    let Some(mkv) = vp9_aac_matroska() else {
+        return;
+    };
+    let app = TestApp::build().await;
+    let owner = owner_of(&app, "sub-admin").await;
+    let file = app
+        .store
+        .insert_file(&owner, None, "clip.mkv", &mkv)
+        .await
+        .unwrap()
+        .id;
+    let created = app
+        .store
+        .create_share_link(&owner, ShareKind::File, &file, false, None, None)
+        .await
+        .unwrap();
+
+    let media = app
+        .get(&format!("/s/{}?media=1", created.token), None)
+        .await;
+    assert_eq!(media.status, StatusCode::OK);
+    assert_eq!(media.content_type.as_deref(), Some("video/webm"));
+    assert_ne!(media.bytes, mkv, "the media stream was the original");
+    assert!(media.bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]));
+
+    let blocked = app
+        .get(&format!("/s/{}?dl=1", created.token), None)
+        .await;
     assert!(
         blocked.text().contains("no longer works"),
         "view-only download showed: {}",
