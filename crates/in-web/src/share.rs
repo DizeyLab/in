@@ -570,13 +570,22 @@ async fn add_share(cx: &Cx, Form(input): Form<ShareUserForm>) -> Redirect {
     // Absent means the checkbox came unchecked: view-only, like the
     // sibling link creator above. One setting covers the whole submit.
     let can_download = parse_flag(input.can_download.as_deref(), false);
-    // Nothing checked resolves to nobody, like a typed empty address.
-    if input.email.is_empty() {
+    // The picker's filter doubles as the typed-address fallback, so a
+    // checkbox-only submit carries one blank `email` pair beside the checked
+    // rows. Blank names nobody: only real addresses are looked up. Nothing
+    // but blanks is still nobody — refused like nothing checked.
+    let emails: Vec<&str> = input
+        .email
+        .iter()
+        .map(|email| email.trim())
+        .filter(|email| !email.is_empty())
+        .collect();
+    if emails.is_empty() {
         return redirect_back(cx, "/settings", "add", Some(Refusal::NotFound));
     }
-    for email in &input.email {
+    for email in emails {
         let grantee = store
-            .user_by_email(&email.trim().to_lowercase())
+            .user_by_email(&email.to_lowercase())
             .await
             .map_err(|_| Refusal::Unavailable);
         let Ok(Some(grantee)) = grantee else {
@@ -1000,7 +1009,6 @@ async fn download_bytes(
             size_bytes,
             range,
             headers,
-            crate::files::ByteSource::Original,
         )
         .await
     else {
@@ -1037,19 +1045,10 @@ async fn media_bytes(
     let range = request_headers(cx)
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok());
-    // The derivative, when the stored tracks need one and it can be had:
-    // the player draws webm/mp4 it can actually demux. Preview is what a
-    // view-only link grants, and this grants nothing beyond it — there is
-    // no download shape on this route, and `?dl=1` still answers the
-    // original or the dead card.
-    let (mime, total, source) = match store.media_derivative(file_id).await {
-        Ok(Some(derivative)) => (
-            derivative.mime,
-            derivative.size,
-            crate::files::ByteSource::Preview,
-        ),
-        _ => (mime, size_bytes, crate::files::ByteSource::Original),
-    };
+    // The stored bytes under the stored mime: looking is what a view-only
+    // link grants, and this grants nothing beyond it — there is no download
+    // shape on this route, and `?dl=1` still answers the original or the
+    // dead card.
     let mut headers = HeaderMap::new();
     if let Ok(value) = HeaderValue::from_str(mime) {
         headers.insert(header::CONTENT_TYPE, value);
@@ -1066,7 +1065,7 @@ async fn media_bytes(
         HeaderValue::from_static("private, no-cache"),
     );
     let Some(parts) =
-        crate::files::bytes_response(store, file_id, total, range, headers, source).await
+        crate::files::bytes_response(store, file_id, size_bytes, range, headers).await
     else {
         return dead_link(cx).await;
     };
@@ -1701,18 +1700,31 @@ pub(crate) async fn share_modal(
                         <input class="field-input share-add-email" type="email" name="email" required="" placeholder=(t(language, Key::SharePlaceholder)) aria-label=(t(language, Key::EmailAddress))>
                     } else {
                         <div class="share-picker pop-panel" role="group" aria-label=(t(language, Key::SharePickPerson))>
-                            <label class="pop-row share-pick-all">
+                            // The filter doubles as the typed-address fallback: it
+                            // carries `name="email"`, so typing an address and
+                            // submitting without script still grants that person.
+                            // With script it only filters — the script half benches
+                            // it on submit whenever rows are checked, and the
+                            // route skips the blank pair a checkbox-only post
+                            // carries beside the checked values.
+                            <input class="field-input share-pick-filter" type="email" name="email" placeholder=(t(language, Key::SharePickPerson)) aria-label=(t(language, Key::SharePickPerson))>
+                            <label class="pop-row share-pick-row share-pick-all">
                                 <input type="checkbox" class="share-all-toggle" aria-label=(t(language, Key::ShareEveryone))>
+                                <svg class="glyph share-pick-glyph" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7.5-8"></path></svg>
                                 <span class="pop-row-name">(t(language, Key::ShareEveryone))</span>
                             </label>
                             <div class="pop-list pop-list-scroll">
                                 for person in &candidates {
-                                    <label class="pop-row">
+                                    <label class="pop-row share-pick-row">
                                         <input type="checkbox" name="email" value=(person.email.clone())>
+                                        <svg class="glyph share-pick-glyph" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7.5-8"></path></svg>
                                         <span class="pop-row-name">(person.display_name.clone())</span>
                                         <span class="share-pick-mail">(person.email.clone())</span>
                                     </label>
                                 }
+                                // Ships hidden: only the script ever shows it,
+                                // when the filter matches no row.
+                                <p class="field-note share-pick-none share-pick-off">(t(language, Key::ShareNoMatch))</p>
                             </div>
                         </div>
                     }
@@ -1833,10 +1845,15 @@ pub(crate) async fn share_copy_script(cx: &Cx) -> Result {
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
 
-/// The people picker's client half: the All row checks and unchecks every
-/// candidate, and hand-checking rows keeps the All row honest. One delegated
-/// listener, idempotent across the modal's re-renders (`window.__inSharePick`
-/// guards it), so the `in:wire` morph needs no per-element re-init.
+/// The people picker's client half. The All row checks and unchecks every
+/// candidate, and hand-checking rows keeps the All row honest. The filter
+/// field narrows the rows live — substring, case-insensitive, against name
+/// and address — and hides itself down to the Everyone row when no filter
+/// word matches. The same field carries the no-script typed-address post,
+/// so on submit it is benched whenever rows are checked: its half-typed
+/// text must not ride beside them. Delegated listeners only, idempotent
+/// across the modal's re-renders (`window.__inSharePick` guards it), so the
+/// `in:wire` morph needs no per-element re-init.
 pub(crate) async fn share_pick_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
@@ -1844,6 +1861,36 @@ pub(crate) async fn share_pick_script(cx: &Cx) -> Result {
             if (window.__inSharePick) { return; } \
             window.__inSharePick = true; \
             function rows(box) { return Array.prototype.slice.call(box.querySelectorAll('.pop-list input[type=checkbox]')); } \
+            function pickRows(box) { return Array.prototype.slice.call(box.querySelectorAll('.pop-list .share-pick-row')); } \
+            document.addEventListener('submit', function (e) { \
+                var form = e.target; \
+                if (!form || !form.classList || !form.classList.contains('share-add')) { return; } \
+                var box = form.querySelector('.share-picker'); \
+                if (!box) { return; } \
+                var filter = box.querySelector('.share-pick-filter'); \
+                if (filter && box.querySelector('.pop-list input[type=checkbox]:checked')) { \
+                    filter.disabled = true; \
+                    setTimeout(function () { filter.disabled = false; }, 0); \
+                } \
+            }); \
+            document.addEventListener('input', function (e) { \
+                var t = e.target; \
+                if (!t || !t.classList || !t.classList.contains('share-pick-filter')) { return; } \
+                var box = t.closest('.share-picker'); \
+                if (!box) { return; } \
+                var needle = t.value.trim().toLowerCase(); \
+                var shown = 0; \
+                pickRows(box).forEach(function (row) { \
+                    var hit = !needle || row.textContent.toLowerCase().indexOf(needle) !== -1; \
+                    row.classList.toggle('share-pick-off', !hit); \
+                    if (hit) { shown += 1; } \
+                }); \
+                var word = needle === '' || needle.indexOf('everyone') !== -1 || needle.indexOf('herkes') !== -1 || needle.indexOf('all') !== -1; \
+                var all = box.querySelector('.share-pick-all'); \
+                if (all) { all.classList.toggle('share-pick-off', !word); } \
+                var none = box.querySelector('.share-pick-none'); \
+                if (none) { none.classList.toggle('share-pick-off', needle === '' || shown > 0 || word); } \
+            }); \
             document.addEventListener('change', function (e) { \
                 var t = e.target; \
                 if (!t || !t.closest) { return; } \

@@ -1393,6 +1393,24 @@ img.avatar {
   }
 }
 
+// A browser that cannot demux the stored bytes marks the player `media-dead`
+// from the wire script: the element and the controls give way to the note.
+// The note ships `hidden`; the class is what shows it.
+.media-player.media-dead .media-el,
+.media-player.media-dead .media-controls { display: none; }
+
+.media-player.media-dead .media-error {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
 .media-controls {
   display: flex;
   align-items: center;
@@ -5113,9 +5131,11 @@ div.member-row + div.member-row {
   .share-picker { flex: 1 1 100%; }
   .share-add-access { margin-left: auto; }
 }
-// The multi-select people list: an All row up top, then one checkable row
-// per candidate — the iz pop-panel family, token-painted so every skin
-// carries it without its own rules.
+// The multi-select people list: a filter field, an All row, then one row per
+// candidate — the iz pop-panel family, token-painted so every skin carries
+// it without its own rules. The row IS the control: the real checkbox stays
+// in the markup so a no-script submit still posts one `email` per checked
+// row, but it hides behind the label, which takes the whole hit area.
 .pop-panel {
   padding: 8px;
   background: var(--surface);
@@ -5150,6 +5170,54 @@ div.member-row + div.member-row {
   input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 }
 .pop-row-name { font-size: 12px; }
+// A picker row drawn as the control itself. The checkbox is absolutely
+// positioned and see-through — it keeps focus and the no-script post, never
+// a square. A checked row tints like a dd-option-selected entry and turns
+// up its check glyph; a keyboard-focused one rings the row.
+.share-pick-row {
+  position: relative;
+
+  input[type="checkbox"] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  &:has(input:checked) {
+    background: var(--accent-tint);
+
+    .share-pick-glyph { visibility: visible; }
+  }
+
+  &:has(input:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+}
+// The check glyph rides the row's leading edge; invisible until checked.
+.share-pick-glyph {
+  visibility: hidden;
+  color: var(--accent-ink);
+}
+// The picker's filter, and the typed-address fallback in one field: full
+// width over the rows, one breath of air before the All row.
+.share-pick-filter {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+}
+// A filter with no hits: a quiet line where a row would sit, shown by the
+// script and never by the no-script page.
+.share-pick-none {
+  margin: 0;
+  padding: 4px 6px;
+}
+// Rows the filter benches, and the no-match line while it has nothing to
+// say. Toggled by the script only.
+.share-pick-off { display: none; }
 // The All master row: kept apart from the scrolling candidates by a
 // hairline, so it stays visible however long the list grows.
 .share-pick-all {

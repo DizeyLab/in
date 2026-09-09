@@ -1709,21 +1709,11 @@ fn vp9_aac_matroska() -> Option<Vec<u8>> {
     bytes
 }
 
-/// What a cached derivative is replaced with to prove a later serve draws
-/// the cache instead of rebuilding: a webm's magic and a body no transcode
-/// could produce. The head stays a container the cache probe accepts.
-fn cached_marker() -> Vec<u8> {
-    let mut marker = vec![0x1A, 0x45, 0xDF, 0xA3];
-    marker.extend_from_slice(b"cached-derivative");
-    marker
-}
-
-/// A VP9+AAC mkv is stored under its honest Matroska name, the media route
-/// serves it a webm derivative — built on the first ask, then cached, then
-/// range-servable — and `?dl=1` still hands over the original bytes, byte
-/// for byte.
+/// A VP9+AAC mkv is stored under its honest Matroska name, the inline media
+/// route serves the stored bytes as they sit under that mime, and `?dl=1`
+/// still hands over the original, byte for byte.
 #[tokio::test]
-async fn a_webm_illegal_matroska_gains_a_derivative_preview() {
+async fn a_webm_illegal_matroska_serves_original_bytes_inline_and_on_download() {
     let Some(mkv) = vp9_aac_matroska() else {
         return;
     };
@@ -1758,38 +1748,14 @@ async fn a_webm_illegal_matroska_gains_a_derivative_preview() {
     let stored = app.store.file(&file.id).await.unwrap().unwrap();
     assert_eq!(stored.mime, "video/x-matroska");
 
-    // The first inline serve builds the derivative and answers with it.
+    // The inline serve is the stored bytes under the honest sniffed mime —
+    // no derivative stands in, whatever the browser makes of the tracks.
     let inline = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
     assert_eq!(inline.status, StatusCode::OK);
-    assert_eq!(inline.content_type.as_deref(), Some("video/webm"));
-    assert_ne!(inline.bytes, mkv, "the preview was the original bytes");
-    // The serve's length is the derivative's own: the body is exactly the
-    // blob the build placed, never a clamp against the original's size.
-    let placed = std::fs::read(app.config.storage.join("previews").join(&file.id)).unwrap();
-    assert!(!placed.is_empty());
-    assert_eq!(inline.bytes, placed, "the preview was not the derivative");
+    assert_eq!(inline.content_type.as_deref(), Some("video/x-matroska"));
+    assert_eq!(inline.bytes, mkv, "the inline serve was not the original");
 
-    // The second serve answers the cache, whatever it holds — a rebuild
-    // would have replaced this marker with fresh transcode output.
-    let derivative_key = app.config.storage.join("previews").join(&file.id);
-    let marker = cached_marker();
-    std::fs::write(&derivative_key, &marker).unwrap();
-    let again = app.get(&format!("/file/{}", file.id), Some(&cookie)).await;
-    assert_eq!(again.status, StatusCode::OK);
-    assert_eq!(again.bytes, marker, "the second serve rebuilt the cache");
-
-    // A range reads the derivative's span, against its own length.
-    let probe = app
-        .get_with_range(&format!("/file/{}", file.id), Some(&cookie), "bytes=0-3")
-        .await;
-    assert_eq!(probe.status, StatusCode::PARTIAL_CONTENT);
-    assert_eq!(probe.bytes, &marker[0..4]);
-    assert_eq!(
-        probe.content_range.as_deref(),
-        Some(&format!("bytes 0-3/{}", marker.len())[..])
-    );
-
-    // The download is the original, byte for byte, whatever the preview is.
+    // The download is the original too, byte for byte.
     let taken = app
         .get(&format!("/file/{}?dl=1", file.id), Some(&cookie))
         .await;
@@ -1806,9 +1772,9 @@ async fn a_webm_illegal_matroska_gains_a_derivative_preview() {
     );
 }
 
-/// A view-only public link previews the derivative — that is what the
+/// A view-only public link previews the stored bytes — that is what the
 /// media stream is for — and still cannot be downloaded: `?dl=1` stays the
-/// dead card, and the original never travels.
+/// dead card.
 #[tokio::test]
 async fn view_only_link_previews_a_matroska_but_cannot_download() {
     let Some(mkv) = vp9_aac_matroska() else {
@@ -1832,9 +1798,8 @@ async fn view_only_link_previews_a_matroska_but_cannot_download() {
         .get(&format!("/s/{}?media=1", created.token), None)
         .await;
     assert_eq!(media.status, StatusCode::OK);
-    assert_eq!(media.content_type.as_deref(), Some("video/webm"));
-    assert_ne!(media.bytes, mkv, "the media stream was the original");
-    assert!(media.bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]));
+    assert_eq!(media.content_type.as_deref(), Some("video/x-matroska"));
+    assert_eq!(media.bytes, mkv, "the media stream was not the original");
 
     let blocked = app
         .get(&format!("/s/{}?dl=1", created.token), None)
@@ -2219,6 +2184,20 @@ async fn share_modal_offers_the_im_directory() {
     assert!(
         text.contains("aria-label=\"Pick a person\""),
         "no picker group label: {text}"
+    );
+    assert!(
+        text.contains(
+            "<input class=\"field-input share-pick-filter\" type=\"email\" name=\"email\"",
+        ),
+        "picker filter (and typed-address fallback) missing: {text}"
+    );
+    assert!(
+        text.contains("class=\"pop-row share-pick-row\""),
+        "candidate rows not drawn as the control: {text}"
+    );
+    assert!(
+        text.contains("class=\"field-note share-pick-none share-pick-off\""),
+        "no-match note not shipped hidden: {text}"
     );
     assert!(
         text.contains("type=\"checkbox\" name=\"email\" value=\"ember@in.test\""),
@@ -5322,22 +5301,32 @@ async fn connection_card_shows_issuer_client_id_and_stream_state() {
     );
     assert!(body.contains("Reconnecting"), "no amber wording: {body}");
     assert!(body.contains("status-dot-warn"), "no amber dot: {body}");
+    // Before the first occurrences both ages read never — the line is
+    // there, the number is not.
+    assert!(
+        body.contains("Last pass · never"),
+        "no never wording on the pass line: {body}"
+    );
+    assert!(
+        body.contains("Last event · never"),
+        "no never wording on the event line: {body}"
+    );
     assert!(
         !body.contains("s3cr3t"),
         "the client secret reached the page: {body}"
     );
 
-    // The sync task opens the stream: green, and the age line appears once
-    // an event has come through.
+    // The sync task opens the stream and a full pass heals the mirror:
+    // green, and both age lines carry numbers now.
     app.health.connected();
+    app.health.note_pass();
     app.health.note_event();
     let page = app.get("/settings", Some(&cookie)).await;
     let body = page.text();
     assert!(body.contains("Connected"), "no green wording: {body}");
     assert!(body.contains("status-dot-done"), "no green dot: {body}");
-    assert!(!body.contains("Reconnecting"), "amber lingered: {body}");
-    assert!(body.contains("Last event"), "no age line: {body}");
-
+    assert!(body.contains("Last event · 0s"), "no event age: {body}");
+    assert!(body.contains("Last pass · 0s"), "no pass age: {body}");
     // The stream ends: amber again, no event line retraction needed — the
     // last event stays but the wording names the truth.
     app.health.reconnecting();
@@ -5346,3 +5335,4 @@ async fn connection_card_shows_issuer_client_id_and_stream_state() {
     assert!(body.contains("Reconnecting"), "no amber return: {body}");
     assert!(!body.contains("status-dot-done"), "green lingered: {body}");
 }
+

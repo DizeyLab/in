@@ -26,8 +26,6 @@ pub mod sniff;
 pub mod turso_store;
 #[cfg(feature = "server")]
 pub mod r2;
-#[cfg(feature = "server")]
-pub mod previews;
 
 #[cfg(feature = "server")]
 pub use reconcile::{ReconcileOptions, reconcile};
@@ -146,8 +144,8 @@ pub struct File {
     pub size_bytes: u64,
     /// How many times the bytes went to a downloader: the download route's
     /// `?dl=1` serves and the public-link bytes bump it through
-    /// [`Store::record_download`], and nothing internal — previews,
-    /// thumbnails, sniffing, the boot sweep — ever does.
+    /// [`Store::record_download`], and nothing internal — thumbnails,
+    /// sniffing, the boot sweep — ever does.
     pub download_count: u64,
     pub thumb_state: ThumbState,
     pub created_at: OffsetDateTime,
@@ -167,19 +165,6 @@ pub type ByteStream =
 pub struct FileSpan {
     pub len: u64,
     pub stream: ByteStream,
-}
-
-/// A preview derivative ready to serve in a video's place: the mime its own
-/// bytes declare — the row's stored mime may say webm about an AAC-in-webm
-/// Matroska no browser will play — and the honest length to serve. Built
-/// once at media-serve time; `?dl=1` never sees it, a download is the
-/// original.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MediaDerivative {
-    /// The container the derivative's bytes are, not the row's stored mime.
-    pub mime: &'static str,
-    /// The derivative's length, as the blob holds it.
-    pub size: u64,
 }
 
 /// Whether a file's thumbnail exists. `None` for bytes no thumbnail is
@@ -513,21 +498,6 @@ pub trait Store: 'static + Send + Sync {
     /// The thumbnail's bytes, for the one handler that serves them. `None`
     /// when no thumbnail was made, or its file went missing.
     async fn thumb_bytes(&self, id: &str) -> Result<Option<Vec<u8>>>;
-
-    /// The preview derivative standing in for this video at media-serve
-    /// time — built on this first ask when the stored tracks need one (one
-    /// `ffmpeg` transcode, minutes for a long file), a cache read after
-    /// that — or `None`, the answer for anything that is not a video
-    /// container, already plays as stored, has no recipe, or whose build
-    /// failed: the caller serves the original, today's behavior either way.
-    async fn media_derivative(&self, id: &str) -> Result<Option<MediaDerivative>>;
-
-    /// The cached derivative's bytes as a stream — `media_derivative`'s
-    /// answer is what names it. Same clamping contract as
-    /// [`Store::file_stream`]: a range serve reads only its span, and the
-    /// span is the span that exists.
-    async fn derivative_stream(&self, id: &str, start: u64, len: u64)
-        -> Result<Option<FileSpan>>;
 
     /// Counts one user-facing download of a file's bytes. Byte routes call
     /// this once per download they complete — on `?dl=1` serves, not per

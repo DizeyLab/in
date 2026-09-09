@@ -286,24 +286,15 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, topcoat::r
             Some(Ok((0, _))) | None => true,
             _ => false,
         };
-    // A video whose stored tracks no browser demuxes as they sit plays
-    // through its derivative — built on this first ask, cached at
-    // `previews/{id}`, served under the mime the derivative really is. A
-    // download (`?dl=1`) never sees it: the original bytes, byte for byte.
-    let mut content_type = file.mime.clone();
-    let mut total = file.size_bytes;
-    let mut source = ByteSource::Original;
-    if inline {
-        if let Ok(Some(derivative)) = store.media_derivative(id).await {
-            content_type = derivative.mime.to_string();
-            total = derivative.size;
-            source = ByteSource::Preview;
-        }
-    }
+    // One answer for every browser: the stored bytes under the stored mime.
+    // Where a browser cannot demux them, the house player says so in the
+    // page — and `?dl=1` still serves the original, byte for byte.
+    let content_type = file.mime.clone();
+    let total = file.size_bytes;
     if let Ok(value) = HeaderValue::from_str(&content_type) {
         headers.insert(header::CONTENT_TYPE, value);
     }
-    match bytes_response(store.as_ref(), id, total, range, headers, source).await {
+    match bytes_response(store.as_ref(), id, total, range, headers).await {
         Some((status, headers, body)) => {
             if counts && status.is_success() {
                 let _ = store.record_download(id).await;
@@ -313,21 +304,11 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, topcoat::r
         None => Ok(not_found()),
     }
 }
-/// Where a byte response's span comes from: the original blob, or the
-/// preview derivative standing in for it at media-serve time. A download
-/// is always [`ByteSource::Original`] — `?dl=1` serves the stored bytes
-/// byte for byte, derivative or no.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ByteSource {
-    Original,
-    Preview,
-}
 
 /// The streamed answer for a file's bytes: the whole file from 0, or the
-/// parsed range's span — the source's store call clamps both against what
-/// is really on disk, and the `Content-Length` (and a 206's
-/// `Content-Range`) say the clamped truth. `total` is the serving length —
-/// the original's or the derivative's, whichever the caller chose. `None`
+/// parsed range's span — the store call clamps both against what is really
+/// on disk, and the `Content-Length` (and a 206's `Content-Range`) say the
+/// clamped truth. `total` is the serving length the caller declared. `None`
 /// when the bytes are not there. Shared by the signed-in route above and
 /// the public link's `download_bytes` and `media_bytes`.
 pub(crate) async fn bytes_response(
@@ -336,7 +317,6 @@ pub(crate) async fn bytes_response(
     total: u64,
     range: Option<&str>,
     mut headers: HeaderMap,
-    source: ByteSource,
 ) -> Option<(StatusCode, HeaderMap, topcoat::router::Body)> {
     use futures_util::StreamExt;
     use http_body::Frame;
@@ -353,10 +333,7 @@ pub(crate) async fn bytes_response(
         }
         None => (StatusCode::OK, 0, total),
     };
-    let span = match source {
-        ByteSource::Original => store.file_stream(id, start, len).await.ok().flatten()?,
-        ByteSource::Preview => store.derivative_stream(id, start, len).await.ok().flatten()?,
-    };
+    let span = store.file_stream(id, start, len).await.ok().flatten()?;
     if status == StatusCode::PARTIAL_CONTENT {
         let end = start + span.len.saturating_sub(1);
         headers.insert(
@@ -645,6 +622,7 @@ pub(crate) async fn media_player(
             cx =>
             <div class="media-player media-player-video">
                 <video class="media-el viewer-video" src=(src) preload="metadata"></video>
+                <p class="media-error" hidden="">(t(language, Key::MediaWontPlay))</p>
                 <div class="media-controls">(media_controls(cx, language, name, true).await?)</div>
             </div>
         }
@@ -654,6 +632,7 @@ pub(crate) async fn media_player(
             <div class="media-player">
                 (media_controls(cx, language, name, false).await?)
                 <audio class="media-el" src=(src) preload="metadata"></audio>
+                <p class="media-error" hidden="">(t(language, Key::MediaWontPlay))</p>
             </div>
         }
     }
@@ -694,7 +673,13 @@ async fn media_controls(cx: &Cx, language: crate::i18n::Lang, name: String, vide
 /// language and swallow `Escape` while focused, so the viewer draws its own
 /// (ported from iz's audio player, one player for both media kinds). Wiring
 /// is per-player and idempotent (`data-wired`), re-run on `in:wire` so a
-/// player arriving in a soft page swap still gets its controls.
+/// player arriving in a soft page swap still gets its controls. An `error`
+/// on the media element — which does not bubble, and may predate the
+/// wiring — marks the player `media-dead`: element and controls hide, and
+/// the stored note names the failure. So does the silent stall: a browser
+/// that demuxes the container but carries no decoder for its tracks never
+/// errors, it just never gains even metadata, and five seconds of that is
+/// named dead too.
 pub(crate) async fn media_player_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
@@ -715,6 +700,20 @@ pub(crate) async fn media_player_script(cx: &Cx) -> Result {
             var volSlider = player.querySelector('.media-vol-slider'); \
             var speed = player.querySelector('.media-speed'); \
             var full = player.querySelector('.media-full'); \
+            /* A media `error` does not bubble, so the listener rides the \
+               element itself — and `media.error` is probed on the spot, \
+               because the failure may predate this wiring. The other \
+               failure shape never errors at all: a demuxer that parses \
+               the container but has no decoder for its tracks stalls \
+               with not even metadata — five seconds of that, on an \
+               element still loading, is the silent stall named dead. \
+               Dead: the element and the controls give way to the note. */ \
+            function markDead() { player.classList.add('media-dead'); } \
+            media.addEventListener('error', markDead); \
+            if (media.error) { markDead(); } \
+            setTimeout(function () { \
+                if (!media.error && media.readyState === 0 && media.networkState === 2) { markDead(); } \
+            }, 5000); \
             function clock(s) { \
                 if (!isFinite(s)) { return '0:00'; } \
                 var m = Math.floor(s / 60); \

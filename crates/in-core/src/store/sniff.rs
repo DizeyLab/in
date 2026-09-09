@@ -228,122 +228,6 @@ pub(crate) fn webm_legal(tracks: &[Track]) -> bool {
         })
 }
 
-/// The tracks an mp4's `moov` declares, one per `trak`: the class from the
-/// `mdia/hdlr` handler, the codec from the first `stsd` sample entry. An
-/// mp4 this cannot read comes back with no tracks, which the verdicts
-/// treat as native — nothing here may take the original away on a guess.
-pub(crate) fn mp4_tracks(moov: &[u8]) -> Vec<Track> {
-    let mut tracks = Vec::new();
-    let mut at = 0usize;
-    while at < moov.len() {
-        let (typ, _, body, body_end) = match box_at(moov, at, moov.len()) {
-            Some(found) => found,
-            None => break,
-        };
-        at = body_end;
-        if typ != *b"trak" {
-            continue;
-        }
-        tracks.push(trak_track(moov, body, body_end));
-    }
-    tracks
-}
-
-/// Whether an mp4's tracks are ones a browser demuxes as they sit: H.264
-/// video and AAC audio, nothing else in. Tracks of no known class — a hint
-/// or metadata track — do not stand in the way; an unreadable codec does.
-pub(crate) fn mp4_native(tracks: &[Track]) -> bool {
-    tracks.iter().all(|track| match track.kind {
-        TrackKind::Video => track.codec.starts_with("avc"),
-        TrackKind::Audio => track.codec == "mp4a",
-        TrackKind::Other => true,
-    })
-}
-
-/// One `trak`: its handler's class and its first sample entry's codec.
-fn trak_track(bytes: &[u8], start: usize, end: usize) -> Track {
-    let unknown = Track {
-        kind: TrackKind::Other,
-        codec: String::new(),
-    };
-    let (media, media_end) = match find_box(bytes, start, end, b"mdia") {
-        Some(found) => found,
-        None => return unknown,
-    };
-    // `hdlr`'s handler FourCC sits after its version/flags and reserved
-    // quad — twelve bytes into the box body.
-    let kind = find_box(bytes, media, media_end, b"hdlr")
-        .filter(|&(head, _)| bytes.len() >= head + 12)
-        .map(|(head, _)| match &bytes[head + 8..head + 12] {
-            b"vide" => TrackKind::Video,
-            b"soun" => TrackKind::Audio,
-            _ => TrackKind::Other,
-        })
-        .unwrap_or(TrackKind::Other);
-    let codec = find_box(bytes, media, media_end, b"minf")
-        .and_then(|(minf, minf_end)| find_box(bytes, minf, minf_end, b"stbl"))
-        .and_then(|(stbl, stbl_end)| find_box(bytes, stbl, stbl_end, b"stsd"))
-        .and_then(|(stsd, stsd_end)| stsd_codec(bytes, stsd, stsd_end))
-        .unwrap_or_default();
-    Track { kind, codec }
-}
-
-/// The codec of an `stsd`'s first sample entry: the FourCC right after the
-/// entry's size — `avc1`, `mp4a`, `ac-3`, whatever the track really is.
-fn stsd_codec(bytes: &[u8], start: usize, end: usize) -> Option<String> {
-    let entry = start.checked_add(8)?; // version/flags, then entry count
-    if bytes.len() < entry + 8 || end < entry + 8 {
-        return None;
-    }
-    Some(
-        String::from_utf8_lossy(&bytes[entry + 4..entry + 8])
-            .into_owned()
-            .to_lowercase(),
-    )
-}
-
-/// The body of the first box named `want`, between `start` and `end`.
-fn find_box(bytes: &[u8], start: usize, end: usize, want: &[u8; 4]) -> Option<(usize, usize)> {
-    let mut at = start;
-    while at < end {
-        let (typ, _, body, body_end) = box_at(bytes, at, end)?;
-        if &typ == want {
-            return Some((body, body_end));
-        }
-        at = body_end.max(at + 8);
-    }
-    None
-}
-
-/// One ISO-BMFF box at `at`, bounded by `end`: its FourCC and the bounds
-/// of its body. A `size` of 1 promotes to the 64-bit largesize; a `size`
-/// of 0 runs to the end of the bytes. Anything malformed stops the walk.
-fn box_at(bytes: &[u8], at: usize, end: usize) -> Option<([u8; 4], usize, usize, usize)> {
-    let head = bytes.get(at..end)?;
-    if head.len() < 8 {
-        return None;
-    }
-    let typ = [head[4], head[5], head[6], head[7]];
-    let (header, total) = match u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as u64 {
-        1 => {
-            if head.len() < 16 {
-                return None;
-            }
-            let large = u64::from_be_bytes([
-                head[8], head[9], head[10], head[11], head[12], head[13], head[14], head[15],
-            ]);
-            (16usize, usize::try_from(large).ok()?)
-        }
-        0 => (8usize, head.len()),
-        size => (8usize, size as usize),
-    };
-    let body_end = at.checked_add(total)?;
-    if total < header || body_end > end {
-        return None;
-    }
-    Some((typ, at, at + header, body_end))
-}
-
 /// One EBML element at `at`, bounded by `end`: its id, its payload size,
 /// and the payload's bounds. The id keeps its marker bits — the length
 /// encoding is the id — and the size drops them. A payload claiming past
@@ -673,14 +557,6 @@ mod tests {
         bytes
     }
 
-    /// An ISO-BMFF box: size, FourCC, body.
-    fn boxy(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
-        let mut bytes = ((body.len() + 8) as u32).to_be_bytes().to_vec();
-        bytes.extend_from_slice(typ);
-        bytes.extend_from_slice(body);
-        bytes
-    }
-
     /// An EBML element: id, a one-octet size vint (marker bit on — the
     /// bodies here stay under 128 bytes), body.
     fn ebml(id: &[u8], body: &[u8]) -> Vec<u8> {
@@ -689,17 +565,6 @@ mod tests {
         bytes.extend_from_slice(body);
         bytes
     }
-    fn moov(tracks: &[(&[u8; 4], &[u8; 4])]) -> Vec<u8> {
-        let traks: Vec<u8> = tracks
-            .iter()
-            .flat_map(|&(handler, codec)| {
-                let hdlr = boxy(b"hdlr", &[0, 0, 0, 0, 0, 0, 0, 0, handler[0], handler[1], handler[2], handler[3]]);
-                let stsd = boxy(b"stsd", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 8, codec[0], codec[1], codec[2], codec[3]]);
-                boxy(b"trak", &boxy(b"mdia", &[&hdlr[..], &boxy(b"minf", &boxy(b"stbl", &stsd))].concat()))
-            })
-            .collect();
-        boxy(b"moov", &traks)
-    }
 
     #[test]
     fn a_matroska_counts_as_webm_only_when_its_tracks_are() {
@@ -707,8 +572,9 @@ mod tests {
         assert_eq!(sniff(&legal), "video/webm");
         let vp9_video_only = matroska(&[("V_VP9", 1)]);
         assert_eq!(sniff(&vp9_video_only), "video/webm");
-        // The AAC-in-webm mkv that started this: same magic, silent in
-        // Firefox until a derivative exists.
+        // The AAC-in-webm mkv that started this: same magic, but Firefox
+        // demuxes the VP9 and refuses the AAC audio, so the name stays
+        // honest Matroska.
         let aac = matroska(&[("V_VP9", 1), ("A_AAC", 2)]);
         assert_eq!(sniff(&aac), "video/x-matroska");
         let h264 = matroska(&[("V_MPEG4/ISO/AVC", 1), ("A_AAC", 2)]);
@@ -721,24 +587,6 @@ mod tests {
     #[test]
     fn an_unparseable_matroska_keeps_its_old_name() {
         assert_eq!(sniff(&[0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00]), "video/webm");
-    }
-
-    #[test]
-    fn an_mp4_is_native_only_for_h264_video_and_aac_audio() {
-        // The walk runs over moov's body, the way `previews` reads it out
-        // of the blob — hence the `[8..]` past each box's own header.
-        let tracks = mp4_tracks(&moov(&[(b"vide", b"avc1"), (b"soun", b"mp4a")])[8..]);
-        assert_eq!(tracks.len(), 2);
-        assert!(mp4_native(&tracks));
-        let hevc = mp4_tracks(&moov(&[(b"vide", b"hev1"), (b"soun", b"mp4a")])[8..]);
-        assert!(!mp4_native(&hevc));
-        let ac3 = mp4_tracks(&moov(&[(b"vide", b"avc1"), (b"soun", b"ac-3")])[8..]);
-        assert!(!mp4_native(&ac3));
-        // A hint track (handler neither video nor audio) stands aside.
-        let hinted = mp4_tracks(
-            &moov(&[(b"vide", b"avc1"), (b"soun", b"mp4a"), (b"hint", b"rtp ")])[8..],
-        );
-        assert!(mp4_native(&hinted));
     }
 
 }

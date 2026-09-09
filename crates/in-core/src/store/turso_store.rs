@@ -23,8 +23,6 @@ use super::{ReconcileOptions, reconcile, schema, sniff};
 use crate::live::{Change, Topic};
 use crate::thumbs;
 
-use super::previews;
-
 /// Where one file's bytes live: `<storage>/files/<id>`, named by the row's
 /// own id. What an upload carried never decides a path here — the name is
 /// always store-made, so `name` stays a label.
@@ -33,11 +31,6 @@ pub(crate) const FILES_DIR: &str = "files";
 const THUMBS_DIR: &str = "thumbs";
 /// Where upload chunks stage: `<storage>/uploads/<session-id>/<n>`.
 const UPLOADS_DIR: &str = "uploads";
-/// Where preview derivatives live: `previews/<id>`, the playable stand-in
-/// a media route builds for a video whose stored tracks no browser demuxes.
-/// Deleted beside `files/` and `thumbs/` in every purge, swept at boot with
-/// the same watermark rule.
-const PREVIEWS_DIR: &str = previews::PREVIEWS_DIR;
 
 /// Thumbnails are attempted only below this source size: 64 MiB. Past it the
 /// row wears `failed` rather than pinning memory the size of the file.
@@ -274,9 +267,6 @@ impl TursoStore {
         for (dir, known, kind) in [
             (FILES_DIR, &files, "file"),
             (THUMBS_DIR, &thumbs, "thumbnail"),
-            // A derivative may exist for any live file row — it is built on
-            // demand, not at ingest — so its known set is the same ids.
-            (PREVIEWS_DIR, &files, "preview"),
         ] {
             // One listing per half: the names the tree holds, temp files
             // included — a `.tmp` is an orphan like any other — each with
@@ -796,12 +786,17 @@ fn ensure_storage_dirs(storage: &std::path::Path) -> Result<()> {
         storage.join(FILES_DIR),
         storage.join(THUMBS_DIR),
         storage.join(UPLOADS_DIR),
-        storage.join(PREVIEWS_DIR),
     ] {
         std::fs::create_dir_all(&dir)
             .map_err(|e| StoreError::Backend(format!("could not create {}: {e}", dir.display())))?;
         restrict_dir(&dir)?;
     }
+    // Cutover cleanup for the deleted preview-derivative pipeline: an older
+    // build may have left derivative blobs at `previews/<id>`, and nothing
+    // reads that key family anymore — the whole directory goes, best-effort,
+    // on every open. A missing directory is the steady state and every error
+    // is ignored, so this is idempotent.
+    let _ = std::fs::remove_dir_all(storage.join("previews"));
     Ok(())
 }
 
@@ -1809,43 +1804,6 @@ impl Store for TursoStore {
             .map_err(|e| StoreError::Backend(e.to_string()))
     }
 
-    async fn media_derivative(&self, id: &str) -> Result<Option<super::MediaDerivative>> {
-        let conn = self.conn.lock().await;
-        let mut rows = conn
-            .query("SELECT mime FROM file WHERE id = ?1", params![id])
-            .await
-            .map_err(backend)?;
-        let mime = match rows.next().await.map_err(backend)? {
-            Some(row) => text(&row, 0)?,
-            None => return Ok(None),
-        };
-        drop(conn);
-        // The build's misses are the module's own log lines; the store's
-        // answer to every one of them is "serve the original".
-        Ok(previews::ensure(&self.storage, self.blobs.as_ref(), id, &mime).await)
-    }
-
-    async fn derivative_stream(
-        &self,
-        id: &str,
-        start: u64,
-        len: u64,
-    ) -> Result<Option<super::FileSpan>> {
-        let conn = self.conn.lock().await;
-        let mut rows = conn
-            .query("SELECT 1 FROM file WHERE id = ?1", params![id])
-            .await
-            .map_err(backend)?;
-        let known = rows.next().await.map_err(backend)?.is_some();
-        drop(conn);
-        if !known {
-            return Ok(None);
-        }
-        // Same answer as `file_stream`: a missing derivative is "nothing
-        // to serve", not a stack. The span clamps against the real blob.
-        Ok(previews::stream(self.blobs.as_ref(), id, start, len).await)
-    }
-
     async fn list_trash(&self, owner_id: &str) -> Result<Listing> {
         let conn = self.conn.lock().await;
         let mut folders = Vec::new();
@@ -2029,7 +1987,6 @@ impl Store for TursoStore {
             .delete(&[
                 &format!("files/{id}"),
                 &format!("thumbs/{id}"),
-                &format!("previews/{id}"),
             ])
             .await;
         self.announce([Topic::Library(owner.clone()), Topic::Trash(owner)]);
@@ -2103,7 +2060,6 @@ impl Store for TursoStore {
                 .delete(&[
                     &format!("files/{file_id}"),
                     &format!("thumbs/{file_id}"),
-                    &format!("previews/{file_id}"),
                 ])
                 .await;
         }
@@ -2822,7 +2778,6 @@ impl Store for TursoStore {
                 .delete(&[
                     &format!("files/{file_id}"),
                     &format!("thumbs/{file_id}"),
-                    &format!("previews/{file_id}"),
                 ])
                 .await;
             return Err(backend(e));
@@ -3357,11 +3312,10 @@ async fn commit_trash_purge(
     // After the delete: bytes may only follow a delete that committed.
     // Best-effort — survivors are orphaned bytes the boot sweep collects.
     if !deleted_files.is_empty() {
-        let mut keys = Vec::with_capacity(deleted_files.len() * 3);
+        let mut keys = Vec::with_capacity(deleted_files.len() * 2);
         for id in &deleted_files {
             keys.push(format!("{FILES_DIR}/{id}"));
             keys.push(format!("{THUMBS_DIR}/{id}"));
-            keys.push(format!("{PREVIEWS_DIR}/{id}"));
         }
         let keys = keys.iter().map(String::as_str).collect::<Vec<_>>();
         let _ = store.blobs.delete(&keys).await;
