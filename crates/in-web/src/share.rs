@@ -441,8 +441,7 @@ async fn remint_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
                         // creation seals its own; a failed seal is lived
                         // with, because the redirect below shows the full
                         // address regardless.
-                        let sealed =
-                            in_core::store::secret::seal(&app(cx).link_key, &minted.token);
+                        let sealed = in_core::store::secret::seal(&app(cx).link_key, &minted.token);
                         let _ = app(cx)
                             .store
                             .set_setting(&format!("share_token:{}", minted.link.id), &sealed)
@@ -1003,14 +1002,7 @@ async fn download_bytes(
         HeaderValue::from_static("private, no-cache"),
     );
     let Some(parts) =
-        crate::files::bytes_response(
-            store,
-            file_id,
-            size_bytes,
-            range,
-            headers,
-        )
-        .await
+        crate::files::bytes_response(store, file_id, size_bytes, range, headers).await
     else {
         return dead_link(cx).await;
     };
@@ -1851,9 +1843,13 @@ pub(crate) async fn share_copy_script(cx: &Cx) -> Result {
 /// and address — and hides itself down to the Everyone row when no filter
 /// word matches. The same field carries the no-script typed-address post,
 /// so on submit it is benched whenever rows are checked: its half-typed
-/// text must not ride beside them. Delegated listeners only, idempotent
-/// across the modal's re-renders (`window.__inSharePick` guards it), so the
-/// `in:wire` morph needs no per-element re-init.
+/// text must not ride beside them. The first keystroke also locks the
+/// panel at its full, unfiltered height — the rows the filter hides would
+/// otherwise shrink the modal under it, jumping everything below with
+/// every letter — and a panel reborn through a morph re-render locks
+/// anew. Delegated listeners only, idempotent across the modal's
+/// re-renders (`window.__inSharePick` guards it), so the `in:wire` morph
+/// needs no per-element re-init.
 pub(crate) async fn share_pick_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
@@ -1878,6 +1874,7 @@ pub(crate) async fn share_pick_script(cx: &Cx) -> Result {
                 if (!t || !t.classList || !t.classList.contains('share-pick-filter')) { return; } \
                 var box = t.closest('.share-picker'); \
                 if (!box) { return; } \
+                if (!box.style.minHeight) { box.style.minHeight = box.getBoundingClientRect().height + 'px'; } \
                 var needle = t.value.trim().toLowerCase(); \
                 var shown = 0; \
                 pickRows(box).forEach(function (row) { \
