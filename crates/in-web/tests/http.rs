@@ -5325,8 +5325,16 @@ async fn connection_card_shows_issuer_client_id_and_stream_state() {
     let body = page.text();
     assert!(body.contains("Connected"), "no green wording: {body}");
     assert!(body.contains("status-dot-done"), "no green dot: {body}");
-    assert!(body.contains("Last event · 0s"), "no event age: {body}");
-    assert!(body.contains("Last pass · 0s"), "no pass age: {body}");
+    // An age, not never — the number itself races the second boundary
+    // between the stamp and this render, so it is not asserted.
+    assert!(
+        body.contains("Last event · ") && !body.contains("Last event · never"),
+        "no event age: {body}"
+    );
+    assert!(
+        body.contains("Last pass · ") && !body.contains("Last pass · never"),
+        "no pass age: {body}"
+    );
     // The stream ends: amber again, no event line retraction needed — the
     // last event stays but the wording names the truth.
     app.health.reconnecting();
