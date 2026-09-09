@@ -2036,3 +2036,296 @@ async fn r2_thumbnails_round_trip() {
         .unwrap();
     assert_eq!(stored, served);
 }
+
+// ---------------------------------------------------------------------------
+// Service storage: the machine account, its key, and its file handles.
+// ---------------------------------------------------------------------------
+
+
+#[tokio::test]
+async fn minting_a_service_account_yields_a_key_that_opens_it() {
+    let scratch = Scratch::open().await;
+    let token = scratch
+        .store
+        .create_service_account("iz", "İz", 1024 * 1024)
+        .await
+        .unwrap();
+    assert!(!token.is_empty());
+    // The key opens the account, and the account is no person's row.
+    let account = scratch
+        .store
+        .service_account_by_token(&token)
+        .await
+        .unwrap()
+        .expect("the minted key opens");
+    assert_eq!(account.oidc_sub, "service:iz");
+    assert_eq!(account.email, "");
+    assert_eq!(account.display_name, "İz");
+    assert!(!account.admin);
+    assert_eq!(account.quota_bytes, 1024 * 1024);
+    // A wrong key answers None, never an account.
+    assert!(scratch
+        .store
+        .service_account_by_token("forged")
+        .await
+        .unwrap()
+        .is_none());
+    // The panel lists it with its usage.
+    let accounts = scratch.store.list_service_accounts().await.unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].service, "iz");
+    assert_eq!(accounts[0].used_bytes, 0);
+}
+
+#[tokio::test]
+async fn a_remint_after_revoke_reuses_the_account() {
+    let scratch = Scratch::open().await;
+    let original = scratch
+        .store
+        .create_service_account("iz", "İz", 1024 * 1024)
+        .await
+        .unwrap();
+    let user_id = scratch.store.list_service_accounts().await.unwrap()[0]
+        .user_id
+        .clone();
+    scratch
+        .store
+        .insert_service_file(&user_id, "pre", "pre.txt", b"old bytes")
+        .await
+        .unwrap();
+    // Revoke takes the key, never the account.
+    assert!(scratch.store.revoke_service_key("iz").await.unwrap());
+    assert!(!scratch.store.revoke_service_key("iz").await.unwrap());
+    assert!(scratch.store.list_service_accounts().await.unwrap().is_empty());
+    // The re-mint reopens the same account: its files keep counting.
+    scratch
+        .store
+        .create_service_account("iz", "İz", 1024 * 1024)
+        .await
+        .unwrap();
+    let accounts = scratch.store.list_service_accounts().await.unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].user_id, user_id);
+    let holder = scratch.store.user(&user_id).await.unwrap().unwrap();
+    assert_eq!(holder.used_bytes, 9);
+    // Rotate replaces the key; the old one stops opening, the new one opens.
+    let fresh = scratch.store.rotate_service_key("iz").await.unwrap().unwrap();
+    assert!(scratch
+        .store
+        .service_account_by_token(&original)
+        .await
+        .unwrap()
+        .is_none());
+    let opened = scratch
+        .store
+        .service_account_by_token(&fresh)
+        .await
+        .unwrap()
+        .expect("the rotated key opens");
+    assert_eq!(opened.oidc_sub, "service:iz");
+}
+
+#[tokio::test]
+async fn the_service_file_handle_is_idempotent_and_hard_deleted() {
+    let scratch = Scratch::open().await;
+    scratch
+        .store
+        .create_service_account("iz", "İz", 1024 * 1024)
+        .await
+        .unwrap();
+    let user_id = scratch.store.list_service_accounts().await.unwrap()[0]
+        .user_id
+        .clone();
+    let first = scratch
+        .store
+        .insert_service_file(&user_id, "att-1", "notes.txt", b"first")
+        .await
+        .unwrap();
+    let second = scratch
+        .store
+        .insert_service_file(&user_id, "att-1", "notes.txt", b"second-and-longer")
+        .await
+        .unwrap();
+    // One row, the bytes replaced, the id stable.
+    assert_eq!(first, second);
+    let row = scratch
+        .store
+        .service_file(&user_id, "att-1")
+        .await
+        .unwrap()
+        .expect("the handle names the row");
+    assert_eq!(row.name, "notes.txt");
+    assert_eq!(row.size_bytes, 17);
+    assert_eq!(row.thumb_state, ThumbState::None);
+    assert!(row.mime.starts_with("text/plain"), "sniffed: {}", row.mime);
+    let bytes = scratch
+        .store
+        .service_file_bytes(&user_id, "att-1")
+        .await
+        .unwrap()
+        .expect("bytes there");
+    assert_eq!(bytes, b"second-and-longer");
+    // Usage recomputed from the one row — never stacked.
+    let holder = scratch.store.user(&user_id).await.unwrap().unwrap();
+    assert_eq!(holder.used_bytes, 17);
+    // Delete: the row, the bytes and the usage all go. Second delete: false.
+    assert!(scratch
+        .store
+        .delete_service_file(&user_id, "att-1")
+        .await
+        .unwrap());
+    assert!(scratch
+        .store
+        .service_file_bytes(&user_id, "att-1")
+        .await
+        .unwrap()
+        .is_none());
+    let holder = scratch.store.user(&user_id).await.unwrap().unwrap();
+    assert_eq!(holder.used_bytes, 0);
+    assert!(!scratch
+        .store
+        .delete_service_file(&user_id, "att-1")
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn the_service_quota_refuses_and_a_repush_is_charged_only_over_its_row() {
+    let scratch = Scratch::open().await;
+    scratch
+        .store
+        .create_service_account("iz", "İz", 64)
+        .await
+        .unwrap();
+    let user_id = scratch.store.list_service_accounts().await.unwrap()[0]
+        .user_id
+        .clone();
+    scratch
+        .store
+        .insert_service_file(&user_id, "small", "small.txt", b"tiny")
+        .await
+        .unwrap();
+    // Fresh push past the ceiling: refused.
+    let big = vec![b'a'; 100];
+    assert!(matches!(
+        scratch
+            .store
+            .insert_service_file(&user_id, "big", "big.bin", &big)
+            .await
+            .unwrap_err(),
+        StoreError::QuotaExceeded
+    ));
+    // Re-push past the ceiling *over the row it replaces*: refused, and the
+    // old bytes stay exactly what they were.
+    let overflow = vec![b'b'; 100];
+    assert!(matches!(
+        scratch
+            .store
+            .insert_service_file(&user_id, "small", "small.txt", &overflow)
+            .await
+            .unwrap_err(),
+        StoreError::QuotaExceeded
+    ));
+    assert_eq!(
+        scratch
+            .store
+            .service_file_bytes(&user_id, "small")
+            .await
+            .unwrap(),
+        Some(b"tiny".to_vec())
+    );
+    // A re-push that fits (small.txt replaces 4 bytes with 60): fine.
+    let fits = vec![b'c'; 60];
+    scratch
+        .store
+        .insert_service_file(&user_id, "small", "small.txt", &fits)
+        .await
+        .unwrap();
+    let holder = scratch.store.user(&user_id).await.unwrap().unwrap();
+    assert_eq!(holder.used_bytes, 60);
+}
+
+#[tokio::test]
+async fn the_family_limit_lands_on_the_account() {
+    let scratch = Scratch::open().await;
+    scratch
+        .store
+        .create_service_account("iz", "İz", 1024)
+        .await
+        .unwrap();
+    // im names a ceiling; the account takes it.
+    scratch
+        .store
+        .apply_service_limit("iz", Some(4096), 1024)
+        .await
+        .unwrap();
+    let accounts = scratch.store.list_service_accounts().await.unwrap();
+    let holder = scratch
+        .store
+        .user(&accounts[0].user_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(holder.quota_bytes, 4096);
+    // No limit named: the house default.
+    scratch
+        .store
+        .apply_service_limit("iz", None, 1024)
+        .await
+        .unwrap();
+    let holder = scratch
+        .store
+        .user(&accounts[0].user_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(holder.quota_bytes, 1024);
+    // A service with no key: no-op.
+    scratch
+        .store
+        .apply_service_limit("ghost", Some(7), 1024)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn probe_can_see_with_service_index() {
+    let scratch = Scratch::open().await;
+    let alice = alice(&scratch.store).await;
+    let bob = bob(&scratch.store).await;
+    let file = scratch
+        .store
+        .insert_file(&alice.id, None, "a.txt", b"a")
+        .await
+        .unwrap();
+    let seen = scratch
+        .store
+        .can_see(ShareKind::File, &file.id, &bob.id)
+        .await
+        .unwrap();
+    let hit_bob = scratch
+        .store
+        .search(&bob.id, "a.txt", 10)
+        .await
+        .unwrap()
+        .files
+        .len();
+    println!("PROBE can_see={seen} bob_search_hits={hit_bob}");
+    let conn = raw_conn(&scratch).await;
+    conn.execute("DROP INDEX file_external_by_owner", ())
+        .await
+        .unwrap();
+    let seen2 = scratch
+        .store
+        .can_see(ShareKind::File, &file.id, &bob.id)
+        .await
+        .unwrap();
+    let hit_bob2 = scratch
+        .store
+        .search(&bob.id, "a.txt", 10)
+        .await
+        .unwrap()
+        .files
+        .len();
+    println!("PROBE after drop can_see={seen2} bob_search_hits={hit_bob2}");
+}

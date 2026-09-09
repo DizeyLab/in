@@ -562,6 +562,7 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
                 ); \
             }; \
             window.__inRefresh = function () { \
+                if (document.querySelector('.service-secret')) { return; } \
                 var n = window.__inNav; \
                 fetch(window.location.href).then( \
                     function (r) { return r.text().then(function (t) { if (stillCurrent(n)) { swap(t, r.url, false, false, true); } }); }, \

@@ -16,8 +16,9 @@ use ulid::Ulid;
 use super::blobs::{Blobs, LocalBlobs};
 use super::secret;
 use super::{
-    CHUNK_SIZE, CreatedLink, File, Folder, Listing, Result, ShareKind, ShareLink, ShareUser,
-    SharedItem, Store, StoreError, ThumbState, UPLOAD_TTL_HOURS, UploadSession, UploadState, User,
+    CHUNK_SIZE, CreatedLink, File, Folder, Listing, Result, ServiceAccount, ShareKind, ShareLink,
+    ShareUser, SharedItem, Store, StoreError, ThumbState, UPLOAD_TTL_HOURS, UploadSession,
+    UploadState, User,
 };
 use super::{ReconcileOptions, reconcile, schema, sniff};
 use crate::live::{Change, Topic};
@@ -2897,6 +2898,342 @@ impl Store for TursoStore {
             files.push(file_from(&row)?);
         }
         Ok(Listing { folders, files })
+    }
+    // -- service accounts --------------------------------------------------
+
+    async fn create_service_account(
+        &self,
+        service: &str,
+        name: &str,
+        default_quota_bytes: u64,
+    ) -> Result<String> {
+        let token = new_token();
+        // IMMEDIATE: the account-exists read and the key write are one write
+        // set, and two concurrent mints of one service must land one key —
+        // the UNIQUE index says so, this transaction makes it a promise.
+        let mut conn = self.tx_conn().await?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await
+            .map_err(backend)?;
+        let mut rows = tx
+            .query(
+                &format!("SELECT {USER_COLUMNS} FROM user WHERE oidc_sub = ?1"),
+                params![format!("service:{service}")],
+            )
+            .await
+            .map_err(backend)?;
+        let (user_id, fresh) = match rows.next().await.map_err(backend)? {
+            // The account outlives its keys: a re-mint after a revoke — or a
+            // rotate that raced — files under the row that already holds the
+            // service's bytes.
+            Some(row) => (user_from(&row)?.id, false),
+            None => {
+                let id = Ulid::new().to_string();
+                tx.execute(
+                    "INSERT INTO user (id, oidc_sub, email, display_name, admin, disabled, \
+                     quota_bytes, used_bytes, ui, theme, language, created_at, last_seen_at, \
+                     photo_version) \
+                     VALUES (?1, ?2, '', ?3, 0, 0, ?4, 0, 'instrument', 'dark', 'en', ?5, NULL, 0)",
+                    params![
+                        id.clone(),
+                        format!("service:{service}"),
+                        name,
+                        default_quota_bytes as i64,
+                        now_text()?
+                    ],
+                )
+                .await
+                .map_err(backend)?;
+                (id, true)
+            }
+        };
+        drop(rows);
+        tx.execute(
+            "INSERT INTO service_key (token_hash, name, service, user_id, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![hash_share_token(&token), name, service, user_id.clone(), now_text()?],
+        )
+        .await
+        .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
+        if fresh {
+            // A new row arrived: the admin's Everyone panel may be open.
+            self.announce([Topic::Admin(user_id.clone()), Topic::Profile(user_id)]);
+        }
+        Ok(token)
+    }
+
+    async fn service_account_by_token(&self, token: &str) -> Result<Option<User>> {
+        let user_id = match self
+            .one_row(
+                "SELECT user_id FROM service_key WHERE token_hash = ?1",
+                params![hash_share_token(token)],
+            )
+            .await?
+        {
+            Some(row) => text(&row, 0)?,
+            None => return Ok(None),
+        };
+        self.user(&user_id).await
+    }
+
+    async fn list_service_accounts(&self) -> Result<Vec<ServiceAccount>> {
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT k.service, k.name, k.user_id, u.used_bytes, k.created_at \
+                 FROM service_key k JOIN user u ON u.id = k.user_id \
+                 ORDER BY k.created_at, k.service",
+                (),
+            )
+            .await
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(backend)? {
+            out.push(ServiceAccount {
+                service: text(&row, 0)?,
+                name: text(&row, 1)?,
+                user_id: text(&row, 2)?,
+                used_bytes: row.get::<i64>(3).map_err(backend)?.max(0) as u64,
+                created_at: parse_stamp(&text(&row, 4)?)?,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn rotate_service_key(&self, service: &str) -> Result<Option<String>> {
+        let token = new_token();
+        let conn = self.conn.lock().await;
+        let n = conn
+            .execute(
+                "UPDATE service_key SET token_hash = ?1 WHERE service = ?2",
+                params![hash_share_token(&token), service],
+            )
+            .await
+            .map_err(backend)?;
+        Ok((n > 0).then_some(token))
+    }
+
+    async fn revoke_service_key(&self, service: &str) -> Result<bool> {
+        let conn = self.conn.lock().await;
+        let n = conn
+            .execute(
+                "DELETE FROM service_key WHERE service = ?1",
+                params![service],
+            )
+            .await
+            .map_err(backend)?;
+        Ok(n > 0)
+    }
+
+    async fn insert_service_file(
+        &self,
+        owner_id: &str,
+        external_id: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<String> {
+        let name = label_of(name);
+        let size = bytes.len() as u64;
+        let mime = sniff::sniff(bytes).to_string();
+        // IMMEDIATE: the existing-row read, the quota check and the row
+        // write are one write set — two concurrent pushes of one external_id
+        // must not each read room for themselves against the same row.
+        let mut conn = self.tx_conn().await?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await
+            .map_err(backend)?;
+        let (quota, used) = check_quota(&tx, owner_id).await?;
+        let mut rows = tx
+            .query(
+                "SELECT id, size_bytes FROM file WHERE owner_id = ?1 AND external_id = ?2",
+                params![owner_id, external_id],
+            )
+            .await
+            .map_err(backend)?;
+        let replaced = match rows.next().await.map_err(backend)? {
+            Some(row) => Some((text(&row, 0)?, row.get::<i64>(1).map_err(backend)?.max(0) as u64)),
+            None => None,
+        };
+        drop(rows);
+        // A re-push of a known handle is charged only for what it adds over
+        // the row it replaces — the old bytes stop existing the moment the
+        // new ones commit.
+        let added_over = replaced.as_ref().map_or(0, |(_, old)| *old);
+        fit_quota(quota, used.saturating_sub(added_over), size)?;
+        // The bytes land first, then the row says they are there — the same
+        // order `insert_file` keeps. A crash between a re-push's blob write
+        // and its row update leaves old size over new bytes, and heals the
+        // moment the client pushes the same external_id again.
+        match replaced {
+            Some((id, _)) => {
+                self.blobs
+                    .put(&format!("files/{id}"), bytes)
+                    .await
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                tx.execute(
+                    "UPDATE file SET name = ?1, mime = ?2, size_bytes = ?3, updated_at = ?4 \
+                     WHERE id = ?5",
+                    params![name, mime, size as i64, now_text()?, id.as_str()],
+                )
+                .await
+                .map_err(backend)?;
+                refresh_usage(&tx, owner_id).await?;
+                tx.commit().await.map_err(backend)?;
+                self.announce([Topic::Library(owner_id.to_string())]);
+                Ok(id)
+            }
+            None => {
+                let id = Ulid::new().to_string();
+                let file_key = format!("files/{id}");
+                self.blobs
+                    .put(&file_key, bytes)
+                    .await
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                let written = tx
+                    .execute(
+                        "INSERT INTO file (id, owner_id, folder_id, name, mime, size_bytes, \
+                         thumb_state, created_at, updated_at, deleted_at, download_count, \
+                         external_id) \
+                         VALUES (?1, ?2, NULL, ?3, ?4, ?5, 'none', ?6, ?6, NULL, 0, ?7)",
+                        params![
+                            id.clone(),
+                            owner_id,
+                            name,
+                            mime,
+                            size as i64,
+                            now_text()?,
+                            external_id
+                        ],
+                    )
+                    .await;
+                if let Err(e) = written {
+                    // The row was never born, so the bytes must not outlive
+                    // it under a name nothing points at.
+                    let _ = self.blobs.delete(&[&file_key]).await;
+                    return Err(backend(e));
+                }
+                refresh_usage(&tx, owner_id).await?;
+                tx.commit().await.map_err(backend)?;
+                self.announce([Topic::Library(owner_id.to_string())]);
+                Ok(id)
+            }
+        }
+    }
+
+    async fn service_file(&self, owner_id: &str, external_id: &str) -> Result<Option<File>> {
+        let sql = format!("SELECT {FILE_COLUMNS} FROM file WHERE owner_id = ?1 AND external_id = ?2");
+        match self.one_row(&sql, params![owner_id, external_id]).await? {
+            Some(row) => Ok(Some(file_from(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn service_file_bytes(
+        &self,
+        owner_id: &str,
+        external_id: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        match self.service_file(owner_id, external_id).await? {
+            None => Ok(None),
+            Some(file) => self.file_bytes(&file.id).await,
+        }
+    }
+
+    async fn delete_service_file(&self, owner_id: &str, external_id: &str) -> Result<bool> {
+        let mut conn = self.tx_conn().await?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .await
+            .map_err(backend)?;
+        let mut rows = tx
+            .query(
+                "SELECT id FROM file WHERE owner_id = ?1 AND external_id = ?2",
+                params![owner_id, external_id],
+            )
+            .await
+            .map_err(backend)?;
+        let Some(row) = rows.next().await.map_err(backend)? else {
+            return Ok(false);
+        };
+        let id = text(&row, 0)?;
+        drop(rows);
+        tx.execute("DELETE FROM file WHERE id = ?1", params![id.as_str()])
+            .await
+            .map_err(backend)?;
+        // A machine route's files are never granted or linked — service
+        // accounts cannot share — but the purge path's sweep is cheap and
+        // the rows must not outlive the file they name.
+        tx.execute(
+            "DELETE FROM share_user WHERE kind = 'file' AND target_id = ?1",
+            params![id.as_str()],
+        )
+        .await
+        .map_err(backend)?;
+        tx.execute(
+            "DELETE FROM share_link WHERE kind = 'file' AND target_id = ?1",
+            params![id.as_str()],
+        )
+        .await
+        .map_err(backend)?;
+        refresh_usage(&tx, owner_id).await?;
+        tx.commit().await.map_err(backend)?;
+        // After the delete: the bytes may only follow a delete that
+        // committed. Best-effort — a file that survives is orphaned bytes
+        // the boot sweep collects.
+        let _ = self
+            .blobs
+            .delete(&[&format!("files/{id}"), &format!("thumbs/{id}")])
+            .await;
+        self.announce([Topic::Library(owner_id.to_string())]);
+        Ok(true)
+    }
+
+    async fn apply_service_limit(
+        &self,
+        service: &str,
+        limit: Option<u64>,
+        default_quota_bytes: u64,
+    ) -> Result<()> {
+        let user_id = match self
+            .one_row(
+                "SELECT user_id FROM service_key WHERE service = ?1",
+                params![service],
+            )
+            .await?
+        {
+            Some(row) => text(&row, 0)?,
+            // No key, no account to ceiling — the beat moves on.
+            None => return Ok(()),
+        };
+        let quota_bytes = limit.unwrap_or(default_quota_bytes);
+        let conn = self.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT quota_bytes FROM user WHERE id = ?1",
+                params![user_id.as_str()],
+            )
+            .await
+            .map_err(backend)?;
+        let current = match rows.next().await.map_err(backend)? {
+            Some(row) => row.get::<i64>(0).map_err(backend)?.max(0) as u64,
+            None => return Ok(()),
+        };
+        drop(rows);
+        if current == quota_bytes {
+            return Ok(());
+        }
+        conn.execute(
+            "UPDATE user SET quota_bytes = ?1 WHERE id = ?2",
+            params![quota_bytes as i64, user_id.as_str()],
+        )
+        .await
+        .map_err(backend)?;
+        drop(conn);
+        self.announce([Topic::Admin(user_id)]);
+        Ok(())
     }
 } // impl Store for TursoStore
 

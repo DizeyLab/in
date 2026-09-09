@@ -12,6 +12,7 @@ pub mod layout;
 pub mod live;
 pub mod pages;
 pub mod server;
+pub mod service;
 pub mod settings;
 pub mod share;
 pub mod trash;

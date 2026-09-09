@@ -159,6 +159,11 @@ pub struct ServiceJson {
     pub key: String,
     pub name: String,
     pub url: String,
+    /// im's word on how much storage the service may hold. `None` when im
+    /// states no limit — the service then answers to its own house default.
+    /// Defaulted so an im from before the field still parses.
+    #[serde(default)]
+    pub limit_bytes: Option<u64>,
 }
 
 impl InClient {
@@ -200,6 +205,8 @@ impl InClient {
                 key: key.to_string(),
                 name: name.to_string(),
                 url: url.to_string(),
+                // in registers itself; a limit is im's word about others.
+                limit_bytes: None,
             })
             .send()
             .await

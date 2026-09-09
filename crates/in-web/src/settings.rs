@@ -24,6 +24,7 @@ use topcoat::view::view;
 use crate::server::{
     Refusal, app, back_to, require_admin, require_user, share_link_url, share_origin,
 };
+use crate::service::mintable_services;
 use crate::share::{refusal_banner, refusal_of, share_copy_script};
 use crate::i18n::{Key, lang, t};
 use crate::layout::{NavPage, topbar};
@@ -141,6 +142,19 @@ struct QuotaForm {
 async fn set_quota(cx: &Cx, Form(input): Form<QuotaForm>) -> Redirect {
     if let Err(refusal) = require_admin(cx).await {
         return redirect_back(cx, "/settings?section=everyone", "quota", Some(refusal));
+    }
+    // A service account's ceiling is im's to set: the family beat carries
+    // it here. The Everyone row keeps its form so the panel reads
+    // uniformly, but the write refuses — the server-side gate is the one
+    // that holds.
+    let service_target = app(cx)
+        .store
+        .list_service_accounts()
+        .await
+        .map(|accounts| accounts.iter().any(|account| account.user_id == input.user_id))
+        .unwrap_or(false);
+    if service_target {
+        return redirect_back(cx, "/settings?section=everyone", "quota", Some(Refusal::ServiceQuota));
     }
     match unit_bytes(&input.quota, &input.quota_unit) {
         Some(quota_bytes) => match app(cx)
@@ -263,6 +277,89 @@ async fn set_base_url(cx: &Cx, Form(input): Form<BaseUrlForm>) -> Redirect {
     }
 }
 
+#[derive(Deserialize)]
+struct ServiceAddForm {
+    service: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct ServiceAction {
+    service: String,
+}
+
+/// Back from a Service keys post, the fresh key's claim ticket on the query.
+/// The ticket is all the URL ever carries; the shelf holds the key itself.
+fn redirect_shown(cx: &Cx, ticket: &str) -> Redirect {
+    let back = back_to(cx, "/settings?section=service");
+    let separator = if back.contains('?') { '&' } else { '?' };
+    Ok((
+        StatusCode::SEE_OTHER,
+        [(header::LOCATION, format!("{back}{separator}shown={ticket}"))],
+    ))
+}
+
+/// Mints one service account and its key. The service must be one the
+/// family mirror names and no key yet covers; the name is what the panel
+/// prints. The minted key is shown once.
+#[route(POST "/api/settings/service_add")]
+async fn service_add(cx: &Cx, Form(input): Form<ServiceAddForm>) -> Redirect {
+    if let Err(refusal) = require_admin(cx).await {
+        return redirect_back(cx, "/settings?section=service", "service_add", Some(refusal));
+    }
+    let service = input.service.trim();
+    let name = input.name.trim();
+    if name.is_empty() {
+        return redirect_back(cx, "/settings?section=service", "service_add", Some(Refusal::BadServiceKey));
+    }
+    let mintable = match mintable_services(cx).await {
+        Ok(mintable) => mintable,
+        Err(refusal) => {
+            return redirect_back(cx, "/settings?section=service", "service_add", Some(refusal));
+        }
+    };
+    if !mintable.iter().any(|row| row.key == service) {
+        return redirect_back(cx, "/settings?section=service", "service_add", Some(Refusal::BadServiceKey));
+    }
+    let default_quota_bytes = app(cx).config.default_quota_bytes;
+    match app(cx)
+        .store
+        .create_service_account(service, name, default_quota_bytes)
+        .await
+    {
+        Ok(token) => redirect_shown(cx, &crate::server::stash_shown_secret(token)),
+        Err(_) => redirect_back(cx, "/settings?section=service", "service_add", Some(Refusal::Unavailable)),
+    }
+}
+
+/// Replaces one service's key. The account and its files stay; the fresh
+/// key is shown once.
+#[route(POST "/api/settings/service_rotate")]
+async fn service_rotate(cx: &Cx, Form(input): Form<ServiceAction>) -> Redirect {
+    if let Err(refusal) = require_admin(cx).await {
+        return redirect_back(cx, "/settings?section=service", "service_rotate", Some(refusal));
+    }
+    match app(cx).store.rotate_service_key(&input.service).await {
+        Ok(Some(token)) => redirect_shown(cx, &crate::server::stash_shown_secret(token)),
+        Ok(None) => redirect_back(cx, "/settings?section=service", "service_rotate", Some(Refusal::BadServiceKey)),
+        Err(_) => redirect_back(cx, "/settings?section=service", "service_rotate", Some(Refusal::Unavailable)),
+    }
+}
+
+/// Deletes one service's key. The account and its files remain — its usage
+/// reads in the Everyone panel like any other account's.
+#[route(POST "/api/settings/service_revoke")]
+async fn service_revoke(cx: &Cx, Form(input): Form<ServiceAction>) -> Redirect {
+    if let Err(refusal) = require_admin(cx).await {
+        return redirect_back(cx, "/settings?section=service", "service_revoke", Some(refusal));
+    }
+    match app(cx).store.revoke_service_key(&input.service).await {
+        Ok(true) => redirect_back(cx, "/settings?section=service", "service_revoke", None),
+        Ok(false) => redirect_back(cx, "/settings?section=service", "service_revoke", Some(Refusal::BadServiceKey)),
+        Err(_) => redirect_back(cx, "/settings?section=service", "service_revoke", Some(Refusal::Unavailable)),
+    }
+}
+
 /// Which rail section the page renders. Only one is drawn at a time; an
 /// admin-only value asked for by anyone else falls back to `Profile`, same
 /// as a section name it does not recognize at all.
@@ -272,8 +369,8 @@ enum Section {
     Links,
     Everyone,
     Server,
+    Service,
 }
-
 /// The class a rail link wears: `active` on the section it points to when
 /// that is the one showing, plain otherwise.
 fn rail_class(current: Section, target: Section) -> &'static str {
@@ -342,9 +439,9 @@ async fn settings(cx: &Cx) -> Result {
         Some("links") => Section::Links,
         Some("everyone") if administers => Section::Everyone,
         Some("server") if administers => Section::Server,
+        Some("service") if administers => Section::Service,
         _ => Section::Profile,
     };
-    let created = created_token(query);
     // Only the section on show pays for its rows: the links panel names
     // each live link's target, Everyone lists the accounts, and the server
     // panel needs the origin — nothing else reads them.
@@ -406,6 +503,26 @@ async fn settings(cx: &Cx) -> Result {
     } else {
         String::new()
     };
+    // The Service keys panel's two reads: the keyed accounts, and the
+    // family rows no key covers yet — the mint dropdown's options. Both are
+    // admin-only reads on an admin-only section.
+    let (accounts, mintable) = if administers && section == Section::Service {
+        let accounts = store.list_service_accounts().await?;
+        let mintable = mintable_services(cx).await.unwrap_or_default();
+        (accounts, mintable)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    // The one read that takes a stashed key off the shelf — and only on the
+    // section that shows it, so a lost section never eats a live ticket.
+    let created = created_token(query);
+    let shown = if section == Section::Service {
+        query_value(query, "shown")
+            .as_deref()
+            .and_then(crate::server::take_shown_secret)
+    } else {
+        None
+    };
     view! {
         cx =>
         (topbar(cx, NavPage::Settings, &fresh, language).await?)
@@ -416,11 +533,12 @@ async fn settings(cx: &Cx) -> Result {
                 if administers {
                     <a class=(rail_class(section, Section::Everyone)) href="/settings?section=everyone">(t(language, Key::AdminPanel))</a>
                     <a class=(rail_class(section, Section::Server)) href="/settings?section=server">(t(language, Key::ServerAddress))</a>
+                    <a class=(rail_class(section, Section::Service)) href="/settings?section=service">(t(language, Key::ServiceKeysTitle))</a>
                 }
             </nav>
             <main class="settings-stage stage-wide">
                 <h1 class="settings-title">(t(language, Key::Settings))</h1>
-                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences", "base_url"]).await?)
+                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences", "base_url", "service_add", "service_rotate", "service_revoke"]).await?)
                 if section == Section::Profile {
                     <section class="panel">
                         <div class="panel-head">
@@ -644,6 +762,101 @@ async fn settings(cx: &Cx) -> Result {
                             </form>
                         </div>
                     </section>
+                }
+                if section == Section::Service {
+                    if let Some(key) = shown {
+                        // The show-once banner: the shelf behind it has
+                        // already handed the key over, so this is the only
+                        // render that will ever hold it. The value is
+                        // selectable text, so the copy works without script.
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2 class="panel-title">(t(language, Key::ServiceKeysTitle))</h2>
+                            </div>
+                            <div class="panel-body">
+                                <p class="field-note">(t(language, Key::ServiceKeyShown))</p>
+                                <div class="share-link-row">
+                                    <p class="member-link-value share-link-url service-secret" aria-label=(t(language, Key::ServiceKeyName))>(key)</p>
+                                    <button class="quiet share-copy" type="button" data-copied-label=(t(language, Key::Copied))>(t(language, Key::ServiceKeyCopy))</button>
+                                </div>
+                            </div>
+                        </section>
+                    }
+                    <section class="panel">
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::ServiceKeysTitle))</h2>
+                        </div>
+                        <div class="panel-body">
+                            <form class="field" method="post" action="/api/settings/service_add">
+                                <label class="field">
+                                    <span class="field-label">(t(language, Key::ServiceKeyService))</span>
+                                    <select class="field-input" name="service">
+                                        for row in &mintable {
+                                            <option value=(row.key.clone())>(format!("{} · {}", row.name, row.key))</option>
+                                        }
+                                    </select>
+                                </label>
+                                <label class="field">
+                                    <span class="field-label">(t(language, Key::ServiceKeyName))</span>
+                                    <input class="field-input" type="text" name="name" required="required">
+                                </label>
+                                <div class="panel-foot">
+                                    <button class="primary" type="submit">(t(language, Key::ServiceKeyMint))</button>
+                                </div>
+                            </form>
+                            <div class="table-pan">
+                                <table class="member-table">
+                                    <thead>
+                                        <tr>
+                                            <th class="member-col-name" scope="col">(t(language, Key::ServiceKeyName))</th>
+                                            <th class="member-col-address" scope="col">(t(language, Key::ServiceKeyService))</th>
+                                            <th class="member-col-account" scope="col">(t(language, Key::QuotaUsage))</th>
+                                            <th class="member-col-quota" scope="col">(t(language, Key::ServiceKeyCreated))</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        for account in &accounts {
+                                            <tr class="member-row">
+                                                <td class="member-col-name member-name">(account.name.clone())</td>
+                                                <td class="member-col-address member-address">(account.service.clone())</td>
+                                                <td class="member-col-account member-account">(human_bytes(account.used_bytes))</td>
+                                                <td class="member-col-quota">
+                                                    <div class="member-quota">
+                                                        <span class="field-note">(account.created_at.date().to_string())</span>
+                                                    </div>
+                                                    <details class="confirm-details">
+                                                        <summary class="quiet">(t(language, Key::ServiceKeyRotate))</summary>
+                                                        <div class="confirm">
+                                                            <div class="confirm-title">(t(language, Key::ServiceKeyRotateTitle))</div>
+                                                            <p class="field-note">(t(language, Key::ServiceKeyRotateCost))</p>
+                                                            <form method="post" action="/api/settings/service_rotate">
+                                                                <input type="hidden" name="service" value=(account.service.clone())>
+                                                                <button class="primary" type="submit">(t(language, Key::ServiceKeyRotate))</button>
+                                                            </form>
+                                                        </div>
+                                                    </details>
+                                                    <details class="confirm-details">
+                                                        <summary class="quiet quiet-danger">(t(language, Key::ServiceKeyRevoke))</summary>
+                                                        <div class="confirm">
+                                                            <div class="confirm-title">(t(language, Key::ServiceKeyRevokeTitle))</div>
+                                                            <p class="field-note">(t(language, Key::ServiceKeyRevokeCost))</p>
+                                                            <form method="post" action="/api/settings/service_revoke">
+                                                                <input type="hidden" name="service" value=(account.service.clone())>
+                                                                <button class="quiet quiet-danger" type="submit">(t(language, Key::ServiceKeyRevoke))</button>
+                                                            </form>
+                                                        </div>
+                                                    </details>
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
+                    // The banner's copy button above; one delegated listener
+                    // serves every row, idempotent across re-renders.
+                    (share_copy_script(cx).await?)
                 }
             </main>
         </div>

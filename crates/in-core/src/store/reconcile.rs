@@ -219,6 +219,7 @@ fn build_maps(
     old_has_download_count: bool,
     old_has_password_hash: bool,
     old_has_photo_version: bool,
+    old_has_external_id: bool,
 ) -> Vec<TableMap> {
     vec![
         TableMap {
@@ -289,6 +290,11 @@ fn build_maps(
                 } else {
                     ("download_count", "0".into())
                 });
+                columns.push(if old_has_external_id {
+                    ("external_id", "old.external_id".into())
+                } else {
+                    ("external_id", "NULL".into())
+                });
                 columns
             },
         },
@@ -332,6 +338,10 @@ fn build_maps(
                 "created_at",
                 "expires_at",
             ]),
+        },
+        TableMap {
+            name: "service_key",
+            columns: old_cols(&["token_hash", "name", "service", "user_id", "created_at"]),
         },
         TableMap {
             name: "setting",
@@ -431,6 +441,7 @@ async fn copy_data(old_conn: &Connection, new_conn: &Connection, path: &str) -> 
     let old_has_download_count = old_has_column(old_conn, "file", "download_count").await?;
     let old_has_password_hash = old_has_column(old_conn, "share_link", "password_hash").await?;
     let old_has_photo_version = old_has_column(old_conn, "user", "photo_version").await?;
+    let old_has_external_id = old_has_column(old_conn, "file", "external_id").await?;
     let maps = build_maps(
         old_has_ui,
         old_has_theme,
@@ -438,6 +449,7 @@ async fn copy_data(old_conn: &Connection, new_conn: &Connection, path: &str) -> 
         old_has_download_count,
         old_has_password_hash,
         old_has_photo_version,
+        old_has_external_id,
     );
     validate_maps(new_conn, &maps).await?;
 

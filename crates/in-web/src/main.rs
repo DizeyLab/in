@@ -250,6 +250,7 @@ async fn main() {
         store.clone(),
         in_client::InClient::new(oidc.clone()),
         public_origin,
+        default_quota_bytes,
     ));
 
     // Told when the process is stopping, so the live streams end instead of
@@ -267,6 +268,7 @@ async fn main() {
             // so its guard sits at a hard 2 GiB; `/api/upload` carries single
             // 8 MiB chunks, so 32 MiB leaves ample headroom.
             .layer(BodyLimit::max(32 * 1024 * 1024).at("/api/upload"))
+            .layer(BodyLimit::max(512 * 1024 * 1024).at("/api/service/files"))
             .layer(BodyLimit::max(2usize * 1024 * 1024 * 1024).at("/files"))
             .cookies()
             .assets(bundle),
@@ -467,6 +469,7 @@ async fn family_sync(
     store: Arc<dyn in_core::store::Store>,
     client: in_client::InClient,
     origin: String,
+    default_quota_bytes: u64,
 ) {
     if origin.is_empty() {
         eprintln!("family: no public address to register; set base_url");
@@ -481,14 +484,26 @@ async fn family_sync(
             eprintln!("family register: {problem}");
         }
         match client.family().await {
-            Some(family) => match serde_json::to_string(&family) {
-                Ok(json) => {
-                    if let Err(problem) = store.set_setting("family", &json).await {
-                        eprintln!("family sync: {problem}");
-                    }
+            Some(family) => {
+                // The limits ride the same list: every service key's account
+                // takes the ceiling im states for it (the house default when
+                // im states none). A refused write is one log line — the
+                // next beat carries the same word.
+                if let Err(problem) =
+                    in_web::service::apply_family_limits(&store, &family, default_quota_bytes)
+                        .await
+                {
+                    eprintln!("family limits: {problem}");
                 }
-                Err(problem) => eprintln!("family sync: {problem}"),
-            },
+                match serde_json::to_string(&family) {
+                    Ok(json) => {
+                        if let Err(problem) = store.set_setting("family", &json).await {
+                            eprintln!("family sync: {problem}");
+                        }
+                    }
+                    Err(problem) => eprintln!("family sync: {problem}"),
+                }
+            }
             None => eprintln!("family sync: im did not answer; keeping the list there is"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(FAMILY_SECONDS)).await;

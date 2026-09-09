@@ -9,7 +9,9 @@
 //! it. This module's `current_user` maps im's claims onto the local user row,
 //! provisioning it on first sight.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+
+use std::sync::{Arc, LazyLock, PoisonError};
 
 use in_core::Config;
 use in_core::store::{Store, StoreError, User};
@@ -297,6 +299,61 @@ pub async fn require_admin(cx: &Cx) -> Result<User, Refusal> {
     }
 }
 
+/// The service behind this request, by bearer key — the machine half of the
+/// auth surface. A human browser's session cookie means nothing here and a
+/// service key means nothing to [`current_user`]: the two never meet. A
+/// disabled account reads as no key at all, the same way a disabled person
+/// reads as signed out.
+pub async fn service_client(cx: &Cx) -> Option<User> {
+    let presented = headers(cx)
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())?;
+    let token = presented.strip_prefix("Bearer ")?.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let user = app(cx)
+        .store
+        .service_account_by_token(token)
+        .await
+        .ok()??;
+    (!user.disabled).then_some(user)
+}
+
+/// How long a freshly minted service key waits on the shelf for its one
+/// showing: ten minutes, im's own ticket lifetime.
+const SHOWN_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Where a freshly minted service key waits between its POST and the one
+/// GET that shows it. The panel's write answers a 303 — the house idiom —
+/// but the key itself must never ride a URL or a log line, so the query
+/// carries only a random claim ticket: the shelf holds the plaintext, the
+/// page's read takes it out ([`take_shown_secret`]), and a replayed or
+/// reloaded URL finds the shelf empty and renders no key at all. A restart
+/// drops the shelf — the admin mints another.
+static SHOWN_SECRETS: LazyLock<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Parks a fresh service key on the shelf and returns the claim ticket for
+/// its URL.
+pub fn stash_shown_secret(secret: String) -> String {
+    let ticket = format!("{}", ulid::Ulid::new());
+    let mut shelf = SHOWN_SECRETS.lock().unwrap_or_else(PoisonError::into_inner);
+    shelf.retain(|_, (_, parked)| parked.elapsed() < SHOWN_TTL);
+    shelf.insert(ticket.clone(), (secret, std::time::Instant::now()));
+    ticket
+}
+
+/// Takes a stashed key out — exactly once; the second reader of the same
+/// ticket gets nothing.
+pub fn take_shown_secret(ticket: &str) -> Option<String> {
+    SHOWN_SECRETS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(ticket)
+        .map(|(secret, _)| secret)
+}
+
 impl From<StoreError> for Refusal {
     fn from(_: StoreError) -> Refusal {
         Refusal::Unavailable
@@ -350,6 +407,12 @@ pub enum Refusal {
     /// The admin's server-address form named something no public link can
     /// be built on — no `http`/`https` scheme, or a trailing slash.
     BadBaseUrl,
+    /// A quota form named a service account: the ceiling is im's to set,
+    /// and the family beat carries it.
+    ServiceQuota,
+    /// A Service keys form named a service that cannot take the action —
+    /// not mintable, not keyed, or an empty name.
+    BadServiceKey,
 }
 
 impl Refusal {
@@ -374,6 +437,8 @@ impl Refusal {
             Refusal::BadLanguage => "That is not a language.".to_string(),
             Refusal::BadLimit => "That limit is not usable.".to_string(),
             Refusal::BadBaseUrl => "That address is not an origin links can be built on.".to_string(),
+            Refusal::ServiceQuota => "The limit is im's to set.".to_string(),
+            Refusal::BadServiceKey => "That key is not usable.".to_string(),
         }
     }
 
@@ -400,6 +465,8 @@ impl Refusal {
             Refusal::BadLanguage => "Bu bir dil değil.".to_string(),
             Refusal::BadLimit => "Bu sınır kullanılamaz.".to_string(),
             Refusal::BadBaseUrl => "Bu adres, bağlantı kurulabilecek bir kök adres değil.".to_string(),
+            Refusal::ServiceQuota => "Limit im'de belirlenir.".to_string(),
+            Refusal::BadServiceKey => "Bu anahtar kullanılamaz.".to_string(),
         }
     }
 
@@ -424,6 +491,8 @@ impl Refusal {
             "bad-language" => Refusal::BadLanguage,
             "bad-limit" => Refusal::BadLimit,
             "bad-base-url" => Refusal::BadBaseUrl,
+            "service-quota" => Refusal::ServiceQuota,
+            "bad-service-key" => Refusal::BadServiceKey,
             _ => return None,
         })
     }
@@ -452,6 +521,8 @@ impl Refusal {
             Refusal::BadLanguage => "bad-language",
             Refusal::BadLimit => "bad-limit",
             Refusal::BadBaseUrl => "bad-base-url",
+            Refusal::ServiceQuota => "service-quota",
+            Refusal::BadServiceKey => "bad-service-key",
         }
     }
 }

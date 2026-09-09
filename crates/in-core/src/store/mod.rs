@@ -287,6 +287,23 @@ pub struct SharedItem {
     pub created_at: OffsetDateTime,
 }
 
+/// One service's key row beside the account it opens, as the Service keys
+/// panel lists it. The token itself is never here — only its hash lives in
+/// the row, and the plaintext exists once, at mint or rotate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceAccount {
+    /// The family key the service answers to — `"iz"` — and the name the
+    /// mint form was given (`"İz"`): one routes, one reads.
+    pub service: String,
+    pub name: String,
+    /// The `user` row the account holds its files and quota under.
+    pub user_id: String,
+    /// The account's live and trashed bytes, as [`User::used_bytes`] reads.
+    pub used_bytes: u64,
+    /// When the key row was minted — the panel's created column.
+    pub created_at: OffsetDateTime,
+}
+
 /// A chunked upload on its way in. `state` is `active` while chunks are
 /// still arriving, `done` once the finish assembled them, `aborted` once
 /// anyone gave up on it.
@@ -410,11 +427,86 @@ pub trait Store: 'static + Send + Sync {
 
     /// Writes the person's display preferences — `theme` ('light'/'dark'),
     /// `language` ('en'/'tr') and `ui` ('ledger'/'instrument') — read by
+
     /// `root_layout` into `data-theme`, `<html lang>` and `data-ui`. A value
     /// no preferences form offers is refused with [`StoreError::Corrupt`] —
     /// the same refusal a bad enum read from the row gets, because a bad
     /// enum written is a corrupt row.
     async fn set_preferences(&self, id: &str, theme: &str, language: &str, ui: &str) -> Result<()>;
+    // -- service accounts --------------------------------------------------
+
+    /// Mints one service account: a `user` row no person can sign into
+    /// (`oidc_sub` is `service:<key>`, a shape a real subject never wears,
+    /// the address empty, the flag never admin) seeded at
+    /// `default_quota_bytes`, plus one `service_key` row naming it. Returns
+    /// the plaintext bearer token — the only moment it exists; the row keeps
+    /// its hash. A service whose account already exists (its key was
+    /// revoked, or a mint races a mint) reuses that row: the bytes it holds
+    /// keep counting against the same ceiling. A service that still holds a
+    /// key is refused — rotate, not mint again.
+    async fn create_service_account(
+        &self,
+        service: &str,
+        name: &str,
+        default_quota_bytes: u64,
+    ) -> Result<String>;
+
+    /// The live account a bearer token opens, or `None` — an unknown or
+    /// revoked token and a wrong token answer the same, because telling a
+    /// stranger which tokens exist is the leak the shape exists to prevent.
+    async fn service_account_by_token(&self, token: &str) -> Result<Option<User>>;
+
+    /// Every service account, oldest key first — the Service keys panel.
+    async fn list_service_accounts(&self) -> Result<Vec<ServiceAccount>>;
+
+    /// Replaces a service's key with a fresh one; the account and its files
+    /// stay. Returns the new plaintext token, or `None` when the service has
+    /// no key to rotate.
+    async fn rotate_service_key(&self, service: &str) -> Result<Option<String>>;
+
+    /// Deletes a service's key. The account and its files remain — its bytes
+    /// go back to being an admin's Everyone-panel business. `false` when
+    /// there was no key.
+    async fn revoke_service_key(&self, service: &str) -> Result<bool>;
+
+    /// Stores one service upload, keyed by the service's own handle:
+    /// sanitises the name, checks the quota (a re-push of a known
+    /// `external_id` is charged only for what it adds over the row it
+    /// replaces), sniffs the mime, and upserts — the second push of an id is
+    /// the same row with new bytes, never a sibling copy. Service bytes skip
+    /// the thumbnail pipeline whole: the row wears [`ThumbState::None`].
+    /// Returns the file id.
+    async fn insert_service_file(
+        &self,
+        owner_id: &str,
+        external_id: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<String>;
+
+    /// One service file's row, by the service's own handle.
+    async fn service_file(&self, owner_id: &str, external_id: &str) -> Result<Option<File>>;
+
+    /// The bytes themselves, by the service's own handle. `None` when there
+    /// is no such row, or its file went missing.
+    async fn service_file_bytes(&self, owner_id: &str, external_id: &str)
+        -> Result<Option<Vec<u8>>>;
+
+    /// Takes a service file away for good — the row, its bytes, and the
+    /// usage they carried. No trash: a machine client's delete is a delete.
+    /// `false` when there was no such row.
+    async fn delete_service_file(&self, owner_id: &str, external_id: &str) -> Result<bool>;
+
+    /// Writes the ceiling im states for a service's account (`limit.unwrap_or
+    /// (default_quota_bytes)` — no limit named is the house default). No-op
+    /// when the service has no account. An unchanged ceiling writes nothing
+    /// and wakes nobody: the family beat calls this every few minutes.
+    async fn apply_service_limit(
+        &self,
+        service: &str,
+        limit: Option<u64>,
+        default_quota_bytes: u64,
+    ) -> Result<()>;
 
     // -- folders -----------------------------------------------------------
 
