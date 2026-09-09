@@ -685,10 +685,9 @@ fn link_argon2() -> argon2::Argon2<'static> {
 /// CPU-slow on purpose: the caller owns the async boundary and runs this
 /// under `tokio::task::spawn_blocking`.
 pub fn hash_link_password(password: &str) -> Result<String> {
-    use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
-    let salt = SaltString::generate(&mut OsRng);
+    use argon2::password_hash::PasswordHasher;
     link_argon2()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|e| StoreError::Backend(format!("password hashing failed: {e}")))
 }
@@ -697,7 +696,7 @@ pub fn hash_link_password(password: &str) -> Result<String> {
 /// hash answers false — a gate that could panic would be a gate an attacker
 /// could aim.
 pub fn link_password_matches(phc: &str, candidate: &str) -> bool {
-    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    use argon2::password_hash::{phc::PasswordHash, PasswordVerifier};
     match PasswordHash::new(phc) {
         Ok(parsed) => link_argon2()
             .verify_password(candidate.as_bytes(), &parsed)
