@@ -222,7 +222,13 @@ async fn main() {
         config.oidc.client_secret.clone(),
     );
     let default_quota_bytes = config.default_quota_bytes;
-    tokio::spawn(identity_sync(store.clone(), directory.clone(), default_quota_bytes));
+    let health = in_web::server::DirectoryHealth::new();
+    tokio::spawn(identity_sync(
+        store.clone(),
+        directory.clone(),
+        default_quota_bytes,
+        health.clone(),
+    ));
 
     // The suite the switcher's wordmarks link to is im's to keep: im's
     // admin panel owns the list and `/family` serves it to registered
@@ -272,6 +278,7 @@ async fn main() {
         shutdown: in_web::live::Shutdown(stopping),
         link_key: cookie_key,
         directory,
+        health,
     })
     .app_context(in_client::LogoutBack(Arc::new(|cx: &Cx| {
         Box::pin(async move { Some(in_web::server::share_origin(cx).await) })
@@ -392,6 +399,7 @@ async fn identity_sync(
     store: Arc<dyn in_core::store::Store>,
     client: im_client::directory::DirectoryClient,
     default_quota_bytes: u64,
+    health: in_web::server::DirectoryHealth,
 ) {
     let mut backoff = std::time::Duration::from_secs(1);
     loop {
@@ -403,29 +411,45 @@ async fn identity_sync(
                 }
                 match client.open_stream().await {
                     Ok(mut stream) => {
+                        health.connected();
                         while let Some(event) = stream.next().await {
                             match event {
                                 Ok(im_client::directory::DirectoryEvent::Profile(member)) => {
                                     mirror_member(&store, &member, default_quota_bytes).await;
+                                    // Every event is proof the feed is alive;
+                                    // the card's age line reads this.
+                                    health.note_event();
                                 }
                                 // A network failure ends the stream; the full
                                 // pass below re-lists before the redial.
                                 Err(problem) => {
+                                    health.reconnecting();
                                     eprintln!("in: directory stream failed: {problem}");
                                     break;
                                 }
                             }
                         }
+                        // The stream closed cleanly — im restarting or its
+                        // window running out. The card goes amber until the
+                        // redial below opens the next one.
+                        health.reconnecting();
                     }
-                    Err(problem) => eprintln!("in: directory stream refused: {problem}"),
+                    Err(problem) => {
+                        health.reconnecting();
+                        eprintln!("in: directory stream refused: {problem}")
+                    }
                 }
             }
-            Err(problem) => eprintln!("in: directory pass failed: {problem}"),
+            Err(problem) => {
+                health.reconnecting();
+                eprintln!("in: directory pass failed: {problem}")
+            }
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(IDENTITY_BACKOFF_CAP);
     }
 }
+
 /// How often the suite list is re-fetched from im. Short enough that a
 /// service the admin adds over there shows up here before anyone goes
 /// looking for its wordmark, long enough that the two are not talking

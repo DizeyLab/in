@@ -312,6 +312,7 @@ struct TestApp {
     config: Config,
     client: in_client::Config,
     fake: FakeIm,
+    health: in_web::server::DirectoryHealth,
     stop: tokio::sync::watch::Sender<bool>,
 }
 
@@ -378,6 +379,7 @@ impl TestApp {
             defaulted: false,
         };
         let (stop, stopping) = tokio::sync::watch::channel(false);
+        let health = in_web::server::DirectoryHealth::new();
         let router = in_client::mount(
             Router::builder()
                 .discover()
@@ -402,6 +404,7 @@ impl TestApp {
                 "in-test".to_string(),
                 "s3cr3t".to_string(),
             ),
+            health: health.clone(),
         })
         .app_context(in_client::LogoutBack(Arc::new(|cx: &Cx| {
             Box::pin(async move { Some(in_web::server::share_origin(cx).await) })
@@ -414,6 +417,7 @@ impl TestApp {
             config,
             client,
             fake,
+            health,
             stop,
         }
     }
@@ -5292,4 +5296,53 @@ async fn an_empty_folder_says_how_to_fill_it() {
     // And the upload control plus the drop handler the hint promises are on the page.
     assert!(body.contains("id=\"upload-form\""), "{body}");
     assert!(body.contains("__inDrop"), "{body}");
+}
+
+/// The settings Connection card reads the shared health the sync task
+/// writes: the issuer and the client id straight from the config, the
+/// stream wording from the state atomics, and never the client secret —
+/// the one value the card must not carry onto any page.
+#[tokio::test]
+async fn connection_card_shows_issuer_client_id_and_stream_state() {
+    let app = TestApp::build().await;
+    let cookie = app.sign_in("sub-conn", "conn@in.test", "Conn").await;
+
+    // A fresh process has never opened the stream: the card is amber.
+    let page = app.get("/settings", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let body = page.text();
+    assert!(body.contains("Connection"), "no card title: {body}");
+    assert!(
+        body.contains(app.config.oidc.issuer.as_str()),
+        "no issuer: {body}"
+    );
+    assert!(
+        body.contains("in-test"),
+        "no client id: {body}"
+    );
+    assert!(body.contains("Reconnecting"), "no amber wording: {body}");
+    assert!(body.contains("status-dot-warn"), "no amber dot: {body}");
+    assert!(
+        !body.contains("s3cr3t"),
+        "the client secret reached the page: {body}"
+    );
+
+    // The sync task opens the stream: green, and the age line appears once
+    // an event has come through.
+    app.health.connected();
+    app.health.note_event();
+    let page = app.get("/settings", Some(&cookie)).await;
+    let body = page.text();
+    assert!(body.contains("Connected"), "no green wording: {body}");
+    assert!(body.contains("status-dot-done"), "no green dot: {body}");
+    assert!(!body.contains("Reconnecting"), "amber lingered: {body}");
+    assert!(body.contains("Last event"), "no age line: {body}");
+
+    // The stream ends: amber again, no event line retraction needed — the
+    // last event stays but the wording names the truth.
+    app.health.reconnecting();
+    let page = app.get("/settings", Some(&cookie)).await;
+    let body = page.text();
+    assert!(body.contains("Reconnecting"), "no amber return: {body}");
+    assert!(!body.contains("status-dot-done"), "green lingered: {body}");
 }

@@ -301,7 +301,13 @@ async fn settings(cx: &Cx) -> Result {
         }
     };
     let language = lang(cx).await;
-    let store = app(cx).store;
+    let app = app(cx);
+    let store = app.store;
+    // The Connection card reads only what the config already carries and
+    // the sync task's own atomics — the client secret is never touched on
+    // any path that reaches this render.
+    let connected = app.health.stream_connected();
+    let last_event = app.health.last_event_age_secs();
     // Re-read the row so the quota bar never shows a stale number.
     let fresh = store.user(&user.id).await?.unwrap_or_else(|| user.clone());
     let administers = fresh.admin;
@@ -436,6 +442,38 @@ async fn settings(cx: &Cx) -> Result {
                                     <button class="primary" type="submit">(t(language, Key::Save))</button>
                                 </div>
                             </form>
+                        </div>
+                    </section>
+                    // The Connection card: who this app talks to, and whether
+                    // the live feed is up right now. Read-only, every
+                    // signed-in reader — nothing here is per-user data.
+                    <section class="panel">
+                        <div class="panel-head">
+                            <h2 class="panel-title">(t(language, Key::Connection))</h2>
+                        </div>
+                        <div class="panel-body">
+                            <div class="field">
+                                <span class="field-label">(t(language, Key::ConnectionIssuer))</span>
+                                <span class="field-static">(app.config.oidc.issuer.clone())</span>
+                            </div>
+                            <div class="field">
+                                <span class="field-label">(t(language, Key::ConnectionClientId))</span>
+                                <span class="field-static">(app.config.oidc.client_id.clone())</span>
+                            </div>
+                            <div class="field">
+                                <span class="field-label">(t(language, Key::ConnectionStream))</span>
+                                <span class="field-static">
+                                    <span class=(if connected { "status-dot status-dot-done" } else { "status-dot status-dot-warn" })></span>
+                                    if connected {
+                                        (t(language, Key::ConnectionConnected))
+                                    } else {
+                                        (t(language, Key::ConnectionReconnecting))
+                                    }
+                                    if let Some(age) = last_event {
+                                        <span class="field-note">(format!("{} · {}s", t(language, Key::ConnectionLastEvent), age))</span>
+                                    }
+                                </span>
+                            </div>
                         </div>
                     </section>
                 }

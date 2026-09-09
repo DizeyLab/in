@@ -2305,6 +2305,7 @@ img.avatar {
 }
 
 .status-dot-done { background: var(--positive); }
+.status-dot-warn { background: var(--warn-ink); }
 
 // The select carries no chrome of its own: the box around it is the control.
 .status-select {

@@ -45,6 +45,70 @@ pub struct App {
     /// change feed — authenticated with the same client pair the OIDC side
     /// holds. Built once at boot; cheap to clone.
     pub directory: im_client::directory::DirectoryClient,
+    /// Whether the directory's live stream is up, read by the settings
+    /// page's Connection card. Atomics, not locks: the sync task writes
+    /// from its own loop, every settings render reads, neither ever blocks.
+    pub health: DirectoryHealth,
+}
+
+/// The live state of the identity-directory connection, as the Connection
+/// card displays it. Cloned freely; every clone sees the same atomics.
+#[derive(Clone, Debug)]
+pub struct DirectoryHealth {
+    /// 1 while `/directory/live` is open, 0 while connecting or
+    /// re-connecting — the boot default is 0, and every stream end or
+    /// error returns it there until the next open.
+    stream: Arc<std::sync::atomic::AtomicU8>,
+    /// Unix seconds of the last roster event the stream delivered; 0 is
+    /// never. The age a card shows is derived at read time, so a stale
+    /// moment ages honestly without a ticking task behind it.
+    last_event: Arc<std::sync::atomic::AtomicI64>,
+}
+
+impl DirectoryHealth {
+    pub fn new() -> Self {
+        Self {
+            stream: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            last_event: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        }
+    }
+
+    /// The stream opened.
+    pub fn connected(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.stream.store(1, Relaxed);
+    }
+
+    /// The stream ended or failed; the task will dial again.
+    pub fn reconnecting(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.stream.store(0, Relaxed);
+    }
+
+    /// A roster event came through the live stream: it is connected, and
+    /// this is the moment it last said anything.
+    pub fn note_event(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.stream.store(1, Relaxed);
+        self.last_event.store(now_unix(), Relaxed);
+    }
+
+    /// Whether the card shows the green dot.
+    pub fn stream_connected(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.stream.load(Relaxed) == 1
+    }
+
+    /// Seconds since the last roster event, or `None` before the first one.
+    pub fn last_event_age_secs(&self) -> Option<i64> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let at = self.last_event.load(Relaxed);
+        (at > 0).then(|| (now_unix() - at).max(0))
+    }
+}
+
+fn now_unix() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
 /// The application context this request runs under.
