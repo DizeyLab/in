@@ -63,6 +63,11 @@ pub struct DirectoryHealth {
     /// never. The age a card shows is derived at read time, so a stale
     /// moment ages honestly without a ticking task behind it.
     last_event: Arc<std::sync::atomic::AtomicI64>,
+    /// Unix seconds of the last full `/directory` pass that committed —
+    /// the healer's heartbeat. It ticks slowly (boot, every stream end),
+    /// which is why a card shows it: a feed gone quiet and a mirror
+    /// stopped healing are two different silences.
+    last_pass: Arc<std::sync::atomic::AtomicI64>,
 }
 
 impl DirectoryHealth {
@@ -70,6 +75,7 @@ impl DirectoryHealth {
         Self {
             stream: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             last_event: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            last_pass: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         }
     }
 
@@ -93,6 +99,13 @@ impl DirectoryHealth {
         self.last_event.store(now_unix(), Relaxed);
     }
 
+    /// A full roster pass committed: the mirror healed (or was already
+    /// true), however quiet the live feed has been.
+    pub fn note_pass(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.last_pass.store(now_unix(), Relaxed);
+    }
+
     /// Whether the card shows the green dot.
     pub fn stream_connected(&self) -> bool {
         use std::sync::atomic::Ordering::Relaxed;
@@ -103,6 +116,14 @@ impl DirectoryHealth {
     pub fn last_event_age_secs(&self) -> Option<i64> {
         use std::sync::atomic::Ordering::Relaxed;
         let at = self.last_event.load(Relaxed);
+        (at > 0).then(|| (now_unix() - at).max(0))
+    }
+
+    /// Seconds since the last full roster pass, or `None` before the
+    /// first one — a boot whose pass has not landed yet.
+    pub fn last_pass_age_secs(&self) -> Option<i64> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let at = self.last_pass.load(Relaxed);
         (at > 0).then(|| (now_unix() - at).max(0))
     }
 }

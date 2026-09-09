@@ -25,7 +25,7 @@ use crate::server::{
     Refusal, app, back_to, require_admin, require_user, share_link_url, share_origin,
 };
 use crate::share::{refusal_banner, refusal_of, share_copy_script};
-use crate::i18n::{Key, lang, t};
+use crate::i18n::{Key, Lang, lang, t};
 use crate::layout::{NavPage, topbar};
 
 /// Bytes in human units: `512 B`, `1.5 KiB`, `2.0 GiB`. One decimal past
@@ -42,6 +42,16 @@ pub fn human_bytes(bytes: u64) -> String {
         format!("{bytes} {}", UNITS[unit])
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// The value half of a Connection card's age line: the seconds when the
+/// moment is known, the `never` wording before its first occurrence —
+/// a card that went silent and a card that never spoke read differently.
+fn age_text(age: Option<i64>, language: Lang) -> String {
+    match age {
+        Some(age) => format!("{age}s"),
+        None => t(language, Key::Never).to_string(),
     }
 }
 
@@ -308,6 +318,10 @@ async fn settings(cx: &Cx) -> Result {
     // any path that reaches this render.
     let connected = app.health.stream_connected();
     let last_event = app.health.last_event_age_secs();
+    let last_pass = app.health.last_pass_age_secs();
+    // Both ages share one shape: the seconds when the moment is known,
+    // the `never` wording before the first occurrence — a card that went
+    // silent and a card that never spoke read differently.
     // Re-read the row so the quota bar never shows a stale number.
     let fresh = store.user(&user.id).await?.unwrap_or_else(|| user.clone());
     let administers = fresh.admin;
@@ -469,10 +483,13 @@ async fn settings(cx: &Cx) -> Result {
                                     } else {
                                         (t(language, Key::ConnectionReconnecting))
                                     }
-                                    if let Some(age) = last_event {
-                                        <span class="field-note">(format!("{} · {}s", t(language, Key::ConnectionLastEvent), age))</span>
-                                    }
                                 </span>
+                                <div class="field-note">
+                                    (format!("{} · {}", t(language, Key::ConnectionLastEvent), age_text(last_event, language)))
+                                </div>
+                                <div class="field-note">
+                                    (format!("{} · {}", t(language, Key::ConnectionLastPass), age_text(last_pass, language)))
+                                </div>
                             </div>
                         </div>
                     </section>

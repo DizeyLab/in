@@ -409,6 +409,8 @@ async fn identity_sync(
                 for member in &members {
                     mirror_member(&store, member, default_quota_bytes).await;
                 }
+                // The roster pass committed: the card's healer heartbeat.
+                health.note_pass();
                 match client.open_stream().await {
                     Ok(mut stream) => {
                         health.connected();
