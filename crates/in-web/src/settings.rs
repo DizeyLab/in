@@ -25,7 +25,7 @@ use crate::server::{
     Refusal, app, back_to, require_admin, require_user, share_link_url, share_origin,
 };
 use crate::share::{refusal_banner, refusal_of, share_copy_script};
-use crate::i18n::{Key, Lang, lang, t};
+use crate::i18n::{Key, lang, t};
 use crate::layout::{NavPage, topbar};
 
 /// Bytes in human units: `512 B`, `1.5 KiB`, `2.0 GiB`. One decimal past
@@ -45,13 +45,15 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
-/// The value half of a Connection card's age line: the seconds when the
-/// moment is known, the `never` wording before its first occurrence —
-/// a card that went silent and a card that never spoke read differently.
-fn age_text(age: Option<i64>, language: Lang) -> String {
+/// An age in whole seconds as the card prints it — a short number with
+/// its unit, the same shape in every language: `45s`, `2m`, `3h`. Empty
+/// before the first occurrence; the caller sentences it.
+fn age_text(age: Option<i64>) -> String {
     match age {
-        Some(age) => format!("{age}s"),
-        None => t(language, Key::Never).to_string(),
+        Some(secs) if secs >= 3600 => format!("{}h", secs / 3600),
+        Some(secs) if secs >= 60 => format!("{}m", secs / 60),
+        Some(secs) => format!("{secs}s"),
+        None => String::new(),
     }
 }
 
@@ -313,15 +315,25 @@ async fn settings(cx: &Cx) -> Result {
     let language = lang(cx).await;
     let app = app(cx);
     let store = app.store;
-    // The Connection card reads only what the config already carries and
-    // the sync task's own atomics — the client secret is never touched on
-    // any path that reaches this render.
     let connected = app.health.stream_connected();
     let last_event = app.health.last_event_age_secs();
     let last_pass = app.health.last_pass_age_secs();
-    // Both ages share one shape: the seconds when the moment is known,
-    // the `never` wording before the first occurrence — a card that went
-    // silent and a card that never spoke read differently.
+    // Both ages share one sentence shape: the humanized age and `ago`,
+    // or the `never` wording before the first occurrence — a card that
+    // went silent and a card that never spoke read differently.
+    let age_line = |age: Option<i64>| {
+        let text = age_text(age);
+        if text.is_empty() {
+            t(language, Key::Never).to_string()
+        } else {
+            format!("{text} ago")
+        }
+    };
+    let event_line = age_line(last_event);
+    let pass_line = age_line(last_pass);
+    // The Connection card reads only what the config already carries and
+    // the sync task's own atomics — the client secret is never touched on
+    // any path that reaches this render.
     // Re-read the row so the quota bar never shows a stale number.
     let fresh = store.user(&user.id).await?.unwrap_or_else(|| user.clone());
     let administers = fresh.admin;
@@ -466,31 +478,25 @@ async fn settings(cx: &Cx) -> Result {
                             <h2 class="panel-title">(t(language, Key::Connection))</h2>
                         </div>
                         <div class="panel-body">
-                            <div class="field">
-                                <span class="field-label">(t(language, Key::ConnectionIssuer))</span>
-                                <span class="field-static">(app.config.oidc.issuer.clone())</span>
-                            </div>
-                            <div class="field">
-                                <span class="field-label">(t(language, Key::ConnectionClientId))</span>
-                                <span class="field-static">(app.config.oidc.client_id.clone())</span>
-                            </div>
-                            <div class="field">
-                                <span class="field-label">(t(language, Key::ConnectionStream))</span>
-                                <span class="field-static">
-                                    <span class=(if connected { "status-dot status-dot-done" } else { "status-dot status-dot-warn" })></span>
+                            <dl class="connection-facts">
+                                <dt>(t(language, Key::ConnectionIssuer))</dt>
+                                <dd>(app.config.oidc.issuer.clone())</dd>
+                                <dt>(t(language, Key::ConnectionClientId))</dt>
+                                <dd>(app.config.oidc.client_id.clone())</dd>
+                                <dt>(t(language, Key::ConnectionStream))</dt>
+                                <dd>
+                                    <span class=(if connected { "connection-dot connection-on" } else { "connection-dot connection-wait" })></span>
                                     if connected {
                                         (t(language, Key::ConnectionConnected))
                                     } else {
                                         (t(language, Key::ConnectionReconnecting))
                                     }
-                                </span>
-                                <div class="field-note">
-                                    (format!("{} · {}", t(language, Key::ConnectionLastEvent), age_text(last_event, language)))
-                                </div>
-                                <div class="field-note">
-                                    (format!("{} · {}", t(language, Key::ConnectionLastPass), age_text(last_pass, language)))
-                                </div>
-                            </div>
+                                </dd>
+                                <dt>(t(language, Key::ConnectionLastEvent))</dt>
+                                <dd>(event_line)</dd>
+                                <dt>(t(language, Key::ConnectionLastPass))</dt>
+                                <dd>(pass_line)</dd>
+                            </dl>
                         </div>
                     </section>
                 }

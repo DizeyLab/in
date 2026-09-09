@@ -5300,16 +5300,14 @@ async fn connection_card_shows_issuer_client_id_and_stream_state() {
         "no client id: {body}"
     );
     assert!(body.contains("Reconnecting"), "no amber wording: {body}");
-    assert!(body.contains("status-dot-warn"), "no amber dot: {body}");
-    // Before the first occurrences both ages read never — the line is
+    assert!(body.contains("connection-wait"), "no amber dot: {body}");
+    // Before the first occurrences both ages read never — the row is
     // there, the number is not.
+    assert!(body.contains("Last roster event"), "no event row: {body}");
+    assert!(body.contains("Last full pass"), "no pass row: {body}");
     assert!(
-        body.contains("Last pass · never"),
-        "no never wording on the pass line: {body}"
-    );
-    assert!(
-        body.contains("Last event · never"),
-        "no never wording on the event line: {body}"
+        body.matches("<dd>never</dd>").count() >= 2,
+        "both ages must read never: {body}"
     );
     assert!(
         !body.contains("s3cr3t"),
@@ -5324,23 +5322,21 @@ async fn connection_card_shows_issuer_client_id_and_stream_state() {
     let page = app.get("/settings", Some(&cookie)).await;
     let body = page.text();
     assert!(body.contains("Connected"), "no green wording: {body}");
-    assert!(body.contains("status-dot-done"), "no green dot: {body}");
+    assert!(body.contains("connection-on"), "no green dot: {body}");
     // An age, not never — the number itself races the second boundary
-    // between the stamp and this render, so it is not asserted.
+    // between the stamp and this render, so only the sentence shape is
+    // asserted.
     assert!(
-        body.contains("Last event · ") && !body.contains("Last event · never"),
-        "no event age: {body}"
+        !body.contains("<dd>never</dd>"),
+        "ages still read never after both stamps: {body}"
     );
-    assert!(
-        body.contains("Last pass · ") && !body.contains("Last pass · never"),
-        "no pass age: {body}"
-    );
+    assert!(body.matches(" ago</dd>").count() >= 2, "ages not sentenced: {body}");
     // The stream ends: amber again, no event line retraction needed — the
     // last event stays but the wording names the truth.
     app.health.reconnecting();
     let page = app.get("/settings", Some(&cookie)).await;
     let body = page.text();
     assert!(body.contains("Reconnecting"), "no amber return: {body}");
-    assert!(!body.contains("status-dot-done"), "green lingered: {body}");
+    assert!(!body.contains("connection-on"), "green lingered: {body}");
 }
 
