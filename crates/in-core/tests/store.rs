@@ -24,7 +24,7 @@ struct Scratch {
 
 impl Scratch {
     async fn open() -> Self {
-        let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::new()));
+        let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::generate()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("in.db");
         let storage = dir.join("storage");
@@ -96,7 +96,7 @@ fn png_bytes() -> Vec<u8> {
 
 #[tokio::test]
 async fn the_schema_is_created_once_and_survives_reopen() {
-    let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::new()));
+    let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::generate()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("in.db").to_string_lossy().into_owned();
 
@@ -358,7 +358,7 @@ fn make_test_mp4() -> Option<Vec<u8>> {
     if !in_core::thumbs::ffmpeg_available() {
         return None;
     }
-    let path = std::env::temp_dir().join(format!("in-test-upload-{}.mp4", Ulid::new()));
+    let path = std::env::temp_dir().join(format!("in-test-upload-{}.mp4", Ulid::generate()));
     let rendered = std::process::Command::new("ffmpeg")
         .args([
             "-v",
@@ -843,7 +843,7 @@ async fn a_pre_password_link_reconciles_to_no_password_and_a_new_one_survives_re
     // it onto the declared schema: the link row is carried across and wears
     // NULL, opening like it always did, and a password minted after the
     // rebuild survives the next boot whole.
-    let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::new()));
+    let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::generate()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("in.db").to_string_lossy().into_owned();
     {
@@ -1627,7 +1627,7 @@ async fn a_second_migration_database_gains_the_preference_columns_on_open() {
     // column. Opening it with the current code reconciles it onto the
     // declared schema: its interface choice is carried across, and the two
     // new preferences arrive wearing their defaults.
-    let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::new()));
+    let dir = std::env::temp_dir().join(format!("in-test-{}", Ulid::generate()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("in.db").to_string_lossy().into_owned();
     {
@@ -1855,7 +1855,7 @@ use in_core::store::r2::R2Blobs;
 /// buckets on CreateBucket, which an object-store client never calls, so
 /// the directory is the bucket.
 async fn s3_server() -> (String, PathBuf) {
-    let root = std::env::temp_dir().join(format!("in-r2-server-{}", Ulid::new()));
+    let root = std::env::temp_dir().join(format!("in-r2-server-{}", Ulid::generate()));
     std::fs::create_dir_all(root.join("in-test")).unwrap();
     // The object-store client signs every request; without an auth provider
     // the server would answer 501 to all of them. The credentials here are
@@ -1901,7 +1901,7 @@ impl R2Scratch {
         let blobs = Arc::new(
             R2Blobs::open(&endpoint, "in-test", "test-key", "test-secret", true).unwrap(),
         );
-        let dir = std::env::temp_dir().join(format!("in-r2-{}", Ulid::new()));
+        let dir = std::env::temp_dir().join(format!("in-r2-{}", Ulid::generate()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("in.db");
         let storage = dir.join("storage");

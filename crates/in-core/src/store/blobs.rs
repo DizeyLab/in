@@ -145,7 +145,7 @@ impl Blobs for LocalBlobs {
         // Temp name in the destination's own directory, then a rename: a
         // reader of the key never sees a prefix, and a crash leaves a
         // `.tmp` for the boot sweep rather than a half blob at the key.
-        let tmp = path.with_extension(format!("{}.tmp", Ulid::new()));
+        let tmp = path.with_extension(format!("{}.tmp", Ulid::generate()));
         let mut file = std::fs::File::create(&tmp)?;
         file.write_all(bytes)?;
         file.flush()?;

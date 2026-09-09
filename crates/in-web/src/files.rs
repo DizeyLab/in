@@ -23,7 +23,7 @@ use topcoat::router::request::headers as request_headers;
 use topcoat::router::{
     HeaderMap, HeaderName, HeaderValue, StatusCode, header, page, path_param, query_params, route,
 };
-use topcoat::view::view;
+use topcoat::view::{ViewExt, BoxView, View, view};
 
 use crate::i18n::{Key, lang, t};
 use crate::layout::{NavPage, topbar};
@@ -282,10 +282,10 @@ async fn download(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, topcoat::r
     // bytes. A resumed download counts once, on its first chunk; later
     // chunks are the same download going on.
     let counts = forced
-        && match range.and_then(|range| parse_range(range, file.size_bytes)) {
-            Some(Ok((0, _))) | None => true,
-            _ => false,
-        };
+        && matches!(
+            range.and_then(|range| parse_range(range, file.size_bytes)),
+            Some(Ok((0, _))) | None
+        );
     // One answer for every browser: the stored bytes under the stored mime.
     // Where a browser cannot demux them, the house player says so in the
     // page — and `?dl=1` still serves the original, byte for byte.
@@ -434,20 +434,23 @@ pub(crate) fn viewer_kind(mime: &str) -> Option<ViewerKind> {
 /// mime-class glyph. The glyphs are decorative — the file's name beside
 /// them carries the meaning — so they hide from assistive technology.
 ///
-/// Lists embed this beside the name: `(crate::files::entry_chip(cx,
-/// file).await?)`.
-pub(crate) async fn entry_chip(cx: &Cx, file: &File) -> Result {
-    if file.thumb_state == ThumbState::Ready {
-        return view! {
+/// Lists embed this beside the name: `(topcoat::view::Child::new(crate::files::entry_chip(cx,
+/// file).await?))`.
+pub(crate) async fn entry_chip<'a>(cx: &'a Cx, file: &File) -> Result<BoxView<'a>> {
+    let id = file.id.clone();
+    let mime = file.mime.clone();
+    let ready = file.thumb_state == ThumbState::Ready;
+    if ready {
+        return Ok(view! {
             cx =>
-            <img class="file-chip" src=(format!("/thumb/{}", file.id)) alt="">
-        };
+            <img class="file-chip" src=(format!("/thumb/{id}")) alt="">
+        }.boxed());
     }
-    let (class, glyph) = chip_mark(&file.mime);
-    view! {
+    let (class, glyph) = chip_mark(&mime);
+    Ok(view! {
         cx =>
         <span class=(format!("file-chip file-chip-{class}")) aria-hidden="true">(glyph)</span>
-    }
+    }.boxed())
 }
 
 /// The chip's modifier class and its glyph, by stored mime: one distinct
@@ -497,18 +500,18 @@ fn is_archive_mime(mime: &str) -> bool {
 /// wherever it was opened from, back to the trash; anything else back to
 /// the drive.
 #[page("/view/{id}")]
-async fn view_file(cx: &Cx) -> Result {
+async fn view_file(cx: &Cx) -> Result<impl View> {
     let id: &str = path_param::<Id>(cx);
 
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(_) => {
             let location = (header::LOCATION, HeaderValue::from_static("/"));
-            return view! {
+            return Ok(view! {
                 cx =>
                 (StatusCode::SEE_OTHER)
                 (location)
-            };
+            }.boxed());
         }
     };
     let language = lang(cx).await;
@@ -544,9 +547,9 @@ async fn view_file(cx: &Cx) -> Result {
         crate::settings::human_bytes(file.size_bytes)
     );
     let uploaded = file.created_at.date().to_string();
-    view! {
+    Ok(view! {
         cx =>
-        (topbar(cx, NavPage::Drive, &user, language).await?)
+        (topcoat::view::Child::new(topbar(cx, NavPage::Drive, &user, language).await?))
         <main class="settings-stage stage-wide">
             <div class="viewer-head">
                 <a class="quiet" href=(back_href)>(t(language, back_key))</a>
@@ -555,7 +558,7 @@ async fn view_file(cx: &Cx) -> Result {
                     <a class="primary" href=(download_href) download="">(t(language, Key::Download))</a>
                 }
             </div>
-            <h1 class="settings-title viewer-title">(entry_chip(cx, &file).await?) (file.name.clone())</h1>
+            <h1 class="settings-title viewer-title">(topcoat::view::Child::new(entry_chip(cx, &file).await?)) (file.name.clone())</h1>
             <p class="field-note">(meta)</p>
             <div class="viewer-stage">
                 // Media previews for every reader; documents only under the
@@ -563,8 +566,8 @@ async fn view_file(cx: &Cx) -> Result {
                 if matches!(viewer_kind(&file.mime), Some(ViewerKind::Image | ViewerKind::Video | ViewerKind::Audio)) || may_download {
                     match viewer_kind(&file.mime) {
                         Some(ViewerKind::Image) => <img class="viewer-media" src=(src.clone()) alt=(file.name.clone()) draggable="false">,
-                        Some(ViewerKind::Video) => (media_player(cx, language, file.name.clone(), src.clone(), true).await?),
-                        Some(ViewerKind::Audio) => (media_player(cx, language, file.name.clone(), src.clone(), false).await?),
+                        Some(ViewerKind::Video) => (topcoat::view::Child::new(media_player(cx, language, file.name.clone(), src.clone(), true).await?)),
+                        Some(ViewerKind::Audio) => (topcoat::view::Child::new(media_player(cx, language, file.name.clone(), src.clone(), false).await?)),
                         Some(ViewerKind::Pdf) => <object class="viewer-media viewer-pdf" data=(src.clone()) type="application/pdf">
                             <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
                         </object>,
@@ -599,9 +602,9 @@ async fn view_file(cx: &Cx) -> Result {
                 </div>
             </section>
         </main>
-        (media_player_script(cx).await?)
-        (viewer_guard_script(cx).await?)
-    }
+        (topcoat::view::Child::new(media_player_script(cx).await?))
+        (topcoat::view::Child::new(viewer_guard_script(cx).await?))
+    }.boxed())
 }
 
 /// The house player for one inline media element, shared verbatim by the
@@ -610,39 +613,39 @@ async fn view_file(cx: &Cx) -> Result {
 /// `<video>`/`<audio>` and the bar that drives it, wired by
 /// [`media_player_script`]. `video` picks the stacked video layout —
 /// picture with the bar beneath — over the audio bar.
-pub(crate) async fn media_player(
-    cx: &Cx,
+pub(crate) async fn media_player<'a>(
+    cx: &'a Cx,
     language: crate::i18n::Lang,
     name: String,
     src: String,
     video: bool,
-) -> Result {
+) -> Result<impl View + 'a> {
     if video {
-        view! {
+        Ok(view! {
             cx =>
             <div class="media-player media-player-video">
                 <video class="media-el viewer-video" src=(src) preload="metadata"></video>
                 <p class="media-error" hidden="">(t(language, Key::MediaWontPlay))</p>
-                <div class="media-controls">(media_controls(cx, language, name, true).await?)</div>
+                <div class="media-controls">(topcoat::view::Child::new(media_controls(cx, language, name, true).await?))</div>
             </div>
-        }
+        }.boxed())
     } else {
-        view! {
+        Ok(view! {
             cx =>
             <div class="media-player">
-                (media_controls(cx, language, name, false).await?)
+                (topcoat::view::Child::new(media_controls(cx, language, name, false).await?))
                 <audio class="media-el" src=(src) preload="metadata"></audio>
                 <p class="media-error" hidden="">(t(language, Key::MediaWontPlay))</p>
             </div>
-        }
+        }.boxed())
     }
 }
 
 /// The one controls bar both media players draw: play toggle, clock, seek,
 /// volume (mute + level), a speed cycle, and fullscreen on video. The script
 /// below wires it by class, so the bar stays markup-only.
-async fn media_controls(cx: &Cx, language: crate::i18n::Lang, name: String, video: bool) -> Result {
-    view! {
+async fn media_controls<'a>(cx: &'a Cx, language: crate::i18n::Lang, name: String, video: bool) -> Result<impl View + 'a> {
+    Ok(view! {
         cx =>
         <button type="button" class="media-play" aria-label=(t(language, Key::Play))
             data-play=(t(language, Key::Play)) data-pause=(t(language, Key::Pause))>
@@ -664,7 +667,7 @@ async fn media_controls(cx: &Cx, language: crate::i18n::Lang, name: String, vide
                 <svg class="glyph" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M6 2H2v4M10 2h4v4M14 10v4h-4M2 10v4h4"></path></svg>
             </button>
         }
-    }
+    }.boxed())
 }
 
 /// The house media player: play toggle, clock, seek bar — and a fullscreen
@@ -680,7 +683,7 @@ async fn media_controls(cx: &Cx, language: crate::i18n::Lang, name: String, vide
 /// that demuxes the container but carries no decoder for its tracks never
 /// errors, it just never gains even metadata, and five seconds of that is
 /// named dead too.
-pub(crate) async fn media_player_script(cx: &Cx) -> Result {
+pub(crate) async fn media_player_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     use topcoat::view::Unescaped;
     const JS: &str = "\
         (function () { \
@@ -771,7 +774,7 @@ pub(crate) async fn media_player_script(cx: &Cx) -> Result {
             wireAll(); \
             document.addEventListener('in:wire', wireAll); \
         })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }.boxed())
 }
 
 /// The preview's save-path cleanup: the house media player carries no
@@ -779,7 +782,7 @@ pub(crate) async fn media_player_script(cx: &Cx) -> Result {
 /// context menu over the stage, so "save as" never opens on a preview.
 /// A page's bytes on the wire can always be captured — this keeps the
 /// surface from offering it, which is what a view-only grant promises.
-async fn viewer_guard_script(cx: &Cx) -> Result {
+async fn viewer_guard_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     use topcoat::view::Unescaped;
     const JS: &str = "\
         (function () { \
@@ -789,7 +792,7 @@ async fn viewer_guard_script(cx: &Cx) -> Result {
             if (e.target && e.target.closest && e.target.closest('.viewer-stage')) { e.preventDefault(); } \
         }); \
         })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }.boxed())
 }
 
 /// Takes the files the drive's upload form carries — one per `file` part,

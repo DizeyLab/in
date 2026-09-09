@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Drop-in OIDC client for topcoat apps authenticating against im"
 
 [dependencies]
-topcoat = { version = "0.6.2", default-features = false, features = [
+topcoat = { version = "0.8.0", default-features = false, features = [
   "router",
   "cookie",
 ] }
@@ -21,10 +21,9 @@ rand.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 chacha20poly1305.workspace = true
-# rsa 0.9 verifies through the digest 0.10 traits, so its hasher comes from
-# the sha2 0.10 line; the workspace sha2 0.11 stays for PKCE.
-sha2-for-rsa = { package = "sha2", version = "0.10", features = ["oid"] }
-rsa = "0.9.10"
+# rsa 0.10 verifies through the digest 0.11 traits, so its hasher is the
+# workspace sha2 0.11 that PKCE already uses.
+rsa = "0.10.0-rc.18"
 reqwest = { version = "0.13.5", default-features = false, features = [
   "rustls",
   "json",
@@ -36,7 +35,7 @@ reqwest = { version = "0.13.5", default-features = false, features = [
 test-seam = []
 
 [dev-dependencies]
-topcoat = { version = "0.6.2", default-features = false, features = [
+topcoat = { version = "0.8.0", default-features = false, features = [
   "router",
   "cookie",
   "view",
@@ -44,9 +43,9 @@ topcoat = { version = "0.6.2", default-features = false, features = [
   "discover",
 ] }
 http = "1.5"
-# Tests generate their own RSA keys, and rsa 0.9's RNG is the rand_core 0.6
-# line.
-rand_core06 = { package = "rand_core", version = "0.6.4", features = ["getrandom"] }
+# Tests generate their own RSA keys, and rsa 0.10's RNG is the rand_core 0.10
+# line that the workspace rand 0.10 provides.
+rand_core010 = { package = "rand_core", version = "0.10.1" }
 
 [[example]]
 name = "mint"

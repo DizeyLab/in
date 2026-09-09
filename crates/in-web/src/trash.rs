@@ -18,7 +18,7 @@ use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::content::Form;
 use topcoat::router::{HeaderName, StatusCode, header, page, query_params, route};
-use topcoat::view::view;
+use topcoat::view::{View, ViewExt, view};
 
 use crate::files::entry_chip;
 use crate::i18n::{Key, lang, t};
@@ -146,10 +146,12 @@ async fn empty(cx: &Cx) -> Redirect {
 /// A trashed file's chip: the mime-class glyph, never the thumbnail image —
 /// the shelf wears its own mark, thumbnails belong to the live listings.
 /// The clone only clears the thumbnail flag for the render.
-async fn trash_chip(cx: &Cx, file: &File) -> Result {
+async fn trash_chip<'a>(cx: &'a Cx, file: &File) -> Result<impl View + 'a> {
     let mut unthumb = file.clone();
     unthumb.thumb_state = ThumbState::None;
-    entry_chip(cx, &unthumb).await
+    let view = entry_chip(cx, &unthumb).await?;
+    drop(unthumb);
+    Ok(view)
 }
 
 #[query_params]
@@ -193,12 +195,12 @@ fn valid_kind(raw: Option<&str>) -> &'static str {
 }
 
 /// One trashed row, folder or file, for the unified list.
-enum TrashEntry<'a> {
-    Folder(&'a Folder),
-    File(&'a File),
+enum TrashEntry {
+    Folder(Folder),
+    File(File),
 }
 
-impl TrashEntry<'_> {
+impl TrashEntry {
     fn id(&self) -> &str {
         match self {
             TrashEntry::Folder(folder) => &folder.id,
@@ -242,18 +244,19 @@ impl TrashEntry<'_> {
 /// The reader's trash: folders and files in one list, each row carrying its
 /// way back and its way gone, plus the button that destroys them all.
 #[page("/trash")]
-async fn trash(cx: &Cx) -> Result {
+async fn trash(cx: &Cx) -> Result<impl View> {
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(refusal) => {
             let language = lang(cx).await;
-            return view! {
+            return Ok(view! {
                 cx =>
                 <main class="scaffold-note">
                     <p>(refusal.message_in(language))</p>
                     <p><a href="/">(t(language, Key::BackToDrive))</a></p>
                 </main>
-            };
+            }
+            .boxed());
         }
     };
     let language = lang(cx).await;
@@ -270,10 +273,10 @@ async fn trash(cx: &Cx) -> Result {
     let nothing_trashed = listing.folders.is_empty() && listing.files.is_empty();
     let mut rows: Vec<TrashEntry> = Vec::new();
     if kind == "all" || kind == "folders" {
-        rows.extend(listing.folders.iter().map(TrashEntry::Folder));
+        rows.extend(listing.folders.into_iter().map(TrashEntry::Folder));
     }
     if kind == "all" || kind == "files" {
-        rows.extend(listing.files.iter().map(TrashEntry::File));
+        rows.extend(listing.files.into_iter().map(TrashEntry::File));
     }
     if let Some(needle) = asked.as_deref() {
         let needle = needle.to_lowercase();
@@ -303,9 +306,9 @@ async fn trash(cx: &Cx) -> Result {
         if descending { order.reverse() } else { order }
     });
     let sort_value = format!("{}:{}", sort, if descending { "desc" } else { "asc" });
-    view! {
+    Ok(view! {
         cx =>
-        (topbar(cx, NavPage::Trash, &user, language).await?)
+        (topcoat::view::Child::new(topbar(cx, NavPage::Trash, &user, language).await?))
         <main class="settings-stage stage-wide">
             <h1 class="settings-title">(t(language, Key::Trash))</h1>
             <div class="filterbar">
@@ -348,7 +351,7 @@ async fn trash(cx: &Cx) -> Result {
                     <input type="hidden" name="q" value=(box_text.clone())>
                 </form>
             </div>
-            (refusal_banner(cx, language, &["restore", "purge", "empty"]).await?)
+            (topcoat::view::Child::new(refusal_banner(cx, language, &["restore", "purge", "empty"]).await?))
             if !nothing_trashed {
                 <form method="post" action="/api/trash/empty">
                     <button class="quiet quiet-danger" type="submit">(t(language, Key::EmptyTrash))</button>
@@ -381,7 +384,7 @@ async fn trash(cx: &Cx) -> Result {
                         <div class="drive-row">
                             if let TrashEntry::File(file) = row {
                                 <a class="drive-open" href=(format!("/view/{}", file.id))>
-                                    (trash_chip(cx, file).await?)
+                                    (topcoat::view::Child::new(trash_chip(cx, file).await?))
                                     <span class="dep-title">(file.name.clone())</span>
                                     <span class="drive-meta drive-size">(crate::drive::human_size(file.size_bytes))</span>
                                     <span class="drive-meta drive-date">(row.deleted().date().to_string())</span>
@@ -417,6 +420,6 @@ async fn trash(cx: &Cx) -> Result {
                 }
             </section>
         </main>
-        (crate::dropdown::dropdown_script(cx).await?)
-    }
+        (topcoat::view::Child::new(crate::dropdown::dropdown_script(cx).await?))
+    }.boxed())
 }

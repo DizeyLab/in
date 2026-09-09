@@ -737,7 +737,7 @@ mod tests {
 
     impl Scratch {
         fn new() -> Self {
-            let dir = std::env::temp_dir().join(format!("in-config-test-{}", Ulid::new()));
+            let dir = std::env::temp_dir().join(format!("in-config-test-{}", Ulid::generate()));
             std::fs::create_dir_all(dir.join("config")).unwrap();
             Self { dir }
         }

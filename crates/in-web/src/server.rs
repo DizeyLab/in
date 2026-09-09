@@ -72,13 +72,18 @@ pub struct DirectoryHealth {
     last_pass: Arc<std::sync::atomic::AtomicI64>,
 }
 
-impl DirectoryHealth {
-    pub fn new() -> Self {
+impl Default for DirectoryHealth {
+    fn default() -> Self {
         Self {
             stream: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             last_event: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             last_pass: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         }
+    }
+}
+impl DirectoryHealth {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// The stream opened.
@@ -223,7 +228,15 @@ pub fn stylesheet_guard(bundle: &AssetBundle) -> Result<String, String> {
             stylesheet.name()
         )
     })?;
-    let actual = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
+    let digest = sha2::Sha256::digest(&bytes);
+    let actual = format!(
+        "sha256:{}",
+        digest
+            .as_slice()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
     if actual != expected {
         return Err(format!(
             "the asset bundle at {} is from another build: stylesheet {} is {actual} but this binary was compiled against {expected}; run `topcoat asset bundle` and redeploy",
@@ -312,11 +325,7 @@ pub async fn service_client(cx: &Cx) -> Option<User> {
     if token.is_empty() {
         return None;
     }
-    let user = app(cx)
-        .store
-        .service_account_by_token(token)
-        .await
-        .ok()??;
+    let user = app(cx).store.service_account_by_token(token).await.ok()??;
     (!user.disabled).then_some(user)
 }
 
@@ -337,7 +346,7 @@ static SHOWN_SECRETS: LazyLock<std::sync::Mutex<HashMap<String, (String, std::ti
 /// Parks a fresh service key on the shelf and returns the claim ticket for
 /// its URL.
 pub fn stash_shown_secret(secret: String) -> String {
-    let ticket = format!("{}", ulid::Ulid::new());
+    let ticket = format!("{}", ulid::Ulid::generate());
     let mut shelf = SHOWN_SECRETS.lock().unwrap_or_else(PoisonError::into_inner);
     shelf.retain(|_, (_, parked)| parked.elapsed() < SHOWN_TTL);
     shelf.insert(ticket.clone(), (secret, std::time::Instant::now()));
@@ -436,7 +445,9 @@ impl Refusal {
             Refusal::BadTheme => "That is not a theme.".to_string(),
             Refusal::BadLanguage => "That is not a language.".to_string(),
             Refusal::BadLimit => "That limit is not usable.".to_string(),
-            Refusal::BadBaseUrl => "That address is not an origin links can be built on.".to_string(),
+            Refusal::BadBaseUrl => {
+                "That address is not an origin links can be built on.".to_string()
+            }
             Refusal::ServiceQuota => "The limit is im's to set.".to_string(),
             Refusal::BadServiceKey => "That key is not usable.".to_string(),
         }
@@ -464,7 +475,9 @@ impl Refusal {
             Refusal::BadTheme => "Bu bir tema değil.".to_string(),
             Refusal::BadLanguage => "Bu bir dil değil.".to_string(),
             Refusal::BadLimit => "Bu sınır kullanılamaz.".to_string(),
-            Refusal::BadBaseUrl => "Bu adres, bağlantı kurulabilecek bir kök adres değil.".to_string(),
+            Refusal::BadBaseUrl => {
+                "Bu adres, bağlantı kurulabilecek bir kök adres değil.".to_string()
+            }
             Refusal::ServiceQuota => "Limit im'de belirlenir.".to_string(),
             Refusal::BadServiceKey => "Bu anahtar kullanılamaz.".to_string(),
         }

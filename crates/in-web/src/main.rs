@@ -8,6 +8,7 @@ use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
 use topcoat::context::Cx;
 use topcoat::cookie::RouterBuilderCookieExt;
 use topcoat::router::{BodyLimit, Router, RouterBuilderDiscoverExt, route};
+use topcoat::runtime::RouterBuilderRuntimeExt;
 
 #[route(GET "/healthz")]
 async fn healthz() -> Result<&'static str> {
@@ -262,6 +263,7 @@ async fn main() {
     let router = in_client::mount(
         Router::builder()
             .discover()
+            .runtime()
             // BodyLimit is only a memory guard here, not the upload policy:
             // the account quota, enforced in the store at start and finish,
             // is the only size limit. `/files` takes whole multipart bodies,
@@ -490,8 +492,7 @@ async fn family_sync(
                 // im states none). A refused write is one log line — the
                 // next beat carries the same word.
                 if let Err(problem) =
-                    in_web::service::apply_family_limits(&store, &family, default_quota_bytes)
-                        .await
+                    in_web::service::apply_family_limits(&store, &family, default_quota_bytes).await
                 {
                     eprintln!("family limits: {problem}");
                 }

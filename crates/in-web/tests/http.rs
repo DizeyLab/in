@@ -22,6 +22,7 @@ use topcoat::asset::{AssetBundle, RouterBuilderAssetExt};
 use topcoat::context::Cx;
 use topcoat::cookie::RouterBuilderCookieExt;
 use topcoat::router::{Body, BodyLimit, Router, RouterBuilderDiscoverExt, to_bytes};
+use topcoat::runtime::RouterBuilderRuntimeExt;
 use ulid::Ulid;
 
 /// The bundle `cargo build -p in-web` + `topcoat asset bundle --bin in-web`
@@ -36,13 +37,16 @@ fn asset_dir() -> PathBuf {
     ))
 }
 
+/// Photos by file id: raw bytes plus mime, answered to `GET /photo/{id}`.
+type Photos = Arc<Mutex<HashMap<String, (Vec<u8>, String)>>>;
+
 /// A fake im: answers `POST /introspect` from its token map, `{"active":
 /// false}` for anything it does not know. Bare TCP + hand-rolled HTTP/1.1 —
 /// just enough for the client's form post.
 struct FakeIm {
     addr: std::net::SocketAddr,
     tokens: Arc<Mutex<HashMap<String, serde_json::Value>>>,
-    photos: Arc<Mutex<HashMap<String, (Vec<u8>, String)>>>,
+    photos: Photos,
     directory: Arc<Mutex<Vec<serde_json::Value>>>,
     family: Arc<Mutex<Vec<serde_json::Value>>>,
 }
@@ -53,8 +57,7 @@ impl FakeIm {
         let addr = listener.local_addr().unwrap();
         let tokens: Arc<Mutex<HashMap<String, serde_json::Value>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let photos: Arc<Mutex<HashMap<String, (Vec<u8>, String)>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let photos: Photos = Arc::new(Mutex::new(HashMap::new()));
         let directory: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
         let family: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
         let map = tokens.clone();
@@ -192,7 +195,7 @@ const APP_BASIC: &str = "Basic aW4tdGVzdDpzM2NyM3Q=";
 /// or nothing, a missing photo exactly like a missing person. `None` for
 /// anything else, which stays the introspection JSON.
 fn photo_answer(
-    photos: &Arc<Mutex<HashMap<String, (Vec<u8>, String)>>>,
+    photos: &Photos,
     head: &str,
     request_line: &str,
 ) -> Option<(&'static str, String, Vec<u8>)> {
@@ -385,7 +388,7 @@ impl TestApp {
     /// way the background fetch files it: one JSON row in the `setting`
     /// store under `family`.
     async fn build_with(base_url: Option<&str>, family: &[(&str, &str, &str)]) -> Self {
-        let dir = std::env::temp_dir().join(format!("in-http-{}", Ulid::new()));
+        let dir = std::env::temp_dir().join(format!("in-http-{}", Ulid::generate()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("in.db");
         let storage = dir.join("storage");
@@ -442,6 +445,7 @@ impl TestApp {
         let router = in_client::mount(
             Router::builder()
                 .discover()
+                .runtime()
                 .layer(BodyLimit::max(32 * 1024 * 1024).at("/api/upload"))
                 .layer(BodyLimit::max(512 * 1024 * 1024).at("/api/service/files"))
                 .cookies()
@@ -486,17 +490,10 @@ impl TestApp {
     async fn sign_in(&self, sub: &str, email: &str, name: &str) -> String {
         let user = self
             .store
-            .provision_user(
-                sub,
-                email,
-                name,
-                None,
-                0,
-                self.config.default_quota_bytes,
-            )
+            .provision_user(sub, email, name, None, 0, self.config.default_quota_bytes)
             .await
             .unwrap();
-        let token = format!("tok-{}", Ulid::new());
+        let token = format!("tok-{}", Ulid::generate());
         let exp = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
         self.fake.tokens.lock().unwrap().insert(
             token.clone(),
@@ -1833,7 +1830,7 @@ fn vp9_aac_matroska() -> Option<Vec<u8>> {
         eprintln!("skipping matroska preview tests: no ffmpeg on PATH");
         return None;
     }
-    let dir = std::env::temp_dir().join(format!("in-mkv-{}", Ulid::new()));
+    let dir = std::env::temp_dir().join(format!("in-mkv-{}", Ulid::generate()));
     std::fs::create_dir_all(&dir).unwrap();
     let out = dir.join("clip.mkv");
     let status = Command::new("ffmpeg")
@@ -1958,9 +1955,7 @@ async fn view_only_link_previews_a_matroska_but_cannot_download() {
     assert_eq!(media.content_type.as_deref(), Some("video/x-matroska"));
     assert_eq!(media.bytes, mkv, "the media stream was not the original");
 
-    let blocked = app
-        .get(&format!("/s/{}?dl=1", created.token), None)
-        .await;
+    let blocked = app.get(&format!("/s/{}?dl=1", created.token), None).await;
     assert!(
         blocked.text().contains("no longer works"),
         "view-only download showed: {}",
@@ -2616,7 +2611,10 @@ async fn legacy_link_states_the_carry_forward_note_and_offers_the_mint() {
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let text = page.text();
-    assert!(!text.contains("/s/…"), "masked value on a legacy link: {text}");
+    assert!(
+        !text.contains("/s/…"),
+        "masked value on a legacy link: {text}"
+    );
     assert!(
         text.contains("action=\"/api/share/link/remint\""),
         "no mint action on a legacy link: {text}"
@@ -2634,7 +2632,10 @@ async fn legacy_link_states_the_carry_forward_note_and_offers_the_mint() {
     let page = app.get("/settings?section=links", Some(&ada)).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     let text = page.text();
-    assert!(!text.contains("/s/…"), "masked value on a legacy link: {text}");
+    assert!(
+        !text.contains("/s/…"),
+        "masked value on a legacy link: {text}"
+    );
     assert!(
         text.contains("action=\"/api/share/link/remint\""),
         "no mint action on a legacy link: {text}"
@@ -2683,7 +2684,12 @@ async fn remint_carries_a_legacy_link_forward() {
     let answer = app
         .post("/api/share/link/remint", Some(&ada), &[("id", &old_id)])
         .await;
-    assert_eq!(answer.status, StatusCode::SEE_OTHER, "{:?}", answer.location);
+    assert_eq!(
+        answer.status,
+        StatusCode::SEE_OTHER,
+        "{:?}",
+        answer.location
+    );
     let location = answer.location.as_deref().expect("remint set no location");
     let new_token = created_token(location);
     assert!(!new_token.is_empty(), "remint minted no token: {location}");
@@ -2759,7 +2765,7 @@ async fn drive_marks_shared_rows() {
     app.sign_in("sub-ember", "ember@in.test", "Ember").await;
     let owner = owner_of(&app, "sub-admin").await;
     let linked = file_id(&app, &owner, "linked.txt", b"linked").await;
-    let plain = file_id(&app, &owner, "plain.txt", b"plain").await;
+    let _plain = file_id(&app, &owner, "plain.txt", b"plain").await;
     let granted = file_id(&app, &owner, "granted.txt", b"granted").await;
     let answer = app
         .post(
@@ -3824,7 +3830,7 @@ async fn the_settings_revoke_button_sits_inline_in_its_row() {
             .expect("form never closes");
     // The row is still open around the form: its own close is the first
     // `</div>` after the form's.
-    let row_close = form_close + body[form_close..].find("</div>").expect("row never closes");
+    let _row_close = form_close + body[form_close..].find("</div>").expect("row never closes");
     let form = &body[row_at + form_at..form_close];
     assert!(
         form.contains("<button class=\"quiet quiet-danger\" type=\"submit\">"),
@@ -5035,9 +5041,7 @@ async fn avatar_version_stamped_url_caches_immutable() {
     app.fake.set_photo("sub-stamp", tiny_png(), "image/png");
 
     // `?v` equal to the row's version: a year of immutable, no revalidation.
-    let fresh = app
-        .get(&format!("/avatar/{me}?v=0"), Some(&cookie))
-        .await;
+    let fresh = app.get(&format!("/avatar/{me}?v=0"), Some(&cookie)).await;
     assert_eq!(fresh.status, StatusCode::OK);
     assert_eq!(
         fresh.cache_control.as_deref(),
@@ -5045,9 +5049,7 @@ async fn avatar_version_stamped_url_caches_immutable() {
     );
     // A stale stamp — the browser holds a face the row has moved past —
     // falls back to revalidate, so the next answer is the truth.
-    let stale = app
-        .get(&format!("/avatar/{me}?v=7"), Some(&cookie))
-        .await;
+    let stale = app.get(&format!("/avatar/{me}?v=7"), Some(&cookie)).await;
     assert_eq!(stale.status, StatusCode::OK);
     assert_eq!(stale.cache_control.as_deref(), Some("private, no-cache"));
     assert_eq!(stale.etag.as_deref(), Some("\"p0\""));
@@ -5452,10 +5454,7 @@ async fn connection_card_shows_issuer_client_id_and_stream_state() {
         body.contains(app.config.oidc.issuer.as_str()),
         "no issuer: {body}"
     );
-    assert!(
-        body.contains("in-test"),
-        "no client id: {body}"
-    );
+    assert!(body.contains("in-test"), "no client id: {body}");
     assert!(body.contains("Reconnecting"), "no amber wording: {body}");
     assert!(body.contains("connection-wait"), "no amber dot: {body}");
     // Before the first occurrences both ages read never — the row is
@@ -5487,7 +5486,10 @@ async fn connection_card_shows_issuer_client_id_and_stream_state() {
         !body.contains("<dd>never</dd>"),
         "ages still read never after both stamps: {body}"
     );
-    assert!(body.matches(" ago</dd>").count() >= 2, "ages not sentenced: {body}");
+    assert!(
+        body.matches(" ago</dd>").count() >= 2,
+        "ages not sentenced: {body}"
+    );
     // The stream ends: amber again, no event line retraction needed — the
     // last event stays but the wording names the truth.
     app.health.reconnecting();
@@ -5496,7 +5498,6 @@ async fn connection_card_shows_issuer_client_id_and_stream_state() {
     assert!(body.contains("Reconnecting"), "no amber return: {body}");
     assert!(!body.contains("connection-on"), "green lingered: {body}");
 }
-
 
 // ---------------------------------------------------------------------------
 // The service storage API: bearer keys, machine answers, im's ceilings.
@@ -5521,10 +5522,7 @@ async fn service_key(store: &Arc<dyn Store>, service: &str, name: &str) -> (Stri
 #[tokio::test]
 async fn service_routes_refuse_a_missing_or_wrong_key() {
     let app = TestApp::build().await;
-    for path in [
-        "/api/service/status",
-        "/api/service/file/some-id",
-    ] {
+    for path in ["/api/service/status", "/api/service/file/some-id"] {
         let raw = app.get_bearer(path, None).await;
         assert_eq!(raw.status, StatusCode::UNAUTHORIZED, "{path}");
         let raw = app.get_bearer(path, None).await;
@@ -5564,9 +5562,7 @@ async fn the_service_happy_path_pushes_fetches_counts_and_takes_away() {
     let file_id = pushed["ok"].as_str().unwrap().to_string();
 
     // Status: the account's ceiling and what it now holds.
-    let raw = app
-        .get_bearer("/api/service/status", Some(&token))
-        .await;
+    let raw = app.get_bearer("/api/service/status", Some(&token)).await;
     assert_eq!(raw.status, StatusCode::OK);
     let status: serde_json::Value = serde_json::from_str(&raw.text()).unwrap();
     assert_eq!(status["ok"], serde_json::Value::Bool(true));
@@ -5680,16 +5676,12 @@ async fn the_service_quota_is_the_ceiling_the_word_names() {
 async fn a_human_browser_is_a_stranger_on_the_machine_routes() {
     let app = TestApp::build().await;
     let (token, _) = service_key(&app.store, "iz", "İz").await;
-    let admin = app
-        .sign_in("sub-admin", "admin@example.com", "Admin")
-        .await;
+    let admin = app.sign_in("sub-admin", "admin@example.com", "Admin").await;
     // The admin's session cookie buys nothing here.
     let raw = app.get("/api/service/status", Some(&admin)).await;
     assert_eq!(raw.status, StatusCode::UNAUTHORIZED);
     // And the bearer key buys nothing on the human drive.
-    let raw = app
-        .get_bearer("/drive", Some(&token))
-        .await;
+    let raw = app.get_bearer("/drive", Some(&token)).await;
     assert!(raw.status.is_redirection() || raw.status == StatusCode::UNAUTHORIZED);
 }
 
@@ -5698,18 +5690,25 @@ async fn the_everyone_quota_write_refuses_a_service_account() {
     let app = TestApp::build().await;
     // The admin signs in first: the first human sight is the admin, and a
     // service row must not claim that.
-    let admin = app
-        .sign_in("sub-admin", "admin@example.com", "Admin")
-        .await;
+    let admin = app.sign_in("sub-admin", "admin@example.com", "Admin").await;
     let (_, user_id) = service_key(&app.store, "iz", "İz").await;
     let answer = app
         .post(
             "/api/settings/quota",
             Some(&admin),
-            &[("user_id", user_id.as_str()), ("quota", "5"), ("quota_unit", "GiB")],
+            &[
+                ("user_id", user_id.as_str()),
+                ("quota", "5"),
+                ("quota_unit", "GiB"),
+            ],
         )
         .await;
-    assert!(answer.refused("service-quota", "quota"), "{} {}", answer.location.as_deref().unwrap_or(""), answer.body);
+    assert!(
+        answer.refused("service-quota", "quota"),
+        "{} {}",
+        answer.location.as_deref().unwrap_or(""),
+        answer.body
+    );
     // The ceiling is untouched.
     let holder = app.store.user(&user_id).await.unwrap().unwrap();
     assert_eq!(holder.quota_bytes, 1024 * 1024);
@@ -5725,16 +5724,16 @@ async fn the_mint_shows_its_key_once_and_refuses_a_stranger() {
         )
         .await
         .unwrap();
-    let admin = app
-        .sign_in("sub-admin", "admin@example.com", "Admin")
-        .await;
+    let admin = app.sign_in("sub-admin", "admin@example.com", "Admin").await;
     let plain = app.sign_in("sub-plain", "plain@example.com", "Plain").await;
 
     // Non-admin: the section reads as the profile, the mint refuses.
-    let page = app
-        .get("/settings?section=service", Some(&plain))
-        .await;
-    assert!(!page.text().contains("Service keys"), "rail leaked: {}", page.text());
+    let page = app.get("/settings?section=service", Some(&plain)).await;
+    assert!(
+        !page.text().contains("Service keys"),
+        "rail leaked: {}",
+        page.text()
+    );
     let answer = app
         .post(
             "/api/settings/service_add",
@@ -5742,7 +5741,12 @@ async fn the_mint_shows_its_key_once_and_refuses_a_stranger() {
             &[("service", "iz"), ("name", "İz")],
         )
         .await;
-    assert!(answer.refused("forbidden", "service_add"), "{} {}", answer.location.as_deref().unwrap_or(""), answer.body);
+    assert!(
+        answer.refused("forbidden", "service_add"),
+        "{} {}",
+        answer.location.as_deref().unwrap_or(""),
+        answer.body
+    );
 
     // The admin mints; the redirect carries a ticket, not the key.
     let answer = app
@@ -5752,7 +5756,12 @@ async fn the_mint_shows_its_key_once_and_refuses_a_stranger() {
             &[("service", "iz"), ("name", "İz")],
         )
         .await;
-    assert!(answer.accepted(), "{} {}", answer.location.as_deref().unwrap_or(""), answer.body);
+    assert!(
+        answer.accepted(),
+        "{} {}",
+        answer.location.as_deref().unwrap_or(""),
+        answer.body
+    );
     let location = answer.location.unwrap();
     let ticket = location
         .split("shown=")
@@ -5766,7 +5775,10 @@ async fn the_mint_shows_its_key_once_and_refuses_a_stranger() {
 
     // First render: the key stands in the banner. Second: nothing.
     let page = app
-        .get(&format!("/settings?section=service&shown={ticket}"), Some(&admin))
+        .get(
+            &format!("/settings?section=service&shown={ticket}"),
+            Some(&admin),
+        )
         .await;
     let body = page.text();
     assert!(body.contains("service-secret"), "no banner: {body}");
@@ -5791,11 +5803,17 @@ async fn the_mint_shows_its_key_once_and_refuses_a_stranger() {
     assert_eq!(account.oidc_sub, "service:iz");
     // The replayed URL — the live tick, a reload — renders no banner.
     let page = app
-        .get(&format!("/settings?section=service&shown={ticket}"), Some(&admin))
+        .get(
+            &format!("/settings?section=service&shown={ticket}"),
+            Some(&admin),
+        )
         .await;
     assert!(!page.text().contains("service-secret\""));
     let page = app
-        .get("/settings?section=service&shown=forged-ticket", Some(&admin))
+        .get(
+            "/settings?section=service&shown=forged-ticket",
+            Some(&admin),
+        )
         .await;
     assert!(!page.text().contains("service-secret\""));
 
@@ -5807,10 +5825,24 @@ async fn the_mint_shows_its_key_once_and_refuses_a_stranger() {
             &[("service", "iz")],
         )
         .await;
-    assert!(answer.accepted(), "{} {}", answer.location.as_deref().unwrap_or(""), answer.body);
-    let ticket = answer.location.unwrap().split("shown=").nth(1).unwrap().to_string();
+    assert!(
+        answer.accepted(),
+        "{} {}",
+        answer.location.as_deref().unwrap_or(""),
+        answer.body
+    );
+    let ticket = answer
+        .location
+        .unwrap()
+        .split("shown=")
+        .nth(1)
+        .unwrap()
+        .to_string();
     let page = app
-        .get(&format!("/settings?section=service&shown={ticket}"), Some(&admin))
+        .get(
+            &format!("/settings?section=service&shown={ticket}"),
+            Some(&admin),
+        )
         .await;
     let rotated = page
         .text()
@@ -5825,7 +5857,13 @@ async fn the_mint_shows_its_key_once_and_refuses_a_stranger() {
         .unwrap()
         .to_string();
     assert_ne!(rotated, key);
-    assert!(app.store.service_account_by_token(&key).await.unwrap().is_none());
+    assert!(
+        app.store
+            .service_account_by_token(&key)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let answer = app
         .post(
             "/api/settings/service_revoke",
@@ -5833,23 +5871,36 @@ async fn the_mint_shows_its_key_once_and_refuses_a_stranger() {
             &[("service", "iz")],
         )
         .await;
-    assert!(answer.accepted(), "{} {}", answer.location.as_deref().unwrap_or(""), answer.body);
-    assert!(app.store.service_account_by_token(&rotated).await.unwrap().is_none());
+    assert!(
+        answer.accepted(),
+        "{} {}",
+        answer.location.as_deref().unwrap_or(""),
+        answer.body
+    );
+    assert!(
+        app.store
+            .service_account_by_token(&rotated)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let accounts = app.store.list_service_accounts().await.unwrap();
-    assert!(accounts.is_empty(), "revoke took the row, not the account: the account row stays");
+    assert!(
+        accounts.is_empty(),
+        "revoke took the row, not the account: the account row stays"
+    );
 }
 
 #[tokio::test]
 async fn the_family_limit_lands_on_the_account() {
     let app = TestApp::build().await;
     // im names a 5 GiB ceiling for iz; the beat carries it.
-    app.fake
-        .set_family(vec![serde_json::json!({
-            "key": "iz",
-            "name": "İz",
-            "url": "http://127.0.0.1:7654",
-            "limit_bytes": 5 * 1024 * 1024 * 1024u64,
-        })]);
+    app.fake.set_family(vec![serde_json::json!({
+        "key": "iz",
+        "name": "İz",
+        "url": "http://127.0.0.1:7654",
+        "limit_bytes": 5 * 1024 * 1024 * 1024u64,
+    })]);
     let client = in_client::InClient::new(app.client.clone());
     let family = client.family().await.expect("the fake answered");
     assert_eq!(family[0].limit_bytes, Some(5 * 1024 * 1024 * 1024));
@@ -5867,12 +5918,11 @@ async fn the_family_limit_lands_on_the_account() {
     let holder = app.store.user(&user_id).await.unwrap().unwrap();
     assert_eq!(holder.quota_bytes, 5 * 1024 * 1024 * 1024);
     // No limit named: the house default.
-    app.fake
-        .set_family(vec![serde_json::json!({
-            "key": "iz",
-            "name": "İz",
-            "url": "http://127.0.0.1:7654",
-        })]);
+    app.fake.set_family(vec![serde_json::json!({
+        "key": "iz",
+        "name": "İz",
+        "url": "http://127.0.0.1:7654",
+    })]);
     let family = client.family().await.unwrap();
     assert_eq!(family[0].limit_bytes, None);
     in_web::service::apply_family_limits(&app.store, &family, 1024 * 1024)

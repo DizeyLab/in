@@ -26,8 +26,8 @@
 use std::io;
 use std::path::Path;
 
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as base64;
+use base64::Engine;
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 use rand::Rng;
@@ -57,9 +57,9 @@ pub fn seal(key: &Key, plaintext: &str) -> String {
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce_bytes = [0u8; NONCE_BYTES];
     rand::rng().fill_bytes(&mut nonce_bytes);
-    let nonce = XNonce::from_slice(&nonce_bytes);
+    let nonce = XNonce::from(nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
+        .encrypt(&nonce, plaintext.as_bytes())
         .expect("XChaCha20-Poly1305 cannot fail to encrypt a plaintext this small");
     let mut payload = Vec::with_capacity(NONCE_BYTES + ciphertext.len());
     payload.extend_from_slice(&nonce_bytes);
@@ -80,7 +80,7 @@ pub fn open(key: &Key, sealed: &str) -> Option<String> {
     }
     let (nonce_bytes, ciphertext) = payload.split_at(NONCE_BYTES);
     let cipher = XChaCha20Poly1305::new(key.into());
-    let nonce = XNonce::from_slice(nonce_bytes);
+    let nonce: &XNonce = nonce_bytes.try_into().ok()?;
     let plaintext = cipher.decrypt(nonce, ciphertext).ok()?;
     String::from_utf8(plaintext).ok()
 }

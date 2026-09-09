@@ -125,8 +125,8 @@ pub async fn reconcile(
         // Best-effort undo so the live file is not gone. If this also fails,
         // the caller has both the backup and the rebuilt file to recover from.
         let _ = std::fs::rename(&backup_path, path);
-        let _ = rename_sibling(&backup_path, path, "-wal");
-        let _ = rename_sibling(&backup_path, path, "-shm");
+        rename_sibling(&backup_path, path, "-wal");
+        rename_sibling(&backup_path, path, "-shm");
         return Err(StoreError::Backend(format!(
             "failed to move rebuilt database into place {}: {}",
             rebuilt_path, e

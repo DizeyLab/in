@@ -23,7 +23,7 @@ use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::content::{Form, Json};
 use topcoat::router::error::not_found;
-use topcoat::view::view;
+use topcoat::view::{View, ViewExt, view};
 
 use crate::i18n::{Key, lang, t};
 use crate::layout::{NavPage, topbar};
@@ -148,13 +148,13 @@ async fn folder_tree(store: &dyn Store, user_id: &str) -> Vec<(String, String)> 
 /// names cannot collide (the store postfixes them), so the display path
 /// identifies a subtree exactly. A pair naming nothing owned and live opens
 /// nothing.
-async fn move_modal(
-    cx: &Cx,
+async fn move_modal<'a>(
+    cx: &'a Cx,
     kind_raw: &str,
     target_id: &str,
     close_href: &str,
     destinations: &[(String, String)],
-) -> Result<Option<topcoat::view::View>> {
+) -> Result<Option<impl View + 'a>> {
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(_) => return Ok(None),
@@ -207,7 +207,12 @@ async fn move_modal(
         _ => return Ok(None),
     };
     let subtree = own_path.map(|path| format!("{path} / "));
-    let rows: Vec<&(String, String)> = destinations
+    let close_href = close_href.to_string();
+    let target_id = target_id.to_string();
+    let field = field.to_string();
+    let action = action.to_string();
+    let kind_raw = kind_raw.to_string();
+    let rows: Vec<(String, String)> = destinations
         .iter()
         .filter(|dest| match &subtree {
             Some(prefix) => {
@@ -215,6 +220,7 @@ async fn move_modal(
             }
             None => true,
         })
+        .cloned()
         .collect();
     Ok(Some(view! {
         cx =>
@@ -226,7 +232,7 @@ async fn move_modal(
                             <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
                         }
                         if let Some(file) = file.as_ref() {
-                            (crate::files::entry_chip(cx, file).await?)
+                            (topcoat::view::Child::new(crate::files::entry_chip(cx, file).await?))
                         }
                         (format!("{} “{}”", t(language, Key::Move), name.clone()))
                     </h2>
@@ -234,18 +240,18 @@ async fn move_modal(
                     <a class="quiet" href=(close_href.to_string()) aria-label=(t(language, Key::Close))>(t(language, Key::Close))</a>
                 </div>
                 <div class="move-list">
-                    <form class="move-dest" method="post" action=(action)>
-                        <input type="hidden" name="id" value=(target_id.to_string())>
-                        <input type="hidden" name=(field) value="">
+                    <form class="move-dest" method="post" action=(action.clone())>
+                        <input type="hidden" name="id" value=(target_id.clone())>
+                        <input type="hidden" name=(field.clone()) value="">
                         <button class="move-pick" type="submit">
                             <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
                             (t(language, Key::Drive))
                         </button>
                     </form>
                     for dest in rows {
-                        <form class="move-dest" method="post" action=(action)>
-                            <input type="hidden" name="id" value=(target_id.to_string())>
-                            <input type="hidden" name=(field) value=(dest.0.clone())>
+                        <form class="move-dest" method="post" action=(action.clone())>
+                            <input type="hidden" name="id" value=(target_id.clone())>
+                            <input type="hidden" name=(field.clone()) value=(dest.0.clone())>
                             <button class="move-pick" type="submit">
                                 <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
                                 (dest.1.clone())
@@ -255,7 +261,7 @@ async fn move_modal(
                 </div>
             </div>
         </div>
-    }?))
+    }.boxed()))
 }
 
 pub(crate) fn human_size(bytes: u64) -> String {
@@ -415,16 +421,17 @@ fn sort_files(files: &mut [in_core::store::File], key: SortKey, dir: SortDir) {
 
 /// `GET /drive?folder=<id>`: one directory.
 #[page("/drive")]
-async fn drive(cx: &Cx) -> Result {
+async fn drive(cx: &Cx) -> Result<impl View> {
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(_) => {
             let location = (header::LOCATION, HeaderValue::from_static("/"));
-            return view! {
+            return Ok(view! {
                 cx =>
                 (StatusCode::SEE_OTHER)
                 (location)
-            };
+            }
+            .boxed());
         }
     };
     let language = lang(cx).await;
@@ -577,9 +584,9 @@ async fn drive(cx: &Cx) -> Result {
         created.clone()
     };
 
-    view! {
+    Ok(view! {
         cx =>
-        (topbar(cx, NavPage::Drive, &user, language).await?)
+        (topcoat::view::Child::new(topbar(cx, NavPage::Drive, &user, language).await?))
         <main class="settings-stage stage-wide">
             <h1 class="settings-title">(t(language, Key::Drive))</h1>
             <div class="filterbar drive-bar">
@@ -730,7 +737,7 @@ async fn drive(cx: &Cx) -> Result {
                         for file in &hits.files {
                             <div class="drive-row">
                                 <a class="drive-open" href=(format!("/view/{}", file.id))>
-                                    (crate::files::entry_chip(cx, file).await?)
+                                    (topcoat::view::Child::new(crate::files::entry_chip(cx, file).await?))
                                     <span class="dep-name-cell">
                                         <span class="dep-title">(file.name.clone())</span>
                                         if shared.contains(&(ShareKind::File, file.id.clone())) {
@@ -795,11 +802,11 @@ async fn drive(cx: &Cx) -> Result {
                                 <summary class="quiet entry-options-trigger" aria-label=(t(language, Key::Options))>"⋯"</summary>
                                 <div class="user-menu-panel">
                                     <a class="user-menu-item"
-                                        href=(format!("{here}{edit_sep}edit={}", folder.id))>(t(language, Key::Rename))</a>
+                                        href=(format!("{}{edit_sep}edit={}", here.clone(), folder.id))>(t(language, Key::Rename))</a>
                                     <a class="user-menu-item"
-                                        href=(format!("{here}{edit_sep}share=folder:{}", folder.id))>(t(language, Key::Share))</a>
+                                        href=(format!("{}{edit_sep}share=folder:{}", here.clone(), folder.id))>(t(language, Key::Share))</a>
                                     <a class="user-menu-item"
-                                        href=(format!("{here}{edit_sep}move=folder:{}", folder.id))>(t(language, Key::Move))</a>
+                                        href=(format!("{}{edit_sep}move=folder:{}", here.clone(), folder.id))>(t(language, Key::Move))</a>
                                     <form class="user-menu-item-form" method="post" action="/api/folder/delete">
                                         <input type="hidden" name="id" value=(folder.id.clone())>
                                         <button class="user-menu-item quiet quiet-danger" type="submit">(t(language, Key::Delete))</button>
@@ -812,7 +819,7 @@ async fn drive(cx: &Cx) -> Result {
                     for file in listing.files.iter() {
                         <div class="drive-row">
                             if edit_id.as_deref() == Some(file.id.as_str()) {
-                                (crate::files::entry_chip(cx, file).await?)
+                                (topcoat::view::Child::new(crate::files::entry_chip(cx, file).await?))
                                 <form class="dep-edit-form" method="post" action="/api/file/rename">
                                     <input type="hidden" name="id" value=(file.id.clone())>
                                     <input class="field-input" type="text" name="name" maxlength="255"
@@ -824,7 +831,7 @@ async fn drive(cx: &Cx) -> Result {
                                 </form>
                             } else {
                             <a class="drive-open" href=(format!("/view/{}", file.id))>
-                                (crate::files::entry_chip(cx, file).await?)
+                                (topcoat::view::Child::new(crate::files::entry_chip(cx, file).await?))
                                 <span class="dep-name-cell">
                                     <span class="dep-title">(file.name.clone())</span>
                                     if shared.contains(&(ShareKind::File, file.id.clone())) {
@@ -839,16 +846,16 @@ async fn drive(cx: &Cx) -> Result {
                                 <summary class="quiet entry-options-trigger" aria-label=(t(language, Key::Options))>"⋯"</summary>
                                 <div class="user-menu-panel">
                                     <a class="user-menu-item"
-                                        href=(format!("{here}{edit_sep}edit={}", file.id))>(t(language, Key::Rename))</a>
+                                        href=(format!("{}{edit_sep}edit={}", here.clone(), file.id))>(t(language, Key::Rename))</a>
                                     <a class="user-menu-item"
-                                        href=(format!("{here}{edit_sep}share=file:{}", file.id))>(t(language, Key::Share))</a>
+                                        href=(format!("{}{edit_sep}share=file:{}", here.clone(), file.id))>(t(language, Key::Share))</a>
                                     // The `download` attribute keeps the
                                     // soft-nav handler off the click, so the
                                     // bytes land as a file, not a page swap.
                                     <a class="user-menu-item"
                                         href=(format!("/file/{}?dl=1", file.id)) download="">(t(language, Key::Download))</a>
                                     <a class="user-menu-item"
-                                        href=(format!("{here}{edit_sep}move=file:{}", file.id))>(t(language, Key::Move))</a>
+                                        href=(format!("{}{edit_sep}move=file:{}", here.clone(), file.id))>(t(language, Key::Move))</a>
                                     <form class="user-menu-item-form" method="post" action="/api/file/delete">
                                         <input type="hidden" name="id" value=(file.id.clone())>
                                         <button class="user-menu-item quiet quiet-danger" type="submit">(t(language, Key::Delete))</button>
@@ -864,21 +871,21 @@ async fn drive(cx: &Cx) -> Result {
             }
         </main>
         if let Some(dialog) = move_dialog {
-            (dialog)
+            (topcoat::view::Child::new(dialog))
         }
         if let Some(dialog) = share_dialog {
-            (dialog)
+            (topcoat::view::Child::new(dialog))
         }
-        (crate::dropdown::dropdown_script(cx).await?)
-        (upload_script(cx).await?)
-        (options_menu_script(cx).await?)
-    }
+        (topcoat::view::Child::new(crate::dropdown::dropdown_script(cx).await?))
+        (topcoat::view::Child::new(upload_script(cx).await?))
+        (topcoat::view::Child::new(options_menu_script(cx).await?))
+    }.boxed())
 }
 
 /// `GET /search`: the old address — a 303 to the drive's search box, keeping
 /// the query so old links land on their results. Nothing renders here.
 #[page("/search")]
-async fn search_redirect(cx: &Cx) -> Result {
+async fn search_redirect(cx: &Cx) -> Result<impl View> {
     let target = match query_value(uri(cx).query().unwrap_or(""), "q") {
         Some(raw) if !raw.trim().is_empty() => format!("/drive?q={raw}"),
         _ => "/drive".to_string(),
@@ -887,11 +894,12 @@ async fn search_redirect(cx: &Cx) -> Result {
         header::LOCATION,
         HeaderValue::from_str(&target).unwrap_or(HeaderValue::from_static("/drive")),
     );
-    view! {
+    Ok(view! {
         cx =>
         (StatusCode::SEE_OTHER)
         (location)
     }
+    .boxed())
 }
 
 /// The value of one query pair, if present. A hand-edited query names
@@ -948,7 +956,7 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 /// The Rust `\`-continuations strip newlines, so the emitted script is one
 /// long line: only `/* */` comments survive inside it — a `//` would eat
 /// the rest of the script and kill every handler silently.
-async fn upload_script(cx: &Cx) -> Result {
+async fn upload_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     use topcoat::view::Unescaped;
     const JS: &str = "\
         (function () { \
@@ -1366,7 +1374,7 @@ async fn upload_script(cx: &Cx) -> Result {
                 }); \
             })(); \
         })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }.boxed())
 }
 
 /// The row Options menus' client half: a `<details class="entry-options">`
@@ -1392,7 +1400,7 @@ async fn upload_script(cx: &Cx) -> Result {
 ///
 /// The Rust `\`-continuations strip newlines, so the emitted script is one
 /// long line: only `/* */` comments survive inside it.
-async fn options_menu_script(cx: &Cx) -> Result {
+async fn options_menu_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     use topcoat::view::Unescaped;
     const JS: &str = "\
         (function () { \
@@ -1449,7 +1457,7 @@ async fn options_menu_script(cx: &Cx) -> Result {
                 closeOthers(null); \
             }, true); \
         })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }.boxed())
 }
 
 #[derive(serde::Deserialize)]

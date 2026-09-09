@@ -33,7 +33,7 @@ use topcoat::router::content::Form;
 use topcoat::router::request::{headers as request_headers, uri};
 use topcoat::router::response::IntoResponse;
 use topcoat::router::{HeaderName, StatusCode, header, page, path_param, query_params, route};
-use topcoat::view::view;
+use topcoat::view::{View, ViewExt, view};
 
 use crate::files::{ViewerKind, entry_chip, media_player, media_player_script, viewer_kind};
 use crate::i18n::{Key, Lang, lang, t};
@@ -49,14 +49,18 @@ path_param!(id);
 /// and the `?saved=<call>` chip a clean save carries, the way iz's
 /// `saved_or_refused` marks one. Shared by the trash and settings pages,
 /// which own no banner of their own.
-pub(crate) async fn refusal_banner(cx: &Cx, language: Lang, calls: &[&str]) -> Result {
+pub(crate) async fn refusal_banner<'a>(
+    cx: &'a Cx,
+    language: Lang,
+    calls: &'a [&'a str],
+) -> Result<impl View + 'a> {
     let query = uri(cx).query().unwrap_or("");
     let refusal = query_value(query, "refusal").and_then(|code| Refusal::from_code(&code));
     let on = query_value(query, "on").unwrap_or_default();
     let saved = query_value(query, "saved").unwrap_or_default();
     let refused = calls.iter().any(|call| *call == on);
     let kept = calls.iter().any(|call| *call == saved);
-    view! {
+    Ok(view! {
         cx =>
         if refused {
             if let Some(refusal) = refusal {
@@ -67,6 +71,7 @@ pub(crate) async fn refusal_banner(cx: &Cx, language: Lang, calls: &[&str]) -> R
             <p class="field-note" role="status">(t(language, Key::Saved))</p>
         }
     }
+    .boxed())
 }
 
 /// The value of one query pair, if present.
@@ -419,7 +424,7 @@ async fn remint_link(cx: &Cx, Form(input): Form<RevokeLinkForm>) -> Redirect {
     let created = store
         .create_share_link(
             &user.id,
-            old.kind.clone(),
+            old.kind,
             &old.target_id,
             old.can_download,
             expires_at,
@@ -675,11 +680,12 @@ fn has_flag(query: &str, key: &str) -> bool {
 /// `/s` surface stays a `#[route]` and wraps its views itself — in
 /// `document_shell`, the same shell every `#[page]` under `/` wears, never
 /// a hand-copied head.
-async fn public_page(
-    cx: &Cx,
-    page: Result,
-) -> topcoat::Result<topcoat::router::response::Response> {
-    Ok(document_shell(cx, page).await?.into_response(cx)?)
+async fn public_page(cx: &Cx, page: impl View) -> Result<topcoat::router::response::Response> {
+    document_shell(cx, topcoat::view::Child::new(page))
+        .await?
+        .first()
+        .await?
+        .into_response(cx)
 }
 
 /// The dead card: a spent, expired, revoked or never-real token, a trashed
@@ -690,7 +696,7 @@ async fn dead_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Respon
     let page = view! {
         cx =>
         <main class="scaffold-note">
-            (wordmark(cx).await?)
+            (topcoat::view::Child::new(wordmark(cx).await?))
             <p>(Refusal::ShareRevoked.message_in(language))</p>
             <p><a href="/">(t(language, Key::BackToDrive))</a></p>
         </main>
@@ -872,7 +878,7 @@ async fn password_gate(cx: &Cx) -> topcoat::Result<topcoat::router::response::Re
     let page = view! {
         cx =>
         <main class="scaffold-note">
-            (wordmark(cx).await?)
+            (topcoat::view::Child::new(wordmark(cx).await?))
             <h1 class="settings-title">(t(language, Key::PasswordProtected))</h1>
             <p class="field-note">(t(language, Key::PasswordPrompt))</p>
             if wrong {
@@ -1006,7 +1012,7 @@ async fn download_bytes(
     else {
         return dead_link(cx).await;
     };
-    Ok(parts.into_response(cx)?)
+    parts.into_response(cx)
 }
 
 /// The inline media stream behind a public link: the bytes the card's
@@ -1061,7 +1067,7 @@ async fn media_bytes(
     else {
         return dead_link(cx).await;
     };
-    Ok(parts.into_response(cx)?)
+    parts.into_response(cx)
 }
 
 /// Whether a `Range` header starts at byte 0: only those ranges (and the
@@ -1074,10 +1080,7 @@ fn range_starts_at_zero(header: &str) -> bool {
     if spec.contains(',') {
         return false;
     }
-    match spec.split_once('-') {
-        Some(("0", _)) => true,
-        _ => false,
-    }
+    matches!(spec.split_once('-'), Some(("0", _)))
 }
 
 /// The stored webp preview behind a public link. Unlike the bytes, the
@@ -1109,9 +1112,9 @@ async fn public_thumb(
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok());
     if if_none_match == Some(etag.as_str()) {
-        return Ok((StatusCode::NOT_MODIFIED, headers, Vec::new()).into_response(cx)?);
+        return (StatusCode::NOT_MODIFIED, headers, Vec::new()).into_response(cx);
     }
-    Ok((StatusCode::OK, headers, bytes).into_response(cx)?)
+    (StatusCode::OK, headers, bytes).into_response(cx)
 }
 
 /// A filename safe for a header: quotes and backslashes stripped, never
@@ -1147,15 +1150,15 @@ async fn file_card(
     let page = view! {
         cx =>
         <main class="scaffold-note">
-            (wordmark(cx).await?)
+            (topcoat::view::Child::new(wordmark(cx).await?))
             <h1 class="settings-title">(file.name.clone())</h1>
             <p class="field-note">(format!("{} · {}", file.mime.clone(), crate::settings::human_bytes(file.size_bytes)))</p>
             if preview {
                 <img src=(format!("{token_path}?thumb=1")) alt=(file.name.clone())>
             } else if matches!(media, Some(ViewerKind::Video)) {
-                (media_player(cx, language, file.name.clone(), media_src.clone(), true).await?)
+                (topcoat::view::Child::new(media_player(cx, language, file.name.clone(), media_src.clone(), true).await?))
             } else if matches!(media, Some(ViewerKind::Audio)) {
-                (media_player(cx, language, file.name.clone(), media_src.clone(), false).await?)
+                (topcoat::view::Child::new(media_player(cx, language, file.name.clone(), media_src.clone(), false).await?))
             } else {
                 <p class="field-note">(t(language, Key::PreviewUnavailable))</p>
             }
@@ -1165,7 +1168,7 @@ async fn file_card(
                 <p class="field-note">(t(language, Key::ViewOnly))</p>
             }
         </main>
-        (media_player_script(cx).await?)
+        (topcoat::view::Child::new(media_player_script(cx).await?))
     };
     public_page(cx, page).await
 }
@@ -1173,29 +1176,29 @@ async fn file_card(
 /// One file's chip on the public card: the link's own thumbnail where one
 /// is ready, else the same mime-class glyph the signed-in lists wear.
 /// `/thumb/{id}` needs a session, so this points at the public `?thumb=1`
-/// route behind the same token instead.
-async fn public_chip(cx: &Cx, thumb_src: &str, file: &in_core::store::File) -> Result {
+async fn public_chip<'a>(
+    cx: &'a Cx,
+    thumb_src: &str,
+    file: &in_core::store::File,
+) -> Result<impl View + 'a> {
     if file.thumb_state == ThumbState::Ready {
-        return view! {
+        let src = thumb_src.to_string();
+        return Ok(view! {
             cx =>
-            <img class="file-chip" src=(thumb_src.to_string()) alt="">
-        };
+            <img class="file-chip" src=(src) alt="">
+        }
+        .boxed());
     }
-    entry_chip(cx, file).await
+    Ok(entry_chip(cx, file).await?.boxed())
 }
 
-/// One shared file's chip: the thumbnail image while the target is live,
-/// the mime-class glyph once it is trashed — `/thumb/{id}` 404s trashed
-/// rows, so a Ready image would render broken if the target went into the
-/// trash after the grant. The clone only clears the thumbnail flag for the
-/// render.
-async fn shared_chip(cx: &Cx, file: &in_core::store::File) -> Result {
+async fn shared_chip<'a>(cx: &'a Cx, file: &in_core::store::File) -> Result<impl View + 'a> {
     if file.deleted_at.is_some() {
         let mut unthumb = file.clone();
         unthumb.thumb_state = ThumbState::None;
-        return entry_chip(cx, &unthumb).await;
+        return Ok(entry_chip(cx, &unthumb).await?.boxed());
     }
-    entry_chip(cx, file).await
+    Ok(entry_chip(cx, file).await?.boxed())
 }
 
 /// One row of the public folder listing, folder or file, for the unified
@@ -1235,10 +1238,10 @@ async fn folder_card(
     let mut rows: Vec<PublicEntry> = Vec::new();
     rows.extend(listing.folders.iter().map(PublicEntry::Folder));
     rows.extend(listing.files.iter().map(PublicEntry::File));
-    rows.sort_by(|a, b| a.name().to_lowercase().cmp(&b.name().to_lowercase()));
+    rows.sort_by_key(|row| row.name().to_lowercase());
     let page = view! {
         cx =>
-        (wordmark(cx).await?)
+        (topcoat::view::Child::new(wordmark(cx).await?))
         <main class="settings-stage stage-wide">
             <h1 class="settings-title">(here.name.clone())</h1>
             <section class="panel">
@@ -1253,7 +1256,7 @@ async fn folder_card(
                                 <a class="dep-link" href=(format!("{base}?folder={}", folder.id))><span class="dep-title">(folder.name.clone())</span></a>
                             </div>,
                             PublicEntry::File(file) => <div class="dep-row">
-                                (public_chip(cx, &format!("{base}?folder={at}&file={}&thumb=1", file.id), file).await?)
+                                (topcoat::view::Child::new(public_chip(cx, &format!("{base}?folder={at}&file={}&thumb=1", file.id), file).await?))
                                 <span class="member-name dep-title">(file.name.clone())</span>
                                 <span class="field-note">(crate::settings::human_bytes(file.size_bytes))</span>
                                 <div class="spacer"></div>
@@ -1341,18 +1344,19 @@ impl SharedRow {
 /// Everything others shared with the reader, folders and files in one
 /// list. The reader's own library never appears here.
 #[page("/shared")]
-async fn shared(cx: &Cx) -> Result {
+async fn shared(cx: &Cx) -> Result<impl View> {
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(refusal) => {
             let language = lang(cx).await;
-            return view! {
+            return Ok(view! {
                 cx =>
                 <main class="scaffold-note">
                     <p>(refusal.message_in(language))</p>
                     <p><a href="/">(t(language, Key::BackToDrive))</a></p>
                 </main>
-            };
+            }
+            .boxed());
         }
     };
     let language = lang(cx).await;
@@ -1388,10 +1392,10 @@ async fn shared(cx: &Cx) -> Result {
         if kind == "files" && item.kind != ShareKind::File {
             continue;
         }
-        if let Some(needle) = asked.as_deref() {
-            if !item.name.to_lowercase().contains(&needle.to_lowercase()) {
-                continue;
-            }
+        if let Some(needle) = asked.as_deref()
+            && !item.name.to_lowercase().contains(&needle.to_lowercase())
+        {
+            continue;
         }
         let owner_name = owners.get(&item.owner_id).cloned().unwrap_or_default();
         // The grant carries no dates or counters of its own: the file row
@@ -1451,9 +1455,9 @@ async fn shared(cx: &Cx) -> Result {
         if descending { order.reverse() } else { order }
     });
     let sort_value = format!("{}:{}", sort, if descending { "desc" } else { "asc" });
-    view! {
+    Ok(view! {
         cx =>
-        (topbar(cx, NavPage::Shared, &user, language).await?)
+        (topcoat::view::Child::new(topbar(cx, NavPage::Shared, &user, language).await?))
         <main class="settings-stage stage-wide">
             <h1 class="settings-title">(t(language, Key::SharedWithMe))</h1>
             <div class="filterbar">
@@ -1525,7 +1529,7 @@ async fn shared(cx: &Cx) -> Result {
                                     <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
                                 } else {
                                     match &row.file {
-                                        Some(file) => (shared_chip(cx, file).await?),
+                                        Some(file) => (topcoat::view::Child::new(shared_chip(cx, file).await?)),
                                         None => <span class="file-chip file-chip-generic" aria-hidden="true">"▦"</span>,
                                     }
                                 }
@@ -1544,8 +1548,8 @@ async fn shared(cx: &Cx) -> Result {
                 }
             </section>
         </main>
-        (crate::dropdown::dropdown_script(cx).await?)
-    }
+        (topcoat::view::Child::new(crate::dropdown::dropdown_script(cx).await?))
+    }.boxed())
 }
 
 /// What the grant opens: the download, or the view alone.
@@ -1566,13 +1570,13 @@ fn access_chip(language: Lang, can_download: bool) -> &'static str {
 /// Every form inside posts to the existing share routes and comes back
 /// through `Referer`, so the modal survives them; the minted token's
 /// copy-once banner rides the `?created=` pair into the modal itself.
-pub(crate) async fn share_modal(
-    cx: &Cx,
+pub(crate) async fn share_modal<'a>(
+    cx: &'a Cx,
     kind_raw: &str,
     target_id: &str,
     close_href: &str,
     created: Option<String>,
-) -> Result<Option<topcoat::view::View>> {
+) -> Result<Option<impl View + 'a>> {
     let Some(kind) = parse_kind(kind_raw) else {
         return Ok(None);
     };
@@ -1610,7 +1614,7 @@ pub(crate) async fn share_modal(
     };
     let links = store.share_links(&user.id).await?;
     let live: Vec<_> = links
-        .iter()
+        .into_iter()
         .filter(|link| {
             link.kind == kind && link.target_id == target_id && link.revoked_at.is_none()
         })
@@ -1658,6 +1662,8 @@ pub(crate) async fn share_modal(
     candidates.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     let refusal = query_value(uri(cx).query().unwrap_or(""), "refusal")
         .and_then(|code| Refusal::from_code(&code));
+    let target_id = target_id.to_string();
+    let close_href = close_href.to_string();
     Ok(Some(view! {
         cx =>
         <div class="modal-scrim">
@@ -1668,7 +1674,7 @@ pub(crate) async fn share_modal(
                             <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
                         }
                         if let Some(file) = file.as_ref() {
-                            (entry_chip(cx, file).await?)
+                            (topcoat::view::Child::new(entry_chip(cx, file).await?))
                         }
                         (format!("{} “{}”", t(language, Key::Share), name.clone()))
                     </h2>
@@ -1767,7 +1773,7 @@ pub(crate) async fn share_modal(
         // away. A link from before the sealing — or one whose key is gone —
         // has no address to re-show: the row carries the mint action and the
         // note below states the fact.
-        let url = share_link_url(cx, *link).await;
+        let url = share_link_url(cx, link).await;
         let legacy = url.is_none();
         <div class="member-row">
             <span class="member-name">(t(language, Key::AnyoneWithLink))</span>
@@ -1799,9 +1805,9 @@ pub(crate) async fn share_modal(
     }
             </div>
         </div>
-        (share_copy_script(cx).await?)
-        (share_pick_script(cx).await?)
-    }?))
+        (topcoat::view::Child::new(share_copy_script(cx).await?))
+        (topcoat::view::Child::new(share_pick_script(cx).await?))
+    }.boxed()))
 }
 
 /// The link row's copy client: one delegated listener, idempotent across
@@ -1810,7 +1816,7 @@ pub(crate) async fn share_modal(
 /// wrapping link text itself copies the full address — and only where a
 /// copy button is present: the masked legacy rows carry none, so their
 /// placeholder can never reach a clipboard.
-pub(crate) async fn share_copy_script(cx: &Cx) -> Result {
+pub(crate) async fn share_copy_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     use topcoat::view::Unescaped;
     const JS: &str = "\
         (function () { \
@@ -1834,7 +1840,7 @@ pub(crate) async fn share_copy_script(cx: &Cx) -> Result {
                 else { try { document.execCommand('copy'); } catch (err) {} done(); } \
             }); \
         })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }.boxed())
 }
 
 /// The people picker's client half. The All row checks and unchecks every
@@ -1850,7 +1856,7 @@ pub(crate) async fn share_copy_script(cx: &Cx) -> Result {
 /// anew. Delegated listeners only, idempotent across the modal's
 /// re-renders (`window.__inSharePick` guards it), so the `in:wire` morph
 /// needs no per-element re-init.
-pub(crate) async fn share_pick_script(cx: &Cx) -> Result {
+pub(crate) async fn share_pick_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     use topcoat::view::Unescaped;
     const JS: &str = "\
         (function () { \
@@ -1902,7 +1908,7 @@ pub(crate) async fn share_pick_script(cx: &Cx) -> Result {
                 } \
             }); \
         })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }.boxed())
 }
 
 /// When the link stops opening, or never on its own. Twins the settings

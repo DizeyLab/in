@@ -52,11 +52,14 @@ pub async fn fingerprint(conn: &Connection) -> Result<String> {
         .map_err(|e| StoreError::Backend(e.to_string()))?;
 
     let mut out = String::new();
-    while let Some(row) = rows.next().await.map_err(|e| StoreError::Backend(e.to_string()))? {
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| StoreError::Backend(e.to_string()))?
+    {
         let t: String = row.get(0).map_err(|e| StoreError::Backend(e.to_string()))?;
         let name: String = row.get(1).map_err(|e| StoreError::Backend(e.to_string()))?;
-        let sql: Option<String> =
-            row.get(2).map_err(|e| StoreError::Backend(e.to_string()))?;
+        let sql: Option<String> = row.get(2).map_err(|e| StoreError::Backend(e.to_string()))?;
         out.push_str(&t);
         out.push('|');
         out.push_str(&name);
@@ -75,7 +78,9 @@ pub async fn declared_fingerprint() -> Result<String> {
         .build()
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))?;
-    let conn = db.connect().map_err(|e| StoreError::Backend(e.to_string()))?;
+    let conn = db
+        .connect()
+        .map_err(|e| StoreError::Backend(e.to_string()))?;
     conn.execute_batch(&schema_sql())
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))?;
@@ -115,14 +120,20 @@ pub(crate) fn diff_report(old: &str, new: &str) -> String {
     let mut changed = Vec::new();
 
     for old_obj in &old_objs {
-        match new_objs.iter().find(|n| n.kind == old_obj.kind && n.name == old_obj.name) {
+        match new_objs
+            .iter()
+            .find(|n| n.kind == old_obj.kind && n.name == old_obj.name)
+        {
             Some(new_obj) if new_obj.sql != old_obj.sql => changed.push((old_obj, new_obj)),
             Some(_) => {}
             None => missing.push(old_obj),
         }
     }
     for new_obj in &new_objs {
-        if !old_objs.iter().any(|o| o.kind == new_obj.kind && o.name == new_obj.name) {
+        if !old_objs
+            .iter()
+            .any(|o| o.kind == new_obj.kind && o.name == new_obj.name)
+        {
             extra.push(new_obj);
         }
     }
@@ -204,10 +215,10 @@ fn extract_column_names(sql: &str) -> Vec<String> {
             _ => current.push(ch),
         }
     }
-    if !current.is_empty() {
-        if let Some(col) = first_identifier(&current) {
-            cols.push(col);
-        }
+    if !current.is_empty()
+        && let Some(col) = first_identifier(&current)
+    {
+        cols.push(col);
     }
     cols
 }
@@ -263,7 +274,7 @@ fn normalize_schema(sql: &str) -> String {
 
         if ch == '-' && chars.peek() == Some(&'-') {
             chars.next();
-            while let Some(c) = chars.next() {
+            for c in chars.by_ref() {
                 if c == '\n' {
                     break;
                 }
@@ -364,7 +375,8 @@ mod tests {
     fn if_not_exists_does_not_corrupt_identifiers() {
         // The stripper looks for whole tokens; words that merely appear
         // inside identifiers or string literals must stay put.
-        let a = "CREATE TABLE IF NOT EXISTS notification (if_not_exists TEXT DEFAULT 'IF NOT EXISTS');";
+        let a =
+            "CREATE TABLE IF NOT EXISTS notification (if_not_exists TEXT DEFAULT 'IF NOT EXISTS');";
         let b = "CREATE TABLE notification (if_not_exists TEXT DEFAULT 'IF NOT EXISTS');";
         assert_eq!(normalize_schema(a), normalize_schema(b));
     }

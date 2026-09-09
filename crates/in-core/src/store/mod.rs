@@ -15,6 +15,8 @@ use time::OffsetDateTime;
 #[cfg(feature = "server")]
 pub mod blobs;
 #[cfg(feature = "server")]
+pub mod r2;
+#[cfg(feature = "server")]
 pub mod reconcile;
 #[cfg(feature = "server")]
 pub mod schema;
@@ -24,8 +26,6 @@ pub mod secret;
 pub mod sniff;
 #[cfg(feature = "server")]
 pub mod turso_store;
-#[cfg(feature = "server")]
-pub mod r2;
 
 #[cfg(feature = "server")]
 pub use reconcile::{ReconcileOptions, reconcile};
@@ -427,7 +427,6 @@ pub trait Store: 'static + Send + Sync {
 
     /// Writes the person's display preferences — `theme` ('light'/'dark'),
     /// `language` ('en'/'tr') and `ui` ('ledger'/'instrument') — read by
-
     /// `root_layout` into `data-theme`, `<html lang>` and `data-ui`. A value
     /// no preferences form offers is refused with [`StoreError::Corrupt`] —
     /// the same refusal a bad enum read from the row gets, because a bad
@@ -489,8 +488,11 @@ pub trait Store: 'static + Send + Sync {
 
     /// The bytes themselves, by the service's own handle. `None` when there
     /// is no such row, or its file went missing.
-    async fn service_file_bytes(&self, owner_id: &str, external_id: &str)
-        -> Result<Option<Vec<u8>>>;
+    async fn service_file_bytes(
+        &self,
+        owner_id: &str,
+        external_id: &str,
+    ) -> Result<Option<Vec<u8>>>;
 
     /// Takes a service file away for good — the row, its bytes, and the
     /// usage they carried. No trash: a machine client's delete is a delete.

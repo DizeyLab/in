@@ -13,6 +13,13 @@
 //! disabling yourself is refused), the third stores the origin share links
 //! are built from.
 
+use crate::i18n::{Key, lang, t};
+use crate::layout::{NavPage, topbar};
+use crate::server::{
+    Refusal, app, back_to, require_admin, require_user, share_link_url, share_origin,
+};
+use crate::service::mintable_services;
+use crate::share::{refusal_banner, refusal_of, share_copy_script};
 use in_core::store::{ShareKind, User};
 use serde::Deserialize;
 use topcoat::Result;
@@ -20,14 +27,7 @@ use topcoat::context::Cx;
 use topcoat::router::content::Form;
 use topcoat::router::request::uri;
 use topcoat::router::{HeaderName, StatusCode, header, page, route};
-use topcoat::view::view;
-use crate::server::{
-    Refusal, app, back_to, require_admin, require_user, share_link_url, share_origin,
-};
-use crate::service::mintable_services;
-use crate::share::{refusal_banner, refusal_of, share_copy_script};
-use crate::i18n::{Key, lang, t};
-use crate::layout::{NavPage, topbar};
+use topcoat::view::{View, ViewExt, view};
 
 /// Bytes in human units: `512 B`, `1.5 KiB`, `2.0 GiB`. One decimal past
 /// bytes so a quota line reads at a glance.
@@ -151,10 +151,19 @@ async fn set_quota(cx: &Cx, Form(input): Form<QuotaForm>) -> Redirect {
         .store
         .list_service_accounts()
         .await
-        .map(|accounts| accounts.iter().any(|account| account.user_id == input.user_id))
+        .map(|accounts| {
+            accounts
+                .iter()
+                .any(|account| account.user_id == input.user_id)
+        })
         .unwrap_or(false);
     if service_target {
-        return redirect_back(cx, "/settings?section=everyone", "quota", Some(Refusal::ServiceQuota));
+        return redirect_back(
+            cx,
+            "/settings?section=everyone",
+            "quota",
+            Some(Refusal::ServiceQuota),
+        );
     }
     match unit_bytes(&input.quota, &input.quota_unit) {
         Some(quota_bytes) => match app(cx)
@@ -163,9 +172,19 @@ async fn set_quota(cx: &Cx, Form(input): Form<QuotaForm>) -> Redirect {
             .await
         {
             Ok(()) => redirect_back(cx, "/settings?section=everyone", "quota", None),
-            Err(error) => redirect_back(cx, "/settings?section=everyone", "quota", Some(refusal_of(error))),
+            Err(error) => redirect_back(
+                cx,
+                "/settings?section=everyone",
+                "quota",
+                Some(refusal_of(error)),
+            ),
         },
-        None => redirect_back(cx, "/settings?section=everyone", "quota", Some(Refusal::BadLimit)),
+        None => redirect_back(
+            cx,
+            "/settings?section=everyone",
+            "quota",
+            Some(Refusal::BadLimit),
+        ),
     }
 }
 
@@ -182,10 +201,17 @@ struct DisableForm {
 async fn set_disabled(cx: &Cx, Form(input): Form<DisableForm>) -> Redirect {
     let admin = match require_admin(cx).await {
         Ok(admin) => admin,
-        Err(refusal) => return redirect_back(cx, "/settings?section=everyone", "disable", Some(refusal)),
+        Err(refusal) => {
+            return redirect_back(cx, "/settings?section=everyone", "disable", Some(refusal));
+        }
     };
     if input.user_id == admin.id {
-        return redirect_back(cx, "/settings?section=everyone", "disable", Some(Refusal::Forbidden));
+        return redirect_back(
+            cx,
+            "/settings?section=everyone",
+            "disable",
+            Some(Refusal::Forbidden),
+        );
     }
     let disabled = match input.disabled.as_deref() {
         None => true,
@@ -200,7 +226,12 @@ async fn set_disabled(cx: &Cx, Form(input): Form<DisableForm>) -> Redirect {
         .await
     {
         Ok(()) => redirect_back(cx, "/settings?section=everyone", "disable", None),
-        Err(error) => redirect_back(cx, "/settings?section=everyone", "disable", Some(refusal_of(error))),
+        Err(error) => redirect_back(
+            cx,
+            "/settings?section=everyone",
+            "disable",
+            Some(refusal_of(error)),
+        ),
     }
 }
 
@@ -228,16 +259,38 @@ const LANGUAGE_OPTIONS: [&str; 2] = ["en", "tr"];
 async fn set_preferences(cx: &Cx, Form(input): Form<PreferencesForm>) -> Redirect {
     let user = match require_user(cx).await {
         Ok(user) => user,
-        Err(refusal) => return redirect_back(cx, "/settings?section=profile", "preferences", Some(refusal)),
+        Err(refusal) => {
+            return redirect_back(
+                cx,
+                "/settings?section=profile",
+                "preferences",
+                Some(refusal),
+            );
+        }
     };
     if !UI_OPTIONS.contains(&input.ui.as_str()) {
-        return redirect_back(cx, "/settings?section=profile", "preferences", Some(Refusal::BadUi));
+        return redirect_back(
+            cx,
+            "/settings?section=profile",
+            "preferences",
+            Some(Refusal::BadUi),
+        );
     }
     if !THEME_OPTIONS.contains(&input.theme.as_str()) {
-        return redirect_back(cx, "/settings?section=profile", "preferences", Some(Refusal::BadTheme));
+        return redirect_back(
+            cx,
+            "/settings?section=profile",
+            "preferences",
+            Some(Refusal::BadTheme),
+        );
     }
     if !LANGUAGE_OPTIONS.contains(&input.language.as_str()) {
-        return redirect_back(cx, "/settings?section=profile", "preferences", Some(Refusal::BadLanguage));
+        return redirect_back(
+            cx,
+            "/settings?section=profile",
+            "preferences",
+            Some(Refusal::BadLanguage),
+        );
     }
     match app(cx)
         .store
@@ -245,7 +298,12 @@ async fn set_preferences(cx: &Cx, Form(input): Form<PreferencesForm>) -> Redirec
         .await
     {
         Ok(()) => redirect_back(cx, "/settings?section=profile", "preferences", None),
-        Err(error) => redirect_back(cx, "/settings?section=profile", "preferences", Some(refusal_of(error))),
+        Err(error) => redirect_back(
+            cx,
+            "/settings?section=profile",
+            "preferences",
+            Some(refusal_of(error)),
+        ),
     }
 }
 
@@ -269,11 +327,21 @@ async fn set_base_url(cx: &Cx, Form(input): Form<BaseUrlForm>) -> Redirect {
     }
     let trimmed = input.base_url.trim().to_string();
     if !trimmed.is_empty() && in_core::Config::validate_base_url(&trimmed).is_err() {
-        return redirect_back(cx, "/settings?section=server", "base_url", Some(Refusal::BadBaseUrl));
+        return redirect_back(
+            cx,
+            "/settings?section=server",
+            "base_url",
+            Some(Refusal::BadBaseUrl),
+        );
     }
     match app(cx).store.set_setting("base_url", &trimmed).await {
         Ok(()) => redirect_back(cx, "/settings?section=server", "base_url", None),
-        Err(error) => redirect_back(cx, "/settings?section=server", "base_url", Some(refusal_of(error))),
+        Err(error) => redirect_back(
+            cx,
+            "/settings?section=server",
+            "base_url",
+            Some(refusal_of(error)),
+        ),
     }
 }
 
@@ -305,21 +373,41 @@ fn redirect_shown(cx: &Cx, ticket: &str) -> Redirect {
 #[route(POST "/api/settings/service_add")]
 async fn service_add(cx: &Cx, Form(input): Form<ServiceAddForm>) -> Redirect {
     if let Err(refusal) = require_admin(cx).await {
-        return redirect_back(cx, "/settings?section=service", "service_add", Some(refusal));
+        return redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_add",
+            Some(refusal),
+        );
     }
     let service = input.service.trim();
     let name = input.name.trim();
     if name.is_empty() {
-        return redirect_back(cx, "/settings?section=service", "service_add", Some(Refusal::BadServiceKey));
+        return redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_add",
+            Some(Refusal::BadServiceKey),
+        );
     }
     let mintable = match mintable_services(cx).await {
         Ok(mintable) => mintable,
         Err(refusal) => {
-            return redirect_back(cx, "/settings?section=service", "service_add", Some(refusal));
+            return redirect_back(
+                cx,
+                "/settings?section=service",
+                "service_add",
+                Some(refusal),
+            );
         }
     };
     if !mintable.iter().any(|row| row.key == service) {
-        return redirect_back(cx, "/settings?section=service", "service_add", Some(Refusal::BadServiceKey));
+        return redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_add",
+            Some(Refusal::BadServiceKey),
+        );
     }
     let default_quota_bytes = app(cx).config.default_quota_bytes;
     match app(cx)
@@ -328,7 +416,12 @@ async fn service_add(cx: &Cx, Form(input): Form<ServiceAddForm>) -> Redirect {
         .await
     {
         Ok(token) => redirect_shown(cx, &crate::server::stash_shown_secret(token)),
-        Err(_) => redirect_back(cx, "/settings?section=service", "service_add", Some(Refusal::Unavailable)),
+        Err(_) => redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_add",
+            Some(Refusal::Unavailable),
+        ),
     }
 }
 
@@ -337,12 +430,27 @@ async fn service_add(cx: &Cx, Form(input): Form<ServiceAddForm>) -> Redirect {
 #[route(POST "/api/settings/service_rotate")]
 async fn service_rotate(cx: &Cx, Form(input): Form<ServiceAction>) -> Redirect {
     if let Err(refusal) = require_admin(cx).await {
-        return redirect_back(cx, "/settings?section=service", "service_rotate", Some(refusal));
+        return redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_rotate",
+            Some(refusal),
+        );
     }
     match app(cx).store.rotate_service_key(&input.service).await {
         Ok(Some(token)) => redirect_shown(cx, &crate::server::stash_shown_secret(token)),
-        Ok(None) => redirect_back(cx, "/settings?section=service", "service_rotate", Some(Refusal::BadServiceKey)),
-        Err(_) => redirect_back(cx, "/settings?section=service", "service_rotate", Some(Refusal::Unavailable)),
+        Ok(None) => redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_rotate",
+            Some(Refusal::BadServiceKey),
+        ),
+        Err(_) => redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_rotate",
+            Some(Refusal::Unavailable),
+        ),
     }
 }
 
@@ -351,12 +459,27 @@ async fn service_rotate(cx: &Cx, Form(input): Form<ServiceAction>) -> Redirect {
 #[route(POST "/api/settings/service_revoke")]
 async fn service_revoke(cx: &Cx, Form(input): Form<ServiceAction>) -> Redirect {
     if let Err(refusal) = require_admin(cx).await {
-        return redirect_back(cx, "/settings?section=service", "service_revoke", Some(refusal));
+        return redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_revoke",
+            Some(refusal),
+        );
     }
     match app(cx).store.revoke_service_key(&input.service).await {
         Ok(true) => redirect_back(cx, "/settings?section=service", "service_revoke", None),
-        Ok(false) => redirect_back(cx, "/settings?section=service", "service_revoke", Some(Refusal::BadServiceKey)),
-        Err(_) => redirect_back(cx, "/settings?section=service", "service_revoke", Some(Refusal::Unavailable)),
+        Ok(false) => redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_revoke",
+            Some(Refusal::BadServiceKey),
+        ),
+        Err(_) => redirect_back(
+            cx,
+            "/settings?section=service",
+            "service_revoke",
+            Some(Refusal::Unavailable),
+        ),
     }
 }
 
@@ -395,18 +518,19 @@ fn query_value(query: &str, key: &str) -> Option<String> {
 /// links are built from. An admin section asked for by anyone else renders
 /// the profile, the way an unknown section name does.
 #[page("/settings")]
-async fn settings(cx: &Cx) -> Result {
+async fn settings(cx: &Cx) -> Result<impl View> {
     let user = match require_user(cx).await {
         Ok(user) => user,
         Err(refusal) => {
             let language = lang(cx).await;
-            return view! {
+            return Ok(view! {
                 cx =>
                 <main class="scaffold-note">
                     <p>(refusal.message_in(language))</p>
                     <p><a href="/">(t(language, Key::BackToDrive))</a></p>
                 </main>
-            };
+            }
+            .boxed());
         }
     };
     let language = lang(cx).await;
@@ -445,7 +569,7 @@ async fn settings(cx: &Cx) -> Result {
     // Only the section on show pays for its rows: the links panel names
     // each live link's target, Everyone lists the accounts, and the server
     // panel needs the origin — nothing else reads them.
-    let mut link_names: Vec<(&in_core::store::ShareLink, String, Option<String>)> = Vec::new();
+    let mut link_names: Vec<(in_core::store::ShareLink, String, Option<String>)> = Vec::new();
     let links = if section == Section::Links {
         store.share_links(&user.id).await?
     } else {
@@ -476,7 +600,7 @@ async fn settings(cx: &Cx) -> Result {
             // The full address, re-derived from the token the creation
             // sealed away; `None` keeps the row masked with the note.
             let url = share_link_url(cx, link).await;
-            link_names.push((link, name, url));
+            link_names.push((link.clone(), name, url));
         }
     }
     let users = if administers && section == Section::Everyone {
@@ -523,9 +647,9 @@ async fn settings(cx: &Cx) -> Result {
     } else {
         None
     };
-    view! {
+    Ok(view! {
         cx =>
-        (topbar(cx, NavPage::Settings, &fresh, language).await?)
+        (topcoat::view::Child::new(topbar(cx, NavPage::Settings, &fresh, language).await?))
         <div class="settings-shell">
             <nav class="settings-sections">
                 <a class=(rail_class(section, Section::Profile)) href="/settings?section=profile">(t(language, Key::Profile))</a>
@@ -538,7 +662,7 @@ async fn settings(cx: &Cx) -> Result {
             </nav>
             <main class="settings-stage stage-wide">
                 <h1 class="settings-title">(t(language, Key::Settings))</h1>
-                (refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences", "base_url", "service_add", "service_rotate", "service_revoke"]).await?)
+                (topcoat::view::Child::new(refusal_banner(cx, language, &["create", "revoke", "add", "remove", "quota", "disable", "preferences", "base_url", "service_add", "service_rotate", "service_revoke"]).await?))
                 if section == Section::Profile {
                     <section class="panel">
                         <div class="panel-head">
@@ -673,7 +797,7 @@ async fn settings(cx: &Cx) -> Result {
                     </section>
                     // One delegated listener serves every row's copy button
                     // above; the script is idempotent across re-renders.
-                    (share_copy_script(cx).await?)
+                    (topcoat::view::Child::new(share_copy_script(cx).await?))
                 }
                 if section == Section::Everyone {
                     <section class="panel">
@@ -856,12 +980,12 @@ async fn settings(cx: &Cx) -> Result {
                     </section>
                     // The banner's copy button above; one delegated listener
                     // serves every row, idempotent across re-renders.
-                    (share_copy_script(cx).await?)
+                    (topcoat::view::Child::new(share_copy_script(cx).await?))
                 }
             </main>
         </div>
-        (crate::dropdown::dropdown_script(cx).await?)
-    }
+        (topcoat::view::Child::new(crate::dropdown::dropdown_script(cx).await?))
+    }.boxed())
 }
 
 /// The just-minted token off the redirect's `?created=` pair, if present.

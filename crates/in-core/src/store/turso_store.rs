@@ -696,7 +696,7 @@ pub fn hash_link_password(password: &str) -> Result<String> {
 /// hash answers false — a gate that could panic would be a gate an attacker
 /// could aim.
 pub fn link_password_matches(phc: &str, candidate: &str) -> bool {
-    use argon2::password_hash::{phc::PasswordHash, PasswordVerifier};
+    use argon2::password_hash::{PasswordVerifier, phc::PasswordHash};
     match PasswordHash::new(phc) {
         Ok(parsed) => link_argon2()
             .verify_password(candidate.as_bytes(), &parsed)
@@ -831,7 +831,7 @@ fn default_storage(database: &str) -> std::path::PathBuf {
 /// goes in after, and a failed row write unlinks this file best-effort.
 fn write_file_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
-    let tmp = path.with_extension(format!("{}.tmp", Ulid::new()));
+    let tmp = path.with_extension(format!("{}.tmp", Ulid::generate()));
     let mut file = std::fs::File::create(&tmp)?;
     file.write_all(bytes)?;
     file.flush()?;
@@ -1163,7 +1163,7 @@ impl Store for TursoStore {
         // because a deployment with no admin is a deployment nobody can
         // administer.
         let admin = admin.unwrap_or(n == 0);
-        let id = Ulid::new().to_string();
+        let id = Ulid::generate().to_string();
         let now = now_text()?;
         tx.execute(
             "INSERT INTO user (id, oidc_sub, email, display_name, admin, disabled, \
@@ -1282,7 +1282,7 @@ impl Store for TursoStore {
             .map_err(backend)?;
         check_live_parent(&tx, owner_id, parent_id).await?;
         let name = free_folder_name(&tx, owner_id, parent_id, &name, None).await?;
-        let id = Ulid::new().to_string();
+        let id = Ulid::generate().to_string();
         let now = now_text()?;
         tx.execute(
             "INSERT INTO folder (id, owner_id, parent_id, name, created_at, deleted_at) \
@@ -1534,7 +1534,7 @@ impl Store for TursoStore {
         // The bytes land first, then the row says they are there: a crash
         // in between leaves an orphan blob the boot sweep deletes, never a
         // row pointing at nothing.
-        let id = Ulid::new().to_string();
+        let id = Ulid::generate().to_string();
         let file_key = format!("files/{id}");
         let thumb_key = format!("thumbs/{id}");
         self.blobs
@@ -1984,10 +1984,7 @@ impl Store for TursoStore {
         // boot sweep collects.
         let _ = self
             .blobs
-            .delete(&[
-                &format!("files/{id}"),
-                &format!("thumbs/{id}"),
-            ])
+            .delete(&[&format!("files/{id}"), &format!("thumbs/{id}")])
             .await;
         self.announce([Topic::Library(owner.clone()), Topic::Trash(owner)]);
         Ok(true)
@@ -2057,10 +2054,7 @@ impl Store for TursoStore {
         for file_id in &deleted_files {
             let _ = self
                 .blobs
-                .delete(&[
-                    &format!("files/{file_id}"),
-                    &format!("thumbs/{file_id}"),
-                ])
+                .delete(&[&format!("files/{file_id}"), &format!("thumbs/{file_id}")])
                 .await;
         }
         let purged = (deleted_files.len() + deleted_folders.len()) as u64;
@@ -2129,7 +2123,7 @@ impl Store for TursoStore {
         }
         let token = new_token();
         let token_hash = hash_share_token(&token);
-        let id = Ulid::new().to_string();
+        let id = Ulid::generate().to_string();
         let now = now_text()?;
         let expires = expires_at.map(stamp).transpose()?;
         let conn = self.conn.lock().await;
@@ -2507,7 +2501,7 @@ impl Store for TursoStore {
         check_live_parent_on(&conn, owner_id, folder_id).await?;
         let (quota, used) = check_quota(&conn, owner_id).await?;
         fit_quota(quota, used, size_bytes)?;
-        let id = Ulid::new().to_string();
+        let id = Ulid::generate().to_string();
         let now = OffsetDateTime::now_utc();
         let created = stamp(now)?;
         let expires = stamp(now + time::Duration::hours(UPLOAD_TTL_HOURS as i64))?;
@@ -2570,11 +2564,11 @@ impl Store for TursoStore {
         if bytes.len() as u64 != expected_chunk_len(session.size_bytes, index) {
             return Err(StoreError::BadChunk);
         }
-        let dir = session_dir(&self.storage, &id);
+        let dir = session_dir(&self.storage, id);
         std::fs::create_dir_all(&dir).map_err(|e| StoreError::Backend(e.to_string()))?;
-        write_file_atomic(&chunk_path(&self.storage, &id, index), bytes)
+        write_file_atomic(&chunk_path(&self.storage, id, index), bytes)
             .map_err(|e| StoreError::Backend(e.to_string()))?;
-        let received = staged_received(&self.storage, &id);
+        let received = staged_received(&self.storage, id);
         let conn = self.conn.lock().await;
         conn.execute(
             "UPDATE upload_session SET received_bytes = ?1 WHERE id = ?2",
@@ -2617,7 +2611,7 @@ impl Store for TursoStore {
         // still staged for another attempt.
         let count = chunk_count(session.size_bytes);
         for index in 0..count {
-            let len = std::fs::metadata(chunk_path(&self.storage, &id, index))
+            let len = std::fs::metadata(chunk_path(&self.storage, id, index))
                 .map(|m| m.len())
                 .unwrap_or(u64::MAX);
             if len != expected_chunk_len(session.size_bytes, index) {
@@ -2627,18 +2621,19 @@ impl Store for TursoStore {
         // Assemble through a temp name in the files directory: a crash
         // mid-assemble leaves a temp the sweep deletes, never a half file
         // wearing a real name.
-        let file_id = Ulid::new().to_string();
+        let file_id = Ulid::generate().to_string();
         // Staged in the files directory under a temp name: the sniffer and
         // the thumbnailer need a real local file, and the adopt that places
         // the assembled bytes is a same-tree rename away.
-        let tmp = file_path(&self.storage, &file_id).with_extension(format!("{}.tmp", Ulid::new()));
+        let tmp =
+            file_path(&self.storage, &file_id).with_extension(format!("{}.tmp", Ulid::generate()));
         {
             use std::io::Write as _;
             let mut out =
                 std::fs::File::create(&tmp).map_err(|e| StoreError::Backend(e.to_string()))?;
             let mut total = 0u64;
             for index in 0..count {
-                let mut chunk = std::fs::File::open(chunk_path(&self.storage, &id, index))
+                let mut chunk = std::fs::File::open(chunk_path(&self.storage, id, index))
                     .map_err(|e| StoreError::Backend(e.to_string()))?;
                 total += std::io::copy(&mut chunk, &mut out)
                     .map_err(|e| StoreError::Backend(e.to_string()))?;
@@ -2775,10 +2770,7 @@ impl Store for TursoStore {
             // is what failed.
             let _ = self
                 .blobs
-                .delete(&[
-                    &format!("files/{file_id}"),
-                    &format!("thumbs/{file_id}"),
-                ])
+                .delete(&[&format!("files/{file_id}"), &format!("thumbs/{file_id}")])
                 .await;
             return Err(backend(e));
         }
@@ -2805,7 +2797,7 @@ impl Store for TursoStore {
         drop(rows);
         tx.commit().await.map_err(backend)?;
         // After the commit: the chunks served their purpose.
-        let _ = std::fs::remove_dir_all(session_dir(&self.storage, &id));
+        let _ = std::fs::remove_dir_all(session_dir(&self.storage, id));
         self.announce([Topic::Library(session.owner_id)]);
         Ok(file)
     }
@@ -2819,7 +2811,7 @@ impl Store for TursoStore {
         .await
         .map_err(backend)?;
         drop(conn);
-        let _ = std::fs::remove_dir_all(session_dir(&self.storage, &id));
+        let _ = std::fs::remove_dir_all(session_dir(&self.storage, id));
         Ok(())
     }
 
@@ -2848,7 +2840,7 @@ impl Store for TursoStore {
         }
         drop(conn);
         for id in &ids {
-            let _ = std::fs::remove_dir_all(session_dir(&self.storage, &id));
+            let _ = std::fs::remove_dir_all(session_dir(&self.storage, id));
         }
         Ok(ids.len() as u64)
     }
@@ -2928,7 +2920,7 @@ impl Store for TursoStore {
             // service's bytes.
             Some(row) => (user_from(&row)?.id, false),
             None => {
-                let id = Ulid::new().to_string();
+                let id = Ulid::generate().to_string();
                 tx.execute(
                     "INSERT INTO user (id, oidc_sub, email, display_name, admin, disabled, \
                      quota_bytes, used_bytes, ui, theme, language, created_at, last_seen_at, \
@@ -2951,7 +2943,13 @@ impl Store for TursoStore {
         tx.execute(
             "INSERT INTO service_key (token_hash, name, service, user_id, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![hash_share_token(&token), name, service, user_id.clone(), now_text()?],
+            params![
+                hash_share_token(&token),
+                name,
+                service,
+                user_id.clone(),
+                now_text()?
+            ],
         )
         .await
         .map_err(backend)?;
@@ -3053,7 +3051,10 @@ impl Store for TursoStore {
             .await
             .map_err(backend)?;
         let replaced = match rows.next().await.map_err(backend)? {
-            Some(row) => Some((text(&row, 0)?, row.get::<i64>(1).map_err(backend)?.max(0) as u64)),
+            Some(row) => Some((
+                text(&row, 0)?,
+                row.get::<i64>(1).map_err(backend)?.max(0) as u64,
+            )),
             None => None,
         };
         drop(rows);
@@ -3085,7 +3086,7 @@ impl Store for TursoStore {
                 Ok(id)
             }
             None => {
-                let id = Ulid::new().to_string();
+                let id = Ulid::generate().to_string();
                 let file_key = format!("files/{id}");
                 self.blobs
                     .put(&file_key, bytes)
@@ -3123,7 +3124,8 @@ impl Store for TursoStore {
     }
 
     async fn service_file(&self, owner_id: &str, external_id: &str) -> Result<Option<File>> {
-        let sql = format!("SELECT {FILE_COLUMNS} FROM file WHERE owner_id = ?1 AND external_id = ?2");
+        let sql =
+            format!("SELECT {FILE_COLUMNS} FROM file WHERE owner_id = ?1 AND external_id = ?2");
         match self.one_row(&sql, params![owner_id, external_id]).await? {
             Some(row) => Ok(Some(file_from(&row)?)),
             None => Ok(None),
@@ -3981,7 +3983,15 @@ mod tests {
         let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
             .await
             .unwrap();
-        let user = store.provision_user("sub-alice", "alice@example.com", "Alice", None, 0, 1024 * 1024 * 1024)
+        let user = store
+            .provision_user(
+                "sub-alice",
+                "alice@example.com",
+                "Alice",
+                None,
+                0,
+                1024 * 1024 * 1024,
+            )
             .await
             .unwrap();
 
@@ -4078,7 +4088,15 @@ mod tests {
         let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
             .await
             .unwrap();
-        let user = store.provision_user("sub-alice", "alice@example.com", "Alice", None, 0, 1024 * 1024 * 1024)
+        let user = store
+            .provision_user(
+                "sub-alice",
+                "alice@example.com",
+                "Alice",
+                None,
+                0,
+                1024 * 1024 * 1024,
+            )
             .await
             .unwrap();
         let file = store
@@ -4114,7 +4132,15 @@ mod tests {
         let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
             .await
             .unwrap();
-        let user = store.provision_user("sub-alice", "alice@example.com", "Alice", None, 0, 1024 * 1024 * 1024)
+        let user = store
+            .provision_user(
+                "sub-alice",
+                "alice@example.com",
+                "Alice",
+                None,
+                0,
+                1024 * 1024 * 1024,
+            )
             .await
             .unwrap();
         let root = store.create_folder(&user.id, None, "root").await.unwrap();
@@ -4179,7 +4205,15 @@ mod tests {
         let store = TursoStore::open(dir.path().join("in.db").to_str().unwrap(), Some(&storage))
             .await
             .unwrap();
-        let user = store.provision_user("sub-alice", "alice@example.com", "Alice", None, 0, 1024 * 1024 * 1024)
+        let user = store
+            .provision_user(
+                "sub-alice",
+                "alice@example.com",
+                "Alice",
+                None,
+                0,
+                1024 * 1024 * 1024,
+            )
             .await
             .unwrap();
         let session = store

@@ -7,7 +7,7 @@ repository.workspace = true
 description = "in web app: topcoat UI, routes and the server"
 
 [dependencies]
-topcoat = { version = "0.6.2", default-features = false, features = [
+topcoat = { version = "0.8.0", default-features = false, features = [
   "router",
   "view",
   "runtime",
@@ -39,12 +39,12 @@ http-body = "1"
 # Hashes the compiled stylesheet against the bundle's bytes at boot, so a
 # bundle from another generation refuses the boot instead of serving under
 # this binary (see `server.rs`'s `stylesheet_guard`).
-sha2 = "0.10"
+sha2 = "0.11"
 ulid = { workspace = true }
 
 [build-dependencies]
 grass = "0.13"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 http = "1.5"

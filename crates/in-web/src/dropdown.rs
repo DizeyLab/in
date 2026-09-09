@@ -40,7 +40,7 @@
 
 use topcoat::Result;
 use topcoat::context::Cx;
-use topcoat::view::{Unescaped, view};
+use topcoat::view::{Unescaped, View, ViewExt, view};
 
 /// Emitted once per page that renders a `<select>`; the enhancement is
 /// per-element and idempotent (`data-dd-done`), re-run on `in:wire` so
@@ -66,7 +66,7 @@ use topcoat::view::{Unescaped, view};
 /// `place` caps the open panel's width at `innerWidth − 8`, shaving off the
 /// padding and borders a `max-width` does not cover, or its right edge would
 /// clip on a 320px phone no matter where the left clamp puts it.
-pub async fn dropdown_script(cx: &Cx) -> Result {
+pub async fn dropdown_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     const JS: &str = "\
         (function () {\
             if (window.__inDd) { return; }\
@@ -309,5 +309,5 @@ pub async fn dropdown_script(cx: &Cx) -> Result {
             enhanceAll();\
             document.addEventListener('in:wire', enhanceAll);\
         })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }.boxed())
 }
