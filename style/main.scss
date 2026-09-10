@@ -504,10 +504,7 @@ a {
   z-index: 50;
   display: flex;
   align-items: center;
-  // The flyout shrink-fits to the monogram's width; without this the
-  // health dot wraps off its key. It grows right instead, over the page
-  // nav, under the house dropdown's panel.
-  white-space: nowrap;
+  gap: 10px;
   padding: 6px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -525,6 +522,10 @@ a {
     letter-spacing: 0.02em;
     color: var(--muted);
     text-decoration: none;
+    // The flyout shrink-fits to the monogram's width; without this the
+    // health dot wraps off its key. It grows right instead, over the page
+    // nav, under the house dropdown's panel.
+    white-space: nowrap;
 
     &:hover { color: var(--ink); }
   }
