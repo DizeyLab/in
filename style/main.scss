@@ -503,8 +503,11 @@ a {
   // from a row the flyout hangs across.
   z-index: 50;
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  // The flyout shrink-fits to the monogram's width; without this the
+  // health dot wraps off its key. It grows right instead, over the page
+  // nav, under the house dropdown's panel.
+  white-space: nowrap;
   padding: 6px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -527,6 +530,21 @@ a {
   }
 
   &-sep { color: var(--muted-soft); }
+}
+
+// The wordmark flyout's per-service state dot: green while the service's
+// /healthz answers ok, muted when it does not — the same light iz's
+// connection card and im's flyout carry, one green across the family.
+.health-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  margin-right: 0.4rem;
+  vertical-align: baseline;
+
+  &.health-on { background: #2e9e5b; }
+  &.health-off { background: var(--muted); }
 }
 .scaffold-note {
   margin: 24px;

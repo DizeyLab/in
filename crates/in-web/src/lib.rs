@@ -7,6 +7,7 @@ pub mod avatar;
 pub mod drive;
 pub mod dropdown;
 pub mod files;
+pub mod health;
 pub mod i18n;
 pub mod layout;
 pub mod live;

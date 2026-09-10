@@ -20,6 +20,7 @@ use topcoat::{
 
 use in_core::store::User;
 
+use crate::health::{Probe, probe_healthz};
 use crate::i18n::{Key, Lang, t};
 use crate::server::{app, current_user};
 
@@ -248,8 +249,10 @@ async fn family_of(cx: &Cx) -> Vec<in_client::ServiceJson> {
 /// sibling services' wordmarks in a flyout that opens under it on hover
 /// and on keyboard focus — the mark is an `<a href="/">`, so it is already
 /// focusable and `:focus-within` needs nothing added. Middots between,
-/// each a plain link to the service's own address, so the cross-origin
-/// hop navigates the browser natively. No script: the flyout is CSS on
+/// each a plain link to the service's own address, carrying its health
+/// dot — the same `/healthz` reading: green while the sibling answers
+/// `ok`, muted while it does not. The cross-origin hop navigates the
+/// browser natively. No script: the flyout is CSS on
 /// `:hover` / `:focus-within`, and it stays in the DOM at opacity zero so
 /// Tab reaches its links. A family that is absent, or holds no one but
 /// this app, renders the bare mark — there is nothing to reveal.
@@ -262,27 +265,72 @@ async fn family_mark<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     if siblings.is_empty() {
         return mark(cx).await.map(|v| v.boxed());
     }
+    // Every probe at once: a family member that is down costs its two
+    // seconds, not two seconds each.
+    let http = reqwest::Client::new();
+    let mut probes = Vec::new();
+    for service in &siblings {
+        let http = http.clone();
+        let url = format!("{}/healthz", service.url.trim_end_matches('/'));
+        probes.push(tokio::spawn(async move { probe_healthz(&http, &url).await }));
+    }
+    let mut rows = Vec::new();
+    for (service, probe) in siblings.iter().zip(probes) {
+        let probe = probe.await.unwrap_or(Probe::Down);
+        rows.push((
+            service.key.as_str(),
+            service.url.as_str(),
+            service.name.as_str(),
+            probe,
+        ));
+    }
+    let marks = switcher_marks(rows);
     Ok(view! {
         cx =>
         <div class="wordmark-family">
             (topcoat::view::Child::new(mark(cx).await?))
-            <nav class="app-switcher">
-                for (i, service) in siblings.iter().enumerate() {
-                    if i > 0 {
-                        <span class="app-switcher-sep">"·"</span>
-                    }
-                    <a
-                        class="app-switcher-mark"
-                        href=(format!("{}/", service.url))
-                        title=(service.name.clone())
-                    >
-                        (service.key.clone())
-                    </a>
-                }
-            </nav>
+            <nav class="app-switcher">(Unescaped::new_unchecked(marks))</nav>
         </div>
     }
     .boxed())
+}
+
+/// The flyout's marks as final HTML, pure over resolved probes: in's own
+/// row filtered out, every sibling a plain link carrying its probe's dot
+/// — `health-on` while it answers `ok`, `health-off` while it does not —
+/// middots between. Dots only: the probe's body and latency never reach
+/// the chrome. Extracted from `family_mark` so the tests pin this exact
+/// markup without a router or an asset bundle.
+pub fn switcher_marks<'a>(
+    rows: impl IntoIterator<Item = (&'a str, &'a str, &'a str, Probe)>,
+) -> String {
+    rows.into_iter()
+        .filter(|(key, _, _, _)| *key != SELF_KEY)
+        .map(|(key, url, name, probe)| {
+            let key = escape(key);
+            let url = escape(url);
+            let name = escape(name);
+            let dot = match probe {
+                Probe::Up { .. } => "health-on",
+                Probe::Down => "health-off",
+            };
+            format!(
+                r#"<a class="app-switcher-mark" href="{url}/" title="{name}"><span class="health-dot {dot}"></span>{key}</a>"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(r#"<span class="app-switcher-sep">·</span>"#)
+}
+
+/// Everything the flyout's marks interpolate crosses them as raw HTML —
+/// key, address, title — so each passes through `escape` first: the same
+/// discipline im's chrome keeps, anything the family list carries is
+/// escaped before it reaches the markup.
+fn escape(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// The signed-in chrome: the monogram with the family behind it, the page

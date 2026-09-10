@@ -3267,8 +3267,119 @@ async fn the_family_flyout_holds_the_siblings_when_the_family_is_mirrored() {
     assert!(nav.contains("title=\"Account\""), "{nav}");
     assert_eq!(nav.matches("app-switcher-mark").count(), 2, "{nav}");
     assert_eq!(nav.matches("app-switcher-sep").count(), 1, "{nav}");
+    // Both siblings sit at example.com addresses nothing answers — the
+    // probes fail inside their two-second ceiling, concurrently — so both
+    // read Off. The flyout carries dots only, one per mark.
+    assert!(nav.contains("health-dot health-off"), "{nav}");
+    assert!(!nav.contains("health-on"), "{nav}");
+    assert_eq!(nav.matches("health-dot").count(), 2, "{nav}");
     // The flyout hangs off the monogram, not the page nav.
     assert!(body.contains("wordmark-family"), "{body}");
+}
+
+/// The flyout marks each sibling with its probe's reading: a sibling
+/// answering `ok` renders `health-on`, a dark port `health-off`, dots
+/// only — no probe body, no latency — and in's own row stays out. The
+/// markup itself is pinned router-free in
+/// `the_family_flyout_marks_pure_html` below.
+#[tokio::test]
+async fn the_family_flyout_marks_siblings_with_health_dots() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    // A live sibling answering the deploy body, and a dark one.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let live_url = format!("http://{}", listener.local_addr().unwrap());
+    let dark = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dark_url = format!("http://{}", dark.local_addr().unwrap());
+    drop(dark);
+    // `in` gets a row too — one the flyout must leave out.
+    let app = TestApp::build_with(
+        None,
+        &[
+            ("in", "Files", "https://files.example.com"),
+            ("iz", "Board", &live_url),
+            ("im", "Account", &dark_url),
+        ],
+    )
+    .await;
+    let cookie = app
+        .sign_in("sub-switch-dot", "switchdot@in.test", "SwitchDot")
+        .await;
+    let talker = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = sock.read(&mut buf).await;
+        sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nok dev")
+            .await
+            .unwrap();
+    });
+    let page = app.get("/drive", Some(&cookie)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    talker.await.unwrap();
+    let body = page.text();
+    let nav_start = body.find("app-switcher").expect("no switcher");
+    let nav_end = body[nav_start..]
+        .find("</nav>")
+        .expect("switcher never closes");
+    let nav = &body[nav_start..nav_start + nav_end];
+    assert!(
+        nav.contains(r#"<a class="app-switcher-mark" href="http://127.0.0.1:"#),
+        "the marks stay links: {nav}"
+    );
+    assert!(
+        nav.contains("health-dot health-on"),
+        "the ok sibling reads on: {nav}"
+    );
+    assert!(nav.contains(">iz</a>"), "the live sibling renders: {nav}");
+    assert!(
+        nav.contains("health-dot health-off"),
+        "the dark sibling reads off: {nav}"
+    );
+    assert!(nav.contains(">im</a>"), "the dark sibling renders: {nav}");
+    assert!(!nav.contains(">in</a>"), "in's own row stays out: {nav}");
+    assert!(!body.contains("ok dev"), "the flyout carries dots only: {body}");
+    assert!(!nav.contains(" ms"), "the flyout carries no latency: {nav}");
+}
+
+/// The CI gate for the flyout markup: `switcher_marks` is the exact HTML
+/// the flyout renders, so the probe-to-dot mapping and in's omission are
+/// pinned without a router or an asset bundle — which is where the
+/// renders above get skipped. Up reads `health-on`, Down `health-off`,
+/// the keys stay links with their titles, and the probe's body and
+/// latency never reach the chrome.
+#[test]
+fn the_family_flyout_marks_pure_html() {
+    use in_web::health::Probe;
+
+    let marks = in_web::layout::switcher_marks([
+        ("iz", "http://127.0.0.1:9001", "Board", Probe::Up { body: "ok dev".into(), ms: 12 }),
+        ("im", "http://127.0.0.1:9002", "Account", Probe::Down),
+        // in's own row goes in; it must not come back out.
+        ("in", "http://127.0.0.1:7655", "Files", Probe::Up { body: "ok dev".into(), ms: 1 }),
+    ]);
+    assert!(
+        marks.contains(
+            r#"<a class="app-switcher-mark" href="http://127.0.0.1:9001/" title="Board">"#
+        ),
+        "the marks stay links: {marks}"
+    );
+    assert!(
+        marks.contains("health-dot health-on"),
+        "the ok sibling reads on: {marks}"
+    );
+    assert!(marks.contains(">iz</a>"), "the live sibling renders: {marks}");
+    assert!(
+        marks.contains("health-dot health-off"),
+        "the dark sibling reads off: {marks}"
+    );
+    assert!(marks.contains(">im</a>"), "the dark sibling renders: {marks}");
+    assert!(!marks.contains(">in</a>"), "in's own row stays out: {marks}");
+    assert!(!marks.contains("ok dev"), "the flyout carries dots only: {marks}");
+    assert!(!marks.contains(" ms"), "the flyout carries no latency: {marks}");
+    assert!(
+        marks.contains(r#"<span class="app-switcher-sep">·</span>"#),
+        "the marks join on middots: {marks}"
+    );
 }
 
 /// The `back` the sign-out hands im is read per sign-out: an origin saved

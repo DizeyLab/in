@@ -41,6 +41,8 @@ http-body = "1"
 # this binary (see `server.rs`'s `stylesheet_guard`).
 sha2 = "0.11"
 ulid = { workspace = true }
+# The wordmark flyout probes each sibling's `/healthz` where it stands.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 
 [build-dependencies]
 grass = "0.13"

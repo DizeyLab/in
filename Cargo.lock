@@ -2041,6 +2041,7 @@ dependencies = [
  "im-client",
  "in-client",
  "in-core",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
