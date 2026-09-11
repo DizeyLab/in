@@ -365,15 +365,19 @@ async fn shutdown_signal() {
 const IDENTITY_BACKOFF_CAP: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Mirrors one member's identity into the local row: the JIT upsert that
-/// keeps address, name, admin flag and photo stamp following im. The store
-/// announces a `profile` change itself when a mirrored field moved, so the
-/// only job left here is the write and its one log line when it fails.
+/// keeps address, name, admin flag and photo stamp following im — and the
+/// disablement flag with it, both directions, for the row is im's word on
+/// the person and a re-enable must land here as surely as a kill. The
+/// store announces a `profile` change itself when a mirrored field moved,
+/// and a flipped disablement announces the admin surface, the profile and
+/// the person's own tabs all at once, so the only job left here is the
+/// write and its one log line when it fails.
 async fn mirror_member(
     store: &Arc<dyn in_core::store::Store>,
     member: &im_client::directory::DirectoryMember,
     default_quota_bytes: u64,
 ) {
-    if let Err(problem) = store
+    let user = match store
         .provision_user(
             &member.sub,
             &member.email,
@@ -384,7 +388,19 @@ async fn mirror_member(
         )
         .await
     {
-        eprintln!("in: directory mirror of {}: {problem}", member.sub);
+        Ok(user) => user,
+        Err(problem) => {
+            eprintln!("in: directory mirror of {}: {problem}", member.sub);
+            return;
+        }
+    };
+    if user.disabled != member.disabled
+        && let Err(problem) = store.set_user_disabled(&user.id, member.disabled).await
+    {
+        eprintln!(
+            "in: directory disablement mirror of {}: {problem}",
+            member.sub
+        );
     }
 }
 
@@ -420,11 +436,14 @@ async fn identity_sync(
                         health.connected();
                         while let Some(event) = stream.next().await {
                             match event {
-                                Ok(im_client::directory::DirectoryEvent::Profile(member)) => {
-                                    mirror_member(&store, &member, default_quota_bytes).await;
-                                    // Every event is proof the feed is alive;
-                                    // the card's age line reads this.
-                                    health.note_event();
+                                Ok(event) => {
+                                    apply_directory_event(
+                                        &store,
+                                        &health,
+                                        event,
+                                        default_quota_bytes,
+                                    )
+                                    .await;
                                 }
                                 // A network failure ends the stream; the full
                                 // pass below re-lists before the redial.
@@ -453,6 +472,50 @@ async fn identity_sync(
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(IDENTITY_BACKOFF_CAP);
+    }
+}
+
+/// One event off the directory stream, applied to the local mirror. The
+/// seam exists so the tests can drive a constructed event through the
+/// same door identity_sync's stream loop uses — the loop itself only
+/// knows how to read the wire.
+async fn apply_directory_event(
+    store: &Arc<dyn in_core::store::Store>,
+    health: &in_web::server::DirectoryHealth,
+    event: im_client::directory::DirectoryEvent,
+    default_quota_bytes: u64,
+) {
+    match event {
+        im_client::directory::DirectoryEvent::Profile(member) => {
+            mirror_member(store, &member, default_quota_bytes).await;
+        }
+        // Sessions died at im; no local row moved. Wake the person
+        // through the profile topic — their tabs refetch, meet the dead
+        // introspection, and morph to the sign-in card.
+        im_client::directory::DirectoryEvent::Revoked { sub } => {
+            announce_revocation(store, &sub).await;
+        }
+    }
+    // Every event is proof the feed is alive; the card's age line reads
+    // this.
+    health.note_event();
+}
+
+/// The session-targeted half of a directory revocation: im revoked the
+/// person's sessions and no local row moved, but every tab carrying them
+/// must find out. The row is woken through the ordinary profile
+/// announcement — the one topic every signed-in reader may hear — so the
+/// revoked person's own tabs refetch, meet a dead introspection, and
+/// morph to the sign-in card: the whole of what a session-level logout
+/// looks like from here. No hard redirect: which of the person's
+/// sessions died is im's knowledge alone, and a surviving tab must not
+/// be ordered out for its sibling's death.
+async fn announce_revocation(store: &Arc<dyn in_core::store::Store>, sub: &str) {
+    match store.user_by_oidc_sub(sub).await {
+        Ok(Some(user)) => store.announce_profile(&user.id),
+        // Nobody local carries this subject: nobody here to wake.
+        Ok(None) => {}
+        Err(problem) => eprintln!("in: revocation wake for {sub}: {problem}"),
     }
 }
 
@@ -508,5 +571,174 @@ async fn family_sync(
             None => eprintln!("family sync: im did not answer; keeping the list there is"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(FAMILY_SECONDS)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use in_core::store::Store;
+
+    /// A revoked session at im wakes the person's row by its local id:
+    /// one profile announcement, heard by every signed-in reader, with
+    /// the person's own tabs morphing to the sign-in card on the refetch.
+    /// A subject that never signed in here wakes nobody.
+    #[tokio::test]
+    async fn a_revoked_session_wakes_the_persons_row_through_the_profile_topic() {
+        let dir = std::env::temp_dir().join(format!("in-revoke-{}", ulid::Ulid::generate()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store: Arc<dyn in_core::store::Store> = Arc::new(
+            in_core::store::TursoStore::open(
+                dir.join("in.db").to_str().unwrap(),
+                Some(&dir.join("storage")),
+            )
+            .await
+            .unwrap(),
+        );
+        let user = store
+            .provision_user("sub-gone", "gone@in.test", "Gone", None, 0, 1024)
+            .await
+            .unwrap();
+        let mut rx = store.subscribe();
+
+        announce_revocation(&store, "sub-gone").await;
+
+        let change = rx.try_recv().unwrap();
+        assert_eq!(change.topic.kind(), "profile");
+        assert_eq!(change.topic.id(), user.id);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        announce_revocation(&store, "sub-unknown").await;
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One roster member as the wire carries it.
+    fn member(sub: &str, disabled: bool) -> im_client::directory::DirectoryMember {
+        im_client::directory::DirectoryMember {
+            sub: sub.to_string(),
+            email: format!("{sub}@in.test"),
+            name: "Member".to_string(),
+            admin: false,
+            photo_version: 0,
+            timezone: "UTC+03:00".to_string(),
+            disabled,
+        }
+    }
+
+    async fn scratch() -> (std::path::PathBuf, Arc<dyn in_core::store::Store>) {
+        let dir = std::env::temp_dir().join(format!("in-event-{}", ulid::Ulid::generate()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store: Arc<dyn in_core::store::Store> = Arc::new(
+            in_core::store::TursoStore::open(
+                dir.join("in.db").to_str().unwrap(),
+                Some(&dir.join("storage")),
+            )
+            .await
+            .unwrap(),
+        );
+        (dir, store)
+    }
+
+    /// A `revoked` frame off the stream — im's word that the subject's
+    /// sessions died — wakes the person's row by its local id through
+    /// the profile topic, and stamps the connection card's freshness.
+    #[tokio::test]
+    async fn a_stream_revocation_announces_through_the_profile_topic() {
+        let (dir, store) = scratch().await;
+        let health = in_web::server::DirectoryHealth::new();
+        let user = store
+            .provision_user("sub-gone", "gone@in.test", "Gone", None, 0, 1024)
+            .await
+            .unwrap();
+        let mut rx = store.subscribe();
+
+        apply_directory_event(
+            &store,
+            &health,
+            im_client::directory::DirectoryEvent::Revoked {
+                sub: "sub-gone".to_string(),
+            },
+            1024,
+        )
+        .await;
+
+        let change = rx.try_recv().unwrap();
+        assert_eq!(change.topic.kind(), "profile");
+        assert_eq!(change.topic.id(), user.id);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert!(health.last_event_age_secs().is_some());
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The member's disablement flag follows im in both directions: a
+    /// `profile` frame carrying `disabled` flips the local row and — the
+    /// part the tabs wait for — the store announces the kill (and, on
+    /// the way back, the reopening) on all three surfaces at once.
+    #[tokio::test]
+    async fn a_members_disabled_flag_mirrors_both_ways() {
+        let (dir, store) = scratch().await;
+        let health = in_web::server::DirectoryHealth::new();
+        let mut rx = store.subscribe();
+
+        // First sight: the mirror inserts the row, present and enabled.
+        apply_directory_event(
+            &store,
+            &health,
+            im_client::directory::DirectoryEvent::Profile(member("sub-m", false)),
+            1024,
+        )
+        .await;
+        let user = store.user_by_oidc_sub("sub-m").await.unwrap().unwrap();
+        assert!(!user.disabled);
+        // A fresh row announces the admin surface and the profile — the
+        // two reads that keep the later phases' queues clean.
+        assert_eq!(rx.try_recv().unwrap().topic.kind(), "admin");
+        assert_eq!(rx.try_recv().unwrap().topic.kind(), "profile");
+        // im switches the member off: the row follows, and the revoked
+        // frame rides to the person's own tabs.
+        apply_directory_event(
+            &store,
+            &health,
+            im_client::directory::DirectoryEvent::Profile(member("sub-m", true)),
+            1024,
+        )
+        .await;
+        let killed = store.user_by_oidc_sub("sub-m").await.unwrap().unwrap();
+        assert!(killed.disabled);
+        assert_eq!(rx.try_recv().unwrap().topic.kind(), "admin");
+        assert_eq!(rx.try_recv().unwrap().topic.kind(), "profile");
+        assert_eq!(rx.try_recv().unwrap().topic.kind(), "revoked");
+
+        // im lets them back in: the same channel carries the reopening.
+        apply_directory_event(
+            &store,
+            &health,
+            im_client::directory::DirectoryEvent::Profile(member("sub-m", false)),
+            1024,
+        )
+        .await;
+        let back = store.user_by_oidc_sub("sub-m").await.unwrap().unwrap();
+        assert!(!back.disabled);
+        assert_eq!(rx.try_recv().unwrap().topic.kind(), "admin");
+        assert_eq!(rx.try_recv().unwrap().topic.kind(), "profile");
+        assert_eq!(rx.try_recv().unwrap().topic.kind(), "revoked");
+        assert!(health.last_event_age_secs().is_some());
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

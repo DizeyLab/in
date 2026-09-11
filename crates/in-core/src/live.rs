@@ -29,6 +29,12 @@ pub enum Topic {
     /// every signed-in topbar, so every reader may hear that some member
     /// moved and re-fetch through the ordinary gated route.
     Profile(String),
+    /// The person's account was killed user-level — disabled, or deleted.
+    /// Only the person's own connections may hear it: the frame orders
+    /// their tabs out at once, a hard redirect a mere refresh cannot
+    /// promise. Everyone else learns the news as an ordinary
+    /// [`Topic::Profile`] move.
+    Revoked(String),
     /// Users, quotas, disablements — the admin's surface.
     Admin(String),
 }
@@ -42,6 +48,7 @@ impl Topic {
             Topic::Trash(_) => "trash",
             Topic::Shares(_) => "shares",
             Topic::Profile(_) => "profile",
+            Topic::Revoked(_) => "revoked",
             Topic::Admin(_) => "admin",
         }
     }
@@ -51,7 +58,7 @@ impl Topic {
     pub fn id(&self) -> &str {
         match self {
             Topic::Library(id) | Topic::Trash(id) | Topic::Shares(id) | Topic::Profile(id)
-            | Topic::Admin(id) => id,
+            | Topic::Revoked(id) | Topic::Admin(id) => id,
         }
     }
 }

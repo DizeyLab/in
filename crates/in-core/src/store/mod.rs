@@ -422,8 +422,20 @@ pub trait Store: 'static + Send + Sync {
     async fn set_user_quota(&self, user_id: &str, quota_bytes: u64) -> Result<()>;
 
     /// Disables an account. A disabled account signs in to nothing: the auth
-    /// layer reads this and treats the person as signed out.
+    /// layer reads this and treats the person as signed out. The write
+    /// announces [`Topic::Admin`](crate::live::Topic) for the admins'
+    /// panels, [`Topic::Profile`](crate::live::Topic) for every signed-in
+    /// topbar, and [`Topic::Revoked`](crate::live::Topic) for the person's
+    /// own open tabs, which are ordered out at once.
     async fn set_user_disabled(&self, user_id: &str, disabled: bool) -> Result<()>;
+
+    /// Wakes the live channel for a member whose row did not move: every
+    /// signed-in reader is told the member's profile surface changed and
+    /// re-fetches through the ordinary gated route. The identity mirror
+    /// uses it when im revokes a person's sessions — the row here is
+    /// untouched and there is nothing to write, but every tab carrying
+    /// them must find out. Silent when nobody is listening.
+    fn announce_profile(&self, user_id: &str);
 
     /// Writes the person's display preferences — `theme` ('light'/'dark'),
     /// `language` ('en'/'tr') and `ui` ('ledger'/'instrument') — read by

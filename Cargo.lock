@@ -1929,7 +1929,7 @@ dependencies = [
 [[package]]
 name = "im-client"
 version = "0.1.0"
-source = "git+https://github.com/DizeyLab/im?rev=25140f3#25140f308a711d4090fa75bb29558a3f5335587c"
+source = "git+https://github.com/DizeyLab/im?rev=5efbd60963c4473264ed765afeed038d4273d791#5efbd60963c4473264ed765afeed038d4273d791"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",

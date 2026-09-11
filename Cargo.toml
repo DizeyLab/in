@@ -16,7 +16,7 @@ in-client = { path = "crates/in-client" }
 # pair the OIDC side already holds. The OIDC half stays gated off — this
 # app's own `in-client` fork keeps the auth routes, and two route sets in
 # one binary collide.
-im-client = { git = "https://github.com/DizeyLab/im", rev = "25140f3", default-features = false }
+im-client = { git = "https://github.com/DizeyLab/im", rev = "5efbd60963c4473264ed765afeed038d4273d791", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"

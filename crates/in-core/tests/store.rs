@@ -167,6 +167,64 @@ async fn quota_and_disablement_round_trip() {
     ));
 }
 
+/// Killing an account speaks to three audiences at once: the admins'
+/// panels, every signed-in topbar, and — the strictest — the person's
+/// own open tabs, whose frame reads as the order to leave. The way back
+/// (a re-enable) announces the same three, through the same channel.
+#[tokio::test]
+async fn a_disablement_announces_the_admin_surface_the_profile_and_the_kill() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let mut rx = scratch.store.subscribe();
+
+    scratch
+        .store
+        .set_user_disabled(&user.id, true)
+        .await
+        .unwrap();
+    let admin = rx.try_recv().unwrap();
+    assert_eq!(admin.topic.kind(), "admin");
+    assert_eq!(admin.topic.id(), user.id);
+    let profile = rx.try_recv().unwrap();
+    assert_eq!(profile.topic.kind(), "profile");
+    let kill = rx.try_recv().unwrap();
+    assert_eq!(kill.topic.kind(), "revoked");
+    assert_eq!(kill.topic.id(), user.id);
+
+    scratch
+        .store
+        .set_user_disabled(&user.id, false)
+        .await
+        .unwrap();
+    assert_eq!(rx.try_recv().unwrap().topic.kind(), "admin");
+    assert_eq!(rx.try_recv().unwrap().topic.kind(), "profile");
+    assert_eq!(rx.try_recv().unwrap().topic.kind(), "revoked");
+    assert!(matches!(
+        rx.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
+/// A session revocation at im carries no write here — the local row did
+/// not move — yet every tab carrying the person must still hear that
+/// their world changed. `announce_profile` is the write-less knock on
+/// the same channel: one profile announcement, exactly, and nothing else.
+#[tokio::test]
+async fn announce_profile_wakes_the_channel_without_a_write() {
+    let scratch = Scratch::open().await;
+    let user = alice(&scratch.store).await;
+    let mut rx = scratch.store.subscribe();
+
+    scratch.store.announce_profile(&user.id);
+    let change = rx.try_recv().unwrap();
+    assert_eq!(change.topic.kind(), "profile");
+    assert_eq!(change.topic.id(), user.id);
+    assert!(matches!(
+        rx.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+}
+
 #[tokio::test]
 async fn folders_postfix_onto_live_sibling_names() {
     let scratch = Scratch::open().await;

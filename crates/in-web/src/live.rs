@@ -52,7 +52,10 @@ pub struct Shutdown(pub tokio::sync::watch::Receiver<bool>);
 /// Every topic carries its owner's id, and a reader hears only their own —
 /// one person's drive never names itself on another person's connection. The
 /// one exception is the admin surface, which an admin hears about: someone
-/// who can act on every account may be told every account moved.
+/// who can act on every account may be told every account moved. A
+/// [`Topic::Revoked`] is the strictest of all — the killed person's own
+/// connections and nobody else's, not even an admin's, since a hard
+/// redirect is an order nobody should receive secondhand.
 fn may_hear(topic: &Topic, me: &str, admin: bool) -> bool {
     if topic.id() == me {
         return true;
@@ -81,6 +84,12 @@ struct Frame<'a> {
 /// everything you are showing".
 const RESYNC: &str = r#"{"topic":"resync"}"#;
 
+/// A frame ordering the reader's own tab out: their account was killed
+/// user-level — disabled, or deleted. Like the resync frame it is a bare
+/// topic with nothing else on it, and it is the one frame after which the
+/// stream ends.
+const REVOKED: &str = r#"{"topic":"revoked"}"#;
+
 #[route(GET "/api/live")]
 async fn live(cx: &Cx) -> topcoat::Result<Response> {
     let Ok(user) = require_user(cx).await else {
@@ -97,9 +106,14 @@ async fn live(cx: &Cx) -> topcoat::Result<Response> {
             .0;
 
     let events = futures_util::stream::unfold(
-        (rx, admin, me, deadline, stopping),
-        |(mut rx, admin, me, deadline, mut stopping)| async move {
+        (rx, false, admin, me, deadline, stopping),
+        |(mut rx, sealing, admin, me, deadline, mut stopping)| async move {
             loop {
+                // A stream whose last word was the revoked frame ends
+                // here: the account behind it is gone.
+                if sealing {
+                    return None;
+                }
                 // Already going down: say nothing and end, so this connection
                 // is not one the shutdown has to sit and wait out.
                 if stopping.as_ref().is_some_and(|watch| *watch.borrow()) {
@@ -141,6 +155,17 @@ async fn live(cx: &Cx) -> topcoat::Result<Response> {
                         if !may_hear(&topic, &me, admin) {
                             continue;
                         }
+                        // The one news that ends the stream: the reader's
+                        // own account was killed user-level. The bare frame
+                        // orders the tab out, and the stream closes behind
+                        // it — a dead account's connection has no further
+                        // business staying open.
+                        if let Topic::Revoked(_) = topic {
+                            return Some((
+                                Ok(Event::new().data(REVOKED)),
+                                (rx, true, admin, me, deadline, stopping),
+                            ));
+                        }
                         let frame = Frame {
                             topic: topic.kind(),
                             id: topic.id(),
@@ -149,12 +174,15 @@ async fn live(cx: &Cx) -> topcoat::Result<Response> {
                         match Event::new().json_data(&frame) {
                             Ok(event) => event,
                             Err(problem) => {
-                                return Some((Err(problem), (rx, admin, me, deadline, stopping)));
+                                return Some((
+                                    Err(problem),
+                                    (rx, sealing, admin, me, deadline, stopping),
+                                ));
                             }
                         }
                     }
                 };
-                return Some((Ok(frame), (rx, admin, me, deadline, stopping)));
+                return Some((Ok(frame), (rx, sealing, admin, me, deadline, stopping)));
             }
         },
     );

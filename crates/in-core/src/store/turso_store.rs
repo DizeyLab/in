@@ -1234,8 +1234,16 @@ impl Store for TursoStore {
             return Err(StoreError::NotFound);
         }
         drop(conn);
-        self.announce([Topic::Admin(user_id.to_string())]);
+        self.announce([
+            Topic::Admin(user_id.to_string()),
+            Topic::Profile(user_id.to_string()),
+            Topic::Revoked(user_id.to_string()),
+        ]);
         Ok(())
+    }
+
+    fn announce_profile(&self, user_id: &str) {
+        self.announce([Topic::Profile(user_id.to_string())]);
     }
 
     async fn set_preferences(&self, id: &str, theme: &str, language: &str, ui: &str) -> Result<()> {

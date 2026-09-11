@@ -10,6 +10,7 @@
 //! New HTTP tests belong in this file rather than a new `tests/*.rs`: one
 //! test binary links and runs once.
 use http::{HeaderValue, Request, StatusCode, header};
+use http_body_util::BodyExt;
 use in_core::{Config, OidcConfig};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -6039,4 +6040,163 @@ async fn the_family_limit_lands_on_the_account() {
         .unwrap();
     let holder = app.store.user(&user_id).await.unwrap().unwrap();
     assert_eq!(holder.quota_bytes, 1024 * 1024);
+}
+
+/// How long one wait for a live frame may run before the test fails
+/// loudly. A stream that never speaks is a hang, not an answer.
+const FRAME_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// One open `/api/live` connection, held the way a browser holds it: the
+/// frames are read as they arrive, and the end of the body is itself
+/// news — a stream the server closed behind its last word.
+struct LiveStream {
+    status: StatusCode,
+    content_type: Option<String>,
+    body: Body,
+    /// Bytes read but not yet through a blank-line frame boundary; an
+    /// SSE event may straddle two body chunks.
+    buffer: String,
+}
+
+impl LiveStream {
+    /// The next complete SSE frame, or `None` when the stream ended. A
+    /// frame that never arrives fails the test rather than outlasting it.
+    async fn next_frame(&mut self) -> Option<String> {
+        loop {
+            if let Some(at) = self.buffer.find("\n\n") {
+                return Some(self.buffer.drain(..at + 2).collect::<String>());
+            }
+            let polled = tokio::time::timeout(FRAME_PATIENCE, self.body.frame())
+                .await
+                .expect("no frame arrived in time");
+            // `None` is the body running out — the stream's end, which is
+            // the caller's news. Anything else is a frame to buffer.
+            let Some(polled) = polled else {
+                return None;
+            };
+            let frame = polled.expect("the live body failed");
+            let chunk = frame.into_data().expect("a frame with no data");
+            self.buffer.push_str(&String::from_utf8_lossy(&chunk));
+        }
+    }
+}
+
+impl TestApp {
+    /// Opens the signed-in live stream and keeps it, unread — the frame
+    /// reader works on the body [`LiveStream`] holds.
+    async fn open_live(&self, cookie: &str) -> LiveStream {
+        let response = self
+            .router
+            .handle(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/live")
+                    .header(header::COOKIE, HeaderValue::from_str(cookie).unwrap())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        LiveStream {
+            status,
+            content_type,
+            body: response.into_body(),
+            buffer: String::new(),
+        }
+    }
+}
+
+/// The sign-in probe the live channel's error path polls: 204 while the
+/// session stands, 401 the moment it does not. A locally disabled
+/// account reads as signed out even though im's introspection would
+/// still vouch for the very same cookie — the local flag outranks it.
+#[tokio::test]
+async fn the_me_probe_answers_204_while_signed_in_and_401_the_moment_not() {
+    let app = TestApp::build().await;
+    let out = app.get("/api/me", None).await;
+    assert_eq!(out.status, StatusCode::UNAUTHORIZED);
+    assert!(out.bytes.is_empty(), "no body: {:?}", out.text());
+
+    let cookie = app.sign_in("sub-probe", "probe@in.test", "Probe").await;
+    let in_answer = app.get("/api/me", Some(&cookie)).await;
+    assert_eq!(in_answer.status, StatusCode::NO_CONTENT);
+    assert!(in_answer.bytes.is_empty(), "no body on 204 either");
+
+    let user = app.store.user_by_oidc_sub("sub-probe").await.unwrap().unwrap();
+    app.store.set_user_disabled(&user.id, true).await.unwrap();
+    let disabled = app.get("/api/me", Some(&cookie)).await;
+    assert_eq!(disabled.status, StatusCode::UNAUTHORIZED);
+}
+
+/// A user-level kill — the disabled flag mirrored from im — rides the
+/// ordinary topic bus, but its frame goes to exactly one listener: the
+/// killed account's own open tabs, each answered with the bare revoked
+/// frame and then an ended stream. Everybody else hears an ordinary
+/// profile move and keeps their stream.
+#[tokio::test]
+async fn a_user_level_kill_orders_its_own_tabs_out_and_nobody_else() {
+    let app = TestApp::build().await;
+    let alice_cookie = app.sign_in("sub-alice", "alice@in.test", "Alice").await;
+    let bob_cookie = app.sign_in("sub-bob", "bob@in.test", "Bob").await;
+    let mut alice = app.open_live(&alice_cookie).await;
+    let mut bob = app.open_live(&bob_cookie).await;
+    assert_eq!(alice.status, StatusCode::OK);
+    assert_eq!(
+        alice.content_type.as_deref(),
+        Some("text/event-stream"),
+        "the live channel is an event stream"
+    );
+
+    // The kill: im's mirror flips the local flag; the store announces.
+    let alice_id = app
+        .store
+        .user_by_oidc_sub("sub-alice")
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    app.store.set_user_disabled(&alice_id, true).await.unwrap();
+
+    // Bob hears the profile move — and only that. The revoked frame is
+    // an order no bystander ever receives.
+    let heard = bob.next_frame().await.unwrap();
+    assert!(
+        heard.contains("\"topic\":\"profile\""),
+        "bob heard: {heard}"
+    );
+
+    // Alice hears her own kill as the bare frame, and the stream ends
+    // behind it — nothing on a dead account's connection lingers.
+    loop {
+        let heard = alice.next_frame().await.unwrap();
+        if heard.contains("\"topic\":\"revoked\"") {
+            break;
+        }
+    }
+    assert!(
+        alice.next_frame().await.is_none(),
+        "the killed tab's stream must end behind the revoked frame"
+    );
+
+    // Bob's stream survived Alice's kill: his own kill reaches it.
+    let bob_id = app
+        .store
+        .user_by_oidc_sub("sub-bob")
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    app.store.set_user_disabled(&bob_id, true).await.unwrap();
+    loop {
+        let heard = bob.next_frame().await.unwrap();
+        if heard.contains("\"topic\":\"revoked\"") {
+            break;
+        }
+    }
+    assert!(bob.next_frame().await.is_none(), "bob's stream ends too");
 }

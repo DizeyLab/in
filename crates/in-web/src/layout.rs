@@ -947,6 +947,16 @@ pub async fn search_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
 /// disagree with it — the tick re-fetches, and the server stays the only thing
 /// that decides what a moment reads as. It runs only on pages carrying a
 /// `data-tick` element, so a page with no clock-driven text is silent.
+///
+/// Two frames are not a refresh at all. A `revoked` topic means this tab's
+/// account was killed user-level — disabled, or deleted — and the only right
+/// answer is to leave: a hard redirect to the root, no morph, because a dead
+/// session has nothing worth keeping on screen. And when the stream itself
+/// errors — the window rolling over, a restart, a reconnect refused — the
+/// script probes `/api/me` once: a 401 says the session behind this tab is
+/// gone no matter what the page still shows, and the tab leaves the same
+/// way. Every other error keeps the `EventSource`'s own reconnect, which
+/// wants no help.
 pub async fn live_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     const JS: &str = "\
         (function () { \
@@ -975,7 +985,13 @@ pub async fn live_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
                 src.onmessage = function (e) { \
                     var frame; \
                     try { frame = JSON.parse(e.data); } catch (err) { return; } \
+                    if (frame && frame.topic === 'revoked') { window.location.href = '/'; return; } \
                     if (frame && wanted(frame.topic)) { schedule(); } \
+                }; \
+                src.onerror = function () { \
+                    fetch('/api/me').then(function (r) { \
+                        if (r.status === 401) { window.location.href = '/'; } \
+                    }).catch(function () { }); \
                 }; \
             } catch (err) { } \
             setInterval(function () { \

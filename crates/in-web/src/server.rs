@@ -20,7 +20,7 @@ use sha2::Digest;
 use topcoat::asset::AssetBundle;
 use topcoat::context::{Cx, app_context, memoize};
 use topcoat::router::request::headers;
-use topcoat::router::{Body, HeaderValue, Next, StatusCode, header, response::Response, to_bytes};
+use topcoat::router::{Body, HeaderValue, Next, StatusCode, header, response::{IntoResponse, Response}, route, to_bytes};
 
 /// The whole application context, put into the router by `main.rs`. One
 /// struct rather than three separate contexts so a route needing two of them
@@ -298,6 +298,22 @@ pub async fn require_user(cx: &Cx) -> Result<User, Refusal> {
         Ok(Some(user)) => Ok(user.clone()),
         Ok(None) => Err(Refusal::SignInFirst),
         Err(_) => Err(Refusal::Unavailable),
+    }
+}
+
+/// The sign-in probe the live channel's error path polls: 204 while this
+/// browser carries a live session, 401 the moment it does not — no HTML,
+/// no body, nothing but the answer. It exists for the one question an open
+/// tab can ask mid-flight ("am I still signed in?") without dragging a
+/// page render behind it. A store failure answers 500 rather than 401:
+/// the probe's whole contract is that only a real sign-out draws the 401,
+/// and a broken database must never fake one.
+#[route(GET "/api/me")]
+pub async fn me(cx: &Cx) -> topcoat::Result<Response> {
+    match current_user(cx).await {
+        Ok(Some(_)) => (StatusCode::NO_CONTENT, "").into_response(cx),
+        Ok(None) => (StatusCode::UNAUTHORIZED, "").into_response(cx),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "").into_response(cx),
     }
 }
 
