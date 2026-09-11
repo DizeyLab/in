@@ -1133,13 +1133,14 @@ pub(crate) async fn document_shell<'a>(
     // The per-user chrome knobs, read off the request's own user: the theme
     // into `data-theme`, the interface into `data-ui`, the language into
     // `<html lang>`. Signed-out (or unreadable) wears the provision defaults —
-    // dark and instrument — and the language falls back to `Accept-Language`.
+    // light and instrument, matching im and iz — and the language falls back
+    // to `Accept-Language`.
     let me = match current_user(cx).await {
         Ok(user) => user.as_ref(),
         Err(_) => None,
     };
     let asking = me.is_some();
-    let dark = me.as_ref().is_none_or(|user| user.theme == "dark");
+    let dark = me.as_ref().is_some_and(|user| user.theme == "dark");
     let ui = me.as_ref().map_or("instrument", |user| user.ui.as_str());
     let lang = crate::i18n::lang(cx).await;
 

@@ -4845,13 +4845,13 @@ impl TestApp {
 #[tokio::test]
 async fn signed_out_settings_falls_back_to_accept_language() {
     let app = TestApp::build().await;
-
-    // No header: English chrome on a dark instrument shell.
+    // No header: English chrome on a light instrument shell.
     let page = app.get("/settings", None).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert!(page.text().contains("lang=\"en\""), "{}", page.text());
+    // Signed-out wears the family default: a light instrument shell.
     assert!(
-        page.text().contains("data-theme=\"dark\""),
+        !page.text().contains("data-theme=\"dark\""),
         "{}",
         page.text()
     );

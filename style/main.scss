@@ -625,6 +625,7 @@ a {
   font-size: 10px;
   letter-spacing: 0.08em;
   color: var(--muted-soft);
+  text-transform: uppercase;
 }
 
 // The address an invited member signs in as: shown, never edited.
@@ -3350,6 +3351,7 @@ img.avatar {
   font-size: 10px;
   letter-spacing: 0.08em;
   color: var(--muted-soft);
+  text-transform: uppercase;
 }
 
 // A read-only value under a field label — the profile's name, address and
