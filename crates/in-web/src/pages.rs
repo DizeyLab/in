@@ -14,7 +14,7 @@ use topcoat::context::Cx;
 use topcoat::router::{HeaderValue, StatusCode, header, page};
 use topcoat::view::{View, ViewExt, view};
 
-use crate::i18n::{Key, Lang, lang, t};
+use crate::i18n::{Key, lang, t};
 use crate::layout::wordmark;
 use crate::server::current_user;
 
@@ -33,13 +33,16 @@ async fn landing(cx: &Cx) -> Result<impl View> {
             .boxed())
         }
         Ok(None) => Ok(sign_in_card(cx).await?.boxed()),
-        Err(_) => Ok(view! {
-            cx =>
-            <main class="scaffold-note">
-                <p>(t(Lang::En, Key::SomethingWentWrong))</p>
-            </main>
+        Err(_) => {
+            let language = lang(cx).await;
+            Ok(view! {
+                cx =>
+                <main class="scaffold-note">
+                    <p>(t(language, Key::SomethingWentWrong))</p>
+                </main>
+            }
+            .boxed())
         }
-        .boxed()),
     }
 }
 

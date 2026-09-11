@@ -327,7 +327,8 @@ pub(crate) async fn bytes_response(
         Some(Err(())) => {
             headers.insert(
                 header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes */{total}")).unwrap(),
+                HeaderValue::from_str(&format!("bytes */{total}"))
+                    .unwrap_or(HeaderValue::from_static("bytes */0")),
             );
             return Some((StatusCode::RANGE_NOT_SATISFIABLE, headers, Body::empty()));
         }
@@ -338,12 +339,13 @@ pub(crate) async fn bytes_response(
         let end = start + span.len.saturating_sub(1);
         headers.insert(
             header::CONTENT_RANGE,
-            HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).unwrap(),
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{total}"))
+                .unwrap_or(HeaderValue::from_static("bytes */0")),
         );
     }
     headers.insert(
         header::CONTENT_LENGTH,
-        HeaderValue::from_str(&span.len.to_string()).unwrap(),
+        HeaderValue::from_str(&span.len.to_string()).unwrap_or(HeaderValue::from_static("0")),
     );
     let frames = span.stream.map(|chunk| chunk.map(Frame::data));
     Some((status, headers, Body::new(StreamBody::new(frames))))

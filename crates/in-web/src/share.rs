@@ -680,8 +680,12 @@ fn has_flag(query: &str, key: &str) -> bool {
 /// `/s` surface stays a `#[route]` and wraps its views itself — in
 /// `document_shell`, the same shell every `#[page]` under `/` wears, never
 /// a hand-copied head.
-async fn public_page(cx: &Cx, page: impl View) -> Result<topcoat::router::response::Response> {
-    document_shell(cx, topcoat::view::Child::new(page))
+async fn public_page(
+    cx: &Cx,
+    title: &str,
+    page: impl View,
+) -> Result<topcoat::router::response::Response> {
+    document_shell(cx, topcoat::view::Child::new(page), title)
         .await?
         .first()
         .await?
@@ -701,7 +705,7 @@ async fn dead_link(cx: &Cx) -> topcoat::Result<topcoat::router::response::Respon
             <p><a href="/">(t(language, Key::BackToDrive))</a></p>
         </main>
     };
-    public_page(cx, page).await
+    public_page(cx, t(language, Key::NothingAtThisAddress), page).await
 }
 /// The public viewer. No auth: the token in the path is the whole
 /// credential. A file target renders its card (and its bytes on `?dl=1`
@@ -890,7 +894,7 @@ async fn password_gate(cx: &Cx) -> topcoat::Result<topcoat::router::response::Re
             </form>
         </main>
     };
-    public_page(cx, page).await
+    public_page(cx, t(language, Key::PasswordProtected), page).await
 }
 
 #[derive(Deserialize)]
@@ -1170,7 +1174,7 @@ async fn file_card(
         </main>
         (topcoat::view::Child::new(media_player_script(cx).await?))
     };
-    public_page(cx, page).await
+    public_page(cx, &file.name, page).await
 }
 
 /// One file's chip on the public card: the link's own thumbnail where one
@@ -1272,7 +1276,7 @@ async fn folder_card(
             </section>
         </main>
     };
-    public_page(cx, page).await
+    public_page(cx, &root.name, page).await
 }
 
 /// The request's own path, without its query: the download links the public

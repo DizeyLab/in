@@ -14,7 +14,10 @@
 //! a request whose `?v=` already matches the row is stamped
 //! `private, max-age=31536000, immutable`, so a changed photo is a changed
 //! URL and no browser pins an old face behind a year of cache. Any other
-//! spelling of the address revalidates with `private, no-cache`.
+//! spelling of the address revalidates with `private, no-cache`. A miss —
+//! an unknown id, im unreachable — is cached only briefly, so the browser
+//! stops re-asking within a render but a face that comes back is not
+//! held off for long.
 
 use topcoat::context::Cx;
 use topcoat::router::request::{headers as request_headers, uri};
@@ -24,7 +27,12 @@ use crate::server::{app, require_user};
 path_param!(user_id);
 
 fn not_found() -> (StatusCode, HeaderMap, Vec<u8>) {
-    (StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new())
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=300"),
+    );
+    (StatusCode::NOT_FOUND, headers, Vec::new())
 }
 
 /// The `?v=` the request carries, if it carries one.

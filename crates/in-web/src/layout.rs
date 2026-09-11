@@ -14,13 +14,14 @@ use topcoat::{
         StatusCode,
         error::{NotFoundError, not_found},
         layout, page,
+        request::uri,
     },
     view::{Unescaped, View, ViewExt, error_boundary, view},
 };
 
 use in_core::store::User;
 
-use crate::health::{Probe, probe_healthz};
+use crate::health::{family_probes, Probe};
 use crate::i18n::{Key, Lang, t};
 use crate::server::{app, current_user};
 
@@ -168,7 +169,7 @@ pub async fn user_menu<'a>(cx: &'a Cx, user: &'a User, lang: Lang) -> Result<imp
                 if user.admin {
                 <div class="user-menu-role">(t(lang, Key::AdminBadge))</div>
                 }
-                <a class="user-menu-item" href=(format!("{}/", app(cx).config.oidc.issuer)) data-hard="">(t(lang, Key::Profile))</a>
+                <a class="user-menu-item" href=(format!("{}/people/{}", app(cx).config.oidc.issuer, user.oidc_sub)) data-hard="">(t(lang, Key::Profile))</a>
                 <a class="user-menu-item" href="/settings">(t(lang, Key::NavSettings))</a>
                 <a class="user-menu-item" href="/auth/logout" data-hard="">(t(lang, Key::SignOut))</a>
             </div>
@@ -265,25 +266,26 @@ async fn family_mark<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     if siblings.is_empty() {
         return mark(cx).await.map(|v| v.boxed());
     }
-    // Every probe at once: a family member that is down costs its two
-    // seconds, not two seconds each.
-    let http = reqwest::Client::new();
-    let mut probes = Vec::new();
-    for service in &siblings {
-        let http = http.clone();
-        let url = format!("{}/healthz", service.url.trim_end_matches('/'));
-        probes.push(tokio::spawn(async move { probe_healthz(&http, &url).await }));
-    }
-    let mut rows = Vec::new();
-    for (service, probe) in siblings.iter().zip(probes) {
-        let probe = probe.await.unwrap_or(Probe::Down);
-        rows.push((
-            service.key.as_str(),
-            service.url.as_str(),
-            service.name.as_str(),
-            probe,
-        ));
-    }
+    // Every probe at once, one reading shared per window: a family member
+    // that is down costs its two seconds once per half minute, not on
+    // every page the reader opens.
+    let asked: Vec<(&str, &str)> = siblings
+        .iter()
+        .map(|service| (service.key.as_str(), service.url.as_str()))
+        .collect();
+    let probes = family_probes(&asked).await;
+    let rows: Vec<_> = siblings
+        .iter()
+        .zip(probes)
+        .map(|(service, probe)| {
+            (
+                service.key.as_str(),
+                service.url.as_str(),
+                service.name.as_str(),
+                probe,
+            )
+        })
+        .collect();
     let marks = switcher_marks(rows);
     Ok(view! {
         cx =>
@@ -295,8 +297,8 @@ async fn family_mark<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
     .boxed())
 }
 
-/// The flyout's marks as final HTML, pure over resolved probes: in's own
-/// row filtered out, every sibling a plain link carrying its probe's dot
+/// The flyout's marks as final HTML, pure over resolved probes: every
+/// sibling a plain link carrying its probe's dot
 /// — `health-on` while it answers `ok`, `health-off` while it does not —
 /// middots between. Dots only: the probe's body and latency never reach
 /// the chrome. Extracted from `family_mark` so the tests pin this exact
@@ -305,7 +307,6 @@ pub fn switcher_marks<'a>(
     rows: impl IntoIterator<Item = (&'a str, &'a str, &'a str, Probe)>,
 ) -> String {
     rows.into_iter()
-        .filter(|(key, _, _, _)| *key != SELF_KEY)
         .map(|(key, url, name, probe)| {
             let key = escape(key);
             let url = escape(url);
@@ -595,6 +596,8 @@ pub async fn soft_nav_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
                 else { document.documentElement.removeAttribute('data-theme'); } \
                 if (root.hasAttribute('data-ui')) { document.documentElement.setAttribute('data-ui', root.getAttribute('data-ui')); } \
                 else { document.documentElement.removeAttribute('data-ui'); } \
+                var freshTitle = doc.querySelector('title'); \
+                if (freshTitle && freshTitle.textContent) { document.title = freshTitle.textContent; } \
                 if (url) { history[push ? 'pushState' : 'replaceState'](null, '', url); } \
                 if (morphing) { \
                     morph(document.body, doc.body); \
@@ -1118,13 +1121,14 @@ const STYLE: Asset = asset!("assets/main.css");
 /// layout pairing — the public share pages among them, whose query can ask
 /// for bytes a page-shaped answer cannot carry — so this is `pub(crate)`:
 /// they wrap their views in the same shell by calling it directly instead of
-/// hand-copying the head. Signed-out visitors wear the provision defaults
-/// and the session-gated live stream stays off (`asking` is false without a
-/// session), so a stranger's page carries no user data and opens no
-/// `/api/live` connection.
+/// hand-copying the head, passing their own `title`. Signed-out visitors
+/// wear the provision defaults and the session-gated live stream stays off
+/// (`asking` is false without a session), so a stranger's page carries no
+/// user data and opens no `/api/live` connection.
 pub(crate) async fn document_shell<'a>(
     cx: &'a Cx,
     slot: topcoat::view::Child<'a>,
+    title: &'a str,
 ) -> Result<impl View + 'a> {
     // The per-user chrome knobs, read off the request's own user: the theme
     // into `data-theme`, the interface into `data-ui`, the language into
@@ -1153,7 +1157,7 @@ pub(crate) async fn document_shell<'a>(
                     rel="stylesheet"
                     href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:ital,wght@0,400;0,600;1,400;1,600&display=swap"
                 >
-                <title>"in"</title>
+                <title>(title)</title>
                 <link rel="icon" href=(FAVICON)>
                 <link rel="stylesheet" href=(STYLE)>
                 topcoat::runtime::script()
@@ -1187,9 +1191,28 @@ pub(crate) async fn document_shell<'a>(
     }.boxed())
 }
 
+/// The tab title a page wears, read off its address: the shell is paired
+/// around pages by path prefix, so a page cannot hand its name up — the
+/// router's own address decides. The share pages, which wrap themselves in
+/// the shell directly, pass their own instead. Anything unmatched — the
+/// catch-all 404 among it — reads as the app's bare name.
+fn title_key_of(path: &str) -> Option<Key> {
+    match path {
+        "/" => Some(Key::WelcomeTitle),
+        p if p.starts_with("/drive") => Some(Key::NavDrive),
+        p if p.starts_with("/shared") => Some(Key::NavShared),
+        p if p.starts_with("/trash") => Some(Key::NavTrash),
+        p if p.starts_with("/settings") => Some(Key::NavSettings),
+        p if p.starts_with("/view/") => Some(Key::FileDetails),
+        _ => None,
+    }
+}
+
 /// The router's own shell route: pairing is by path prefix, so every page
-/// under `/` wears `document_shell` through here.
+/// under `/` wears `document_shell` through here, titled off its address.
 #[layout("/")]
 async fn root_layout(cx: &Cx, slot: topcoat::view::Child<'_>) -> Result<impl View> {
-    document_shell(cx, slot).await
+    let lang = crate::i18n::lang(cx).await;
+    let title = title_key_of(uri(cx).path()).map_or("in", |key| t(lang, key));
+    document_shell(cx, slot, title).await
 }

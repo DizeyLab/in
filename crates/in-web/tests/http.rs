@@ -3342,11 +3342,12 @@ async fn the_family_flyout_marks_siblings_with_health_dots() {
 }
 
 /// The CI gate for the flyout markup: `switcher_marks` is the exact HTML
-/// the flyout renders, so the probe-to-dot mapping and in's omission are
-/// pinned without a router or an asset bundle — which is where the
-/// renders above get skipped. Up reads `health-on`, Down `health-off`,
-/// the keys stay links with their titles, and the probe's body and
-/// latency never reach the chrome.
+/// the flyout renders, so the probe-to-dot mapping is pinned without a
+/// router or an asset bundle — which is where the renders above get
+/// skipped. Up reads `health-on`, Down `health-off`, the keys stay links
+/// with their titles, and the probe's body and latency never reach the
+/// chrome. (The omission of in's own row is `family_mark`'s doing; the
+/// router renders above pin it.)
 #[test]
 fn the_family_flyout_marks_pure_html() {
     use in_web::health::Probe;
@@ -3354,8 +3355,6 @@ fn the_family_flyout_marks_pure_html() {
     let marks = in_web::layout::switcher_marks([
         ("iz", "http://127.0.0.1:9001", "Board", Probe::Up { body: "ok dev".into(), ms: 12 }),
         ("im", "http://127.0.0.1:9002", "Account", Probe::Down),
-        // in's own row goes in; it must not come back out.
-        ("in", "http://127.0.0.1:7655", "Files", Probe::Up { body: "ok dev".into(), ms: 1 }),
     ]);
     assert!(
         marks.contains(
@@ -3373,7 +3372,6 @@ fn the_family_flyout_marks_pure_html() {
         "the dark sibling reads off: {marks}"
     );
     assert!(marks.contains(">im</a>"), "the dark sibling renders: {marks}");
-    assert!(!marks.contains(">in</a>"), "in's own row stays out: {marks}");
     assert!(!marks.contains("ok dev"), "the flyout carries dots only: {marks}");
     assert!(!marks.contains(" ms"), "the flyout carries no latency: {marks}");
     assert!(
@@ -5094,10 +5092,10 @@ async fn settings_lives_in_the_user_menu_not_the_topbar() {
     let menu_start = body.find("user-menu-panel").expect("no user menu");
     let menu = &body[menu_start..];
     assert!(menu.contains("href=\"/settings\""), "{menu}");
-    let issuer = format!("href=\"{}/\"", app.config.oidc.issuer);
+    let profile = format!("href=\"{}/people/{}\"", app.config.oidc.issuer, "sub-menu");
     assert!(
-        menu.contains(&issuer),
-        "no profile link to the issuer: {menu}"
+        menu.contains(&profile),
+        "no profile deep link to im's people page: {menu}"
     );
 }
 
