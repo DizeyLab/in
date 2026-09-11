@@ -547,6 +547,26 @@ async fn check_quota(conn: &Connection, owner_id: &str) -> Result<(u64, u64)> {
     }
 }
 
+/// The bytes this owner's in-flight chunk sessions have already claimed:
+/// their declared full sizes while they are still arriving. Quota checks
+/// count them, so N concurrent sessions cannot each see an empty library
+/// and overshoot the ceiling N times over. `except` lets a finishing
+/// session not count its own claim against itself.
+async fn staged_claim(conn: &Connection, owner_id: &str, except: Option<&str>) -> Result<u64> {
+    let mut rows = conn
+        .query(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM upload_session \
+             WHERE owner_id = ?1 AND state = 'active' AND (?2 IS NULL OR id != ?2)",
+            params![owner_id, except],
+        )
+        .await
+        .map_err(backend)?;
+    match rows.next().await.map_err(backend)? {
+        Some(row) => Ok(row.get::<i64>(0).map_err(backend)?.max(0) as u64),
+        None => Ok(0),
+    }
+}
+
 fn fit_quota(quota: u64, used: u64, extra: u64) -> Result<()> {
     // A zero-byte write costs nothing, so it always fits — even under an
     // account whose quota was lowered below current usage, which must still
@@ -756,7 +776,12 @@ fn staged_received(storage: &std::path::Path, id: &str) -> u64 {
         Err(_) => return 0,
     };
     for entry in entries.flatten() {
-        if entry.path().is_file() {
+        // A mid-write temp name from write_file_atomic is not received
+        // bytes: it exists between create and rename, and a crash leaves it
+        // for the boot sweep — neither state belongs in the sum.
+        let name = entry.file_name();
+        let is_tmp = name.to_string_lossy().ends_with(".tmp");
+        if !is_tmp && entry.path().is_file() {
             total = total.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
         }
     }
@@ -1533,7 +1558,8 @@ impl Store for TursoStore {
             .map_err(backend)?;
         check_live_parent(&tx, owner_id, folder_id).await?;
         let (quota, used) = check_quota(&tx, owner_id).await?;
-        fit_quota(quota, used, size)?;
+        let claimed = staged_claim(&tx, owner_id, None).await?;
+        fit_quota(quota, used.saturating_add(claimed), size)?;
         // A live sibling wearing the name is no refusal: the file takes the
         // first free `stem (2).ext` postfix instead.
         let name = free_file_name(&tx, owner_id, folder_id, &name, None).await?;
@@ -2508,7 +2534,8 @@ impl Store for TursoStore {
         let conn = self.conn.lock().await;
         check_live_parent_on(&conn, owner_id, folder_id).await?;
         let (quota, used) = check_quota(&conn, owner_id).await?;
-        fit_quota(quota, used, size_bytes)?;
+        let claimed = staged_claim(&conn, owner_id, None).await?;
+        fit_quota(quota, used.saturating_add(claimed), size_bytes)?;
         let id = Ulid::generate().to_string();
         let now = OffsetDateTime::now_utc();
         let created = stamp(now)?;
@@ -2703,7 +2730,8 @@ impl Store for TursoStore {
             finishable_session(&tx, id).await?;
             check_live_parent(&tx, &session.owner_id, session.folder_id.as_deref()).await?;
             let (quota, used) = check_quota(&tx, &session.owner_id).await?;
-            fit_quota(quota, used, session.size_bytes)?;
+            let claimed = staged_claim(&tx, &session.owner_id, Some(id)).await?;
+            fit_quota(quota, used.saturating_add(claimed), session.size_bytes)?;
             // A live sibling wearing the session's name is no refusal: the
             // finished file takes the first free `stem (2).ext` postfix.
             free_file_name(
@@ -3051,6 +3079,8 @@ impl Store for TursoStore {
             .await
             .map_err(backend)?;
         let (quota, used) = check_quota(&tx, owner_id).await?;
+        let claimed = staged_claim(&tx, owner_id, None).await?;
+        let used = used.saturating_add(claimed);
         let mut rows = tx
             .query(
                 "SELECT id, size_bytes FROM file WHERE owner_id = ?1 AND external_id = ?2",

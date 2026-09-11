@@ -630,24 +630,25 @@ async fn quota_is_enforced_at_start_and_at_finish() {
         Err(StoreError::QuotaExceeded)
     ));
 
-    // Fits at open, over quota by finish: the chunks stay staged for another
-    // attempt once space is freed.
+    // A staged session's declared size is a reservation: nothing else — not
+    // a direct write, not a second session — may spend those bytes while
+    // the chunks arrive, and the finish re-checks against everything else
+    // that landed since the open (the claim itself excluded).
     let session = scratch
         .store
         .create_upload_session(&user.id, None, "late", 90)
         .await
         .unwrap();
     scratch.store.record_chunk(&session.id, 0, &[7u8; 90]).await.unwrap();
-    scratch.store.insert_file(&user.id, None, "filler", &[0u8; 20]).await.unwrap();
     assert!(matches!(
-        scratch.store.finish_upload(&session.id).await,
+        scratch.store.insert_file(&user.id, None, "filler", &[0u8; 20]).await,
         Err(StoreError::QuotaExceeded)
     ));
-    let back = scratch.store.upload_session(&session.id).await.unwrap().unwrap();
-    assert_eq!(back.state, UploadState::Active);
-
-    // Room freed, the same chunks finish.
-    scratch.store.set_user_quota(&user.id, 200).await.unwrap();
+    assert!(matches!(
+        scratch.store.create_upload_session(&user.id, None, "second", 20).await,
+        Err(StoreError::QuotaExceeded)
+    ));
+    // The reservation is honored at finish: the room it set aside is there.
     let file = scratch.store.finish_upload(&session.id).await.unwrap();
     assert_eq!(file.size_bytes, 90);
 }
