@@ -547,7 +547,7 @@ async fn settings(cx: &Cx) -> Result<impl View> {
         if text.is_empty() {
             t(language, Key::Never).to_string()
         } else {
-            format!("{text} ago")
+            format!("{text} {}", t(language, Key::AgoSuffix))
         }
     };
     let event_line = age_line(last_event);
@@ -688,8 +688,8 @@ async fn settings(cx: &Cx) -> Result<impl View> {
                                 <label class="field">
                                     <span class="field-label">(t(language, Key::UiLabel))</span>
                                     <select class="field-input" name="ui">
-                                        <option value="instrument" selected=(fresh.ui == "instrument")>"Instrument"</option>
-                                        <option value="ledger" selected=(fresh.ui == "ledger")>"Ledger"</option>
+                                        <option value="instrument" selected=(fresh.ui == "instrument")>(t(language, Key::InstrumentOption))</option>
+                                        <option value="ledger" selected=(fresh.ui == "ledger")>(t(language, Key::LedgerOption))</option>
                                     </select>
                                 </label>
                                 <label class="field">
@@ -764,7 +764,7 @@ async fn settings(cx: &Cx) -> Result<impl View> {
                             }
                             for (link, target_name, url) in &link_names {
                                 <div class="member-row">
-                                    <span class="member-name">(format!("{} · {}", link.kind.as_str(), target_name.clone()))</span>
+                                    <span class="member-name">(format!("{} · {}", t(language, if link.kind == ShareKind::Folder { Key::KindFolder } else { Key::KindFile }), target_name.clone()))</span>
                                     <span class="field-note">(expiry_line(language, link.expires_at))</span>
                                     <div class="spacer"></div>
                                     <span class="field-note">(if link.can_download { t(language, Key::CanDownload) } else { t(language, Key::ViewOnly) })</span>

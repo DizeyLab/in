@@ -1067,7 +1067,7 @@ pub async fn status_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
             function box() { return document.getElementById('in-status'); } \
             function dismissLabel() { \
                 var b = box(); \
-                return (b && b.getAttribute('data-dismiss-label')) || 'dismiss'; \
+                return (b && b.getAttribute('data-dismiss-label')) || ''; \
             } \
             window.__inNotify = function (kind, text) { \
                 seq++; \
@@ -1200,7 +1200,7 @@ pub(crate) async fn document_shell<'a>(
 /// catch-all 404 among it — reads as the app's bare name.
 fn title_key_of(path: &str) -> Option<Key> {
     match path {
-        "/" => Some(Key::WelcomeTitle),
+        "/" => Some(Key::SignIn),
         p if p.starts_with("/drive") => Some(Key::NavDrive),
         p if p.starts_with("/shared") => Some(Key::NavShared),
         p if p.starts_with("/trash") => Some(Key::NavTrash),
@@ -1217,7 +1217,6 @@ async fn root_layout(cx: &Cx, slot: topcoat::view::Child<'_>) -> Result<impl Vie
     let lang = crate::i18n::lang(cx).await;
     let title = match title_key_of(uri(cx).path()) {
         None => "in".to_string(),
-        Some(Key::WelcomeTitle) => t(lang, Key::WelcomeTitle).to_string(),
         Some(key) => format!("{} · in", t(lang, key)),
     };
     document_shell(cx, slot, title).await

@@ -685,7 +685,8 @@ async fn drive(cx: &Cx) -> Result<impl View> {
                 data-failed-label=(t(language, Key::UploadFailed))
                 data-complete-label=(t(language, Key::UploadComplete))
                 data-cancel-label=(t(language, Key::CancelUpload))
-                data-canceled-label=(t(language, Key::UploadCanceled))>
+                data-canceled-label=(t(language, Key::UploadCanceled))
+                data-files-label=(t(language, Key::FilesCountLabel))>
                 <input type="hidden" name="folder_id" value=(current_id.clone())>
                 <input id="drive-upload-input" class="file-upload-input" type="file" name="file" multiple="">
             </form>
@@ -1035,7 +1036,7 @@ async fn upload_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
                         if (old) { old.remove(); } \
                         row.setAttribute('role', 'button'); \
                         row.setAttribute('tabindex', '0'); \
-                        row.setAttribute('title', box.getAttribute('data-dismiss-label') || 'dismiss'); \
+                        row.setAttribute('title', box.getAttribute('data-dismiss-label') || ''); \
                         row.addEventListener('click', function () { dropRow(u); }); \
                         row.addEventListener('keydown', function (ev) { \
                             if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); dropRow(u); } \
@@ -1279,9 +1280,10 @@ async fn upload_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
                 if (input) { input.disabled = true; window.__inOwn(input, [], ['disabled']); } \
                 var small = files.filter(function (f) { return f.size < LIMIT; }); \
                 var big = files.filter(function (f) { return f.size >= LIMIT; }); \
-                var failLabel = form.getAttribute('data-failed-label') || 'upload failed'; \
+                var failLabel = form.getAttribute('data-failed-label') || ''; \
                 var doneLabel = form.getAttribute('data-complete-label') || ''; \
                 var canceledLabel = form.getAttribute('data-canceled-label') || ''; \
+                var filesLabel = form.getAttribute('data-files-label') || ''; \
                 var landing = window.location.href; \
                 function settle() { \
                     input.value = ''; \
@@ -1292,7 +1294,7 @@ async fn upload_script<'a>(cx: &'a Cx) -> Result<impl View + 'a> {
                     var rows = []; \
                     try { \
                         if (small.length) { \
-                            var title = small.length === 1 ? small[0].name : (small.length + ' files'); \
+                        var title = small.length === 1 ? small[0].name : (small.length + ' ' + filesLabel); \
                             var ui = bar(title); \
                             rows.push(ui); \
                             var url = await sendSmall(form.getAttribute('action'), folder, small, function (frac) { setProgress(ui, frac); }, ui); \
