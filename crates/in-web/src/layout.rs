@@ -1128,8 +1128,9 @@ const STYLE: Asset = asset!("assets/main.css");
 pub(crate) async fn document_shell<'a>(
     cx: &'a Cx,
     slot: topcoat::view::Child<'a>,
-    title: &'a str,
+    title: impl Into<String>,
 ) -> Result<impl View + 'a> {
+    let title = title.into();
     // The per-user chrome knobs, read off the request's own user: the theme
     // into `data-theme`, the interface into `data-ui`, the language into
     // `<html lang>`. Signed-out (or unreadable) wears the provision defaults —
@@ -1214,6 +1215,10 @@ fn title_key_of(path: &str) -> Option<Key> {
 #[layout("/")]
 async fn root_layout(cx: &Cx, slot: topcoat::view::Child<'_>) -> Result<impl View> {
     let lang = crate::i18n::lang(cx).await;
-    let title = title_key_of(uri(cx).path()).map_or("in", |key| t(lang, key));
+    let title = match title_key_of(uri(cx).path()) {
+        None => "in".to_string(),
+        Some(Key::WelcomeTitle) => t(lang, Key::WelcomeTitle).to_string(),
+        Some(key) => format!("{} · in", t(lang, key)),
+    };
     document_shell(cx, slot, title).await
 }

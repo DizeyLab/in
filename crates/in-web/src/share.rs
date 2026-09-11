@@ -685,6 +685,7 @@ async fn public_page(
     title: &str,
     page: impl View,
 ) -> Result<topcoat::router::response::Response> {
+    let title = format!("{title} · in");
     document_shell(cx, topcoat::view::Child::new(page), title)
         .await?
         .first()
