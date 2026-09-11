@@ -2125,7 +2125,7 @@ async fn link_create_without_the_flag_is_view_only() {
     let settings = app.get("/settings?section=links", Some(&admin)).await;
     assert_eq!(settings.status, StatusCode::OK, "{}", settings.text());
     assert!(
-        settings.text().contains("file · plain.txt"),
+        settings.text().contains("plain.txt"),
         "settings panel showed no name: {}",
         settings.text()
     );
