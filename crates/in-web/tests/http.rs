@@ -2864,6 +2864,29 @@ async fn view_only_reader_previews_media_but_cannot_download() {
     assert!(page.text().contains("viewer-media"), "{}", page.text());
     assert!(!page.text().contains("No preview"), "{}", page.text());
     assert!(!page.text().contains("?dl=1"), "{}", page.text());
+    // The chrome names the grant honestly — viewing in the browser,
+    // anything viewable savable — and the retired "no downloads" claim
+    // is gone.
+    assert!(
+        page.text().contains("anything viewable can be saved"),
+        "{}",
+        page.text()
+    );
+    assert!(
+        !page.text().contains("preview, no downloads"),
+        "{}",
+        page.text()
+    );
+    // The owner's own viewer names no grant: the note is for the reader
+    // the grant limits.
+    let own = app.get(&format!("/view/{file}"), Some(&admin)).await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.text());
+    assert!(
+        !own.text().contains("anything viewable can be saved"),
+        "{}",
+        own.text()
+    );
+    assert!(own.text().contains("?dl=1"), "{}", own.text());
     // The back link names the origin: opened from the shared page (the
     // `from=shared` its rows carry) it returns there, a plain opening to
     // the drive.
@@ -3338,7 +3361,10 @@ async fn the_family_flyout_marks_siblings_with_health_dots() {
     );
     assert!(nav.contains(">im</a>"), "the dark sibling renders: {nav}");
     assert!(!nav.contains(">in</a>"), "in's own row stays out: {nav}");
-    assert!(!body.contains("ok dev"), "the flyout carries dots only: {body}");
+    assert!(
+        !body.contains("ok dev"),
+        "the flyout carries dots only: {body}"
+    );
     assert!(!nav.contains(" ms"), "the flyout carries no latency: {nav}");
 }
 
@@ -3354,7 +3380,15 @@ fn the_family_flyout_marks_pure_html() {
     use in_web::health::Probe;
 
     let marks = in_web::layout::switcher_marks([
-        ("iz", "http://127.0.0.1:9001", "Board", Probe::Up { body: "ok dev".into(), ms: 12 }),
+        (
+            "iz",
+            "http://127.0.0.1:9001",
+            "Board",
+            Probe::Up {
+                body: "ok dev".into(),
+                ms: 12,
+            },
+        ),
         ("im", "http://127.0.0.1:9002", "Account", Probe::Down),
     ]);
     assert!(
@@ -3367,14 +3401,26 @@ fn the_family_flyout_marks_pure_html() {
         marks.contains("health-dot health-on"),
         "the ok sibling reads on: {marks}"
     );
-    assert!(marks.contains(">iz</a>"), "the live sibling renders: {marks}");
+    assert!(
+        marks.contains(">iz</a>"),
+        "the live sibling renders: {marks}"
+    );
     assert!(
         marks.contains("health-dot health-off"),
         "the dark sibling reads off: {marks}"
     );
-    assert!(marks.contains(">im</a>"), "the dark sibling renders: {marks}");
-    assert!(!marks.contains("ok dev"), "the flyout carries dots only: {marks}");
-    assert!(!marks.contains(" ms"), "the flyout carries no latency: {marks}");
+    assert!(
+        marks.contains(">im</a>"),
+        "the dark sibling renders: {marks}"
+    );
+    assert!(
+        !marks.contains("ok dev"),
+        "the flyout carries dots only: {marks}"
+    );
+    assert!(
+        !marks.contains(" ms"),
+        "the flyout carries no latency: {marks}"
+    );
     assert!(
         marks.contains(r#"<span class="app-switcher-sep">·</span>"#),
         "the marks join on middots: {marks}"
@@ -4587,6 +4633,18 @@ async fn view_only_public_thumb_serves_webp() {
     assert!(
         !page.text().contains("?dl=1"),
         "card must not point at the raw bytes: {}",
+        page.text()
+    );
+    // The card names the grant honestly: viewing happens in the browser
+    // and anything viewable can be saved — never a "no downloads" claim.
+    assert!(
+        page.text().contains("anything viewable can be saved"),
+        "{}",
+        page.text()
+    );
+    assert!(
+        !page.text().contains("preview, no downloads"),
+        "{}",
         page.text()
     );
 
@@ -6127,7 +6185,12 @@ async fn the_me_probe_answers_204_while_signed_in_and_401_the_moment_not() {
     assert_eq!(in_answer.status, StatusCode::NO_CONTENT);
     assert!(in_answer.bytes.is_empty(), "no body on 204 either");
 
-    let user = app.store.user_by_oidc_sub("sub-probe").await.unwrap().unwrap();
+    let user = app
+        .store
+        .user_by_oidc_sub("sub-probe")
+        .await
+        .unwrap()
+        .unwrap();
     app.store.set_user_disabled(&user.id, true).await.unwrap();
     let disabled = app.get("/api/me", Some(&cookie)).await;
     assert_eq!(disabled.status, StatusCode::UNAUTHORIZED);
@@ -6199,4 +6262,293 @@ async fn a_user_level_kill_orders_its_own_tabs_out_and_nobody_else() {
         }
     }
     assert!(bob.next_frame().await.is_none(), "bob's stream ends too");
+}
+/// The finding's surface, end to end: a folder grant turns the shared
+/// page's `/drive?folder=` link into a read-only browse — the listing with
+/// its subfolder and file rows, descent into the subtree, the honest
+/// access tell — with no write affordance anywhere, no sibling named, the
+/// owner's own page for the same folder untouched, and a 404 the moment
+/// the grant is gone.
+#[tokio::test]
+async fn granted_folder_browses_read_only() {
+    let app = TestApp::build().await;
+    let ada = app.sign_in("sub-ada", "ada-grant@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob-grant@in.test", "Bob").await;
+    let cara = app.sign_in("sub-cara", "cara-grant@in.test", "Cara").await;
+    let owner = owner_of(&app, "sub-ada").await;
+
+    // Ada's tree: `trip` holding `inner` and a note, `secret` beside it.
+    let answer = app
+        .post(
+            "/api/folder/create",
+            Some(&ada),
+            &[("parent_id", ""), ("name", "trip")],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let trip = folder_id(&app, &owner, None, "trip").await;
+    let answer = app
+        .post(
+            "/api/folder/create",
+            Some(&ada),
+            &[("parent_id", &trip), ("name", "inner")],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let inner = folder_id(&app, &owner, Some(&trip), "inner").await;
+    let note = app
+        .store
+        .insert_file(&owner, Some(&trip), "note.txt", b"note bytes")
+        .await
+        .unwrap()
+        .id;
+    app.post(
+        "/api/folder/create",
+        Some(&ada),
+        &[("parent_id", ""), ("name", "secret")],
+    )
+    .await;
+    let secret = folder_id(&app, &owner, None, "secret").await;
+
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&ada),
+            &[
+                ("kind", "folder"),
+                ("target_id", &trip),
+                ("email", "bob-grant@in.test"),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "grant refused: {:?}", answer.location);
+
+    // The grant opens the browse where a stranger's tree would 404.
+    let page = app.get(&format!("/drive?folder={trip}"), Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    assert!(body.contains("inner"), "{body}");
+    assert!(body.contains("note.txt"), "{body}");
+    assert!(body.contains(&format!("/drive?folder={inner}")), "{body}");
+    assert!(body.contains(&format!("/view/{note}")), "{body}");
+    // The honest tell names the grant's reach.
+    assert!(body.contains("Shared with you"), "{body}");
+    assert!(body.contains("May download"), "{body}");
+    // And the page offers nothing to write with: no + menu, no upload, no
+    // row options, no rename, move, share, or delete anywhere on it.
+    for absent in [
+        "/api/folder/create",
+        "/api/folder/rename",
+        "/api/folder/delete",
+        "/api/file/rename",
+        "/api/file/delete",
+        "share=folder:",
+        "share=file:",
+        "move=folder:",
+        "move=file:",
+        "&edit=",
+        "?dl=1",
+        "upload-form",
+        "drive-upload-input",
+        "drop-overlay",
+        "drive-add",
+        "entry-options",
+    ] {
+        assert!(
+            !body.contains(absent),
+            "grantee page offers {absent}: {body}"
+        );
+    }
+    // Nothing beside the grant is named, let alone linked.
+    assert!(
+        !body.contains(&format!("/drive?folder={secret}")),
+        "grantee page links the ungranted sibling: {body}"
+    );
+    assert!(
+        !body.contains(">secret</span>"),
+        "grantee page renders the ungranted sibling: {body}"
+    );
+
+    // Descent into the granted subtree is the same read-only browse one
+    // level down, and the trail stops at the granted folder: `trip` is
+    // named, the drive root above it never is.
+    let deep = app
+        .store
+        .insert_file(&owner, Some(&inner), "deep.txt", b"deep")
+        .await
+        .unwrap()
+        .id;
+    let page = app.get(&format!("/drive?folder={inner}"), Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    assert!(body.contains("deep.txt"), "{body}");
+    assert!(body.contains(&format!("/view/{deep}")), "{body}");
+    assert!(body.contains(&format!("/drive?folder={trip}")), "{body}");
+    assert!(
+        !body.contains("detail-crumb\" href=\"/drive\""),
+        "grantee trail climbs out of the grant: {body}"
+    );
+
+    // The owner's own page for the same folder is exactly what it was.
+    let page = app.get(&format!("/drive?folder={trip}"), Some(&ada)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("upload-form"), "{}", page.text());
+
+    // A bystander without the grant sees nothing at all.
+    let page = app.get(&format!("/drive?folder={trip}"), Some(&cara)).await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND, "{}", page.text());
+    let page = app
+        .get(&format!("/drive?folder={secret}"), Some(&bob))
+        .await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND, "{}", page.text());
+
+    // Revoke and the same address is the plain not-found again.
+    let answer = app
+        .post(
+            "/api/share/user/remove",
+            Some(&ada),
+            &[
+                ("kind", "folder"),
+                ("target_id", &trip),
+                ("email", "bob-grant@in.test"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "remove refused: {:?}", answer.location);
+    let page = app.get(&format!("/drive?folder={trip}"), Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND, "{}", page.text());
+}
+
+/// The grant's edge is exactly the granted subtree: a folder granted deeper
+/// opens while its parent and siblings do not, the trail never climbs out,
+/// a view-only grant says so while its files preview but stay download-dead,
+/// and a trashed branch closes the path until the owner restores it.
+#[tokio::test]
+async fn grant_edges_close_the_browse() {
+    let app = TestApp::build().await;
+    let ada = app.sign_in("sub-ada", "ada-edges@in.test", "Ada").await;
+    let bob = app.sign_in("sub-bob", "bob-edges@in.test", "Bob").await;
+    let owner = owner_of(&app, "sub-ada").await;
+
+    // outer/inner with `beside` off the path; only `inner` is granted.
+    let answer = app
+        .post(
+            "/api/folder/create",
+            Some(&ada),
+            &[("parent_id", ""), ("name", "outer")],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let outer = folder_id(&app, &owner, None, "outer").await;
+    let answer = app
+        .post(
+            "/api/folder/create",
+            Some(&ada),
+            &[("parent_id", &outer), ("name", "inner")],
+        )
+        .await;
+    assert!(answer.accepted(), "create refused: {:?}", answer.location);
+    let inner = folder_id(&app, &owner, Some(&outer), "inner").await;
+    app.post(
+        "/api/folder/create",
+        Some(&ada),
+        &[("parent_id", ""), ("name", "beside")],
+    )
+    .await;
+    let beside = folder_id(&app, &owner, None, "beside").await;
+    let pic = app
+        .store
+        .insert_file(&owner, Some(&inner), "pic.png", &tiny_png())
+        .await
+        .unwrap()
+        .id;
+
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&ada),
+            &[
+                ("kind", "folder"),
+                ("target_id", &inner),
+                ("email", "bob-edges@in.test"),
+                ("can_download", "0"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "grant refused: {:?}", answer.location);
+
+    // The granted folder opens, view-only on its face; the parent, a
+    // sibling, and the trail above the grant all stay closed.
+    let page = app.get(&format!("/drive?folder={inner}"), Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let body = page.text();
+    assert!(body.contains("View only"), "{body}");
+    assert!(!body.contains("May download"), "{body}");
+    assert!(
+        !body.contains(&format!("/drive?folder={outer}")),
+        "trail names the ungranted parent: {body}"
+    );
+    let page = app.get(&format!("/drive?folder={outer}"), Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND, "{}", page.text());
+    let page = app
+        .get(&format!("/drive?folder={beside}"), Some(&bob))
+        .await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND, "{}", page.text());
+
+    // The file previews through the folder grant, but taking it away is
+    // refused — the view-only grant opens the page, not the bytes.
+    let view = app.get(&format!("/view/{pic}"), Some(&bob)).await;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.text());
+    assert!(
+        !view.text().contains("?dl=1"),
+        "view-only viewer offers a download: {}",
+        view.text()
+    );
+    let bytes = app.get(&format!("/file/{pic}?dl=1"), Some(&bob)).await;
+    assert_eq!(bytes.status, StatusCode::NOT_FOUND);
+    let preview = app.get(&format!("/file/{pic}"), Some(&bob)).await;
+    assert_eq!(preview.status, StatusCode::OK);
+
+    // The same grant refreshed with download opens the bytes too.
+    let answer = app
+        .post(
+            "/api/share/user/add",
+            Some(&ada),
+            &[
+                ("kind", "folder"),
+                ("target_id", &inner),
+                ("email", "bob-edges@in.test"),
+                ("can_download", "1"),
+            ],
+        )
+        .await;
+    assert!(answer.accepted(), "re-grant refused: {:?}", answer.location);
+    let page = app.get(&format!("/drive?folder={inner}"), Some(&bob)).await;
+    assert!(page.text().contains("May download"), "{}", page.text());
+    let bytes = app.get(&format!("/file/{pic}?dl=1"), Some(&bob)).await;
+    assert_eq!(bytes.status, StatusCode::OK);
+    assert!(
+        bytes
+            .disposition
+            .as_deref()
+            .is_some_and(|value| value.starts_with("attachment")),
+        "download did not land as a file: {:?}",
+        bytes.disposition
+    );
+
+    // Trashing the granted folder closes the whole path — the grant row
+    // survives, but trash is unreachable — and restoring reopens it.
+    let answer = app
+        .post("/api/folder/delete", Some(&ada), &[("id", &inner)])
+        .await;
+    assert!(answer.accepted(), "delete refused: {:?}", answer.location);
+    let page = app.get(&format!("/drive?folder={inner}"), Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::NOT_FOUND, "{}", page.text());
+    let view = app.get(&format!("/view/{pic}"), Some(&bob)).await;
+    assert_eq!(view.status, StatusCode::NOT_FOUND, "{}", view.text());
+    app.store.restore_folder(&inner).await.unwrap();
+    let page = app.get(&format!("/drive?folder={inner}"), Some(&bob)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert!(page.text().contains("pic.png"), "{}", page.text());
 }

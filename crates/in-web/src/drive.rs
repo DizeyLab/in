@@ -8,6 +8,11 @@
 //! itself is refused. Anything naming another owner's tree answers 404,
 //! never 403.
 //!
+//! A folder opened by grant renders read-only at the same address for the
+//! grantee: the listing loses every write affordance, the trail stops at
+//! the granted folder, and anything the grant does not cover answers the
+//! same 404 a stranger's tree does.
+//!
 //! `GET /drive?q=<text>` keeps the same page and swaps the folder list
 //! for library-wide name hits — the filterbar's search box, submitted as a
 //! plain GET form. The old `GET /search?q=` address 303s here, so old links
@@ -15,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use in_core::store::{Folder, ShareKind, Store, StoreError};
+use in_core::store::{Folder, ShareKind, Store, StoreError, User};
 use topcoat::router::request::uri;
 use topcoat::router::{HeaderName, HeaderValue, StatusCode, header, page, query_params, route};
 
@@ -23,9 +28,9 @@ use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::content::{Form, Json};
 use topcoat::router::error::not_found;
-use topcoat::view::{View, ViewExt, view};
+use topcoat::view::{BoxView, View, ViewExt, view};
 
-use crate::i18n::{Key, lang, t};
+use crate::i18n::{Key, Lang, lang, t};
 use crate::layout::{NavPage, topbar};
 use crate::server::{Refusal, app, back_to, refusal_of, require_user, share_origin};
 
@@ -97,6 +102,75 @@ async fn current_folder(
         }
     }
     Ok(Some(folder))
+}
+
+/// The folder the query names for a grantee: not one of the account's own,
+/// but one a live folder grant covers — the grant may sit on the folder
+/// itself or on any live folder above it, the same chain the file pages
+/// ride. The owner's reachability rule holds unchanged: the folder and
+/// every ancestor must be live, or the address is not found. `None` —
+/// never an error — leaves the caller answering the plain 404, so a
+/// stranger learns nothing about which ids exist.
+async fn granted_folder(
+    store: &dyn Store,
+    user_id: &str,
+    folder_id: Option<&str>,
+) -> Result<Option<Folder>, topcoat::Error> {
+    let Some(id) = folder_id.filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let Ok(Some(folder)) = store.folder(id).await else {
+        return Ok(None);
+    };
+    if folder.owner_id == user_id || folder.deleted_at.is_some() {
+        return Ok(None);
+    }
+    // Unreachable while any ancestor is trashed — the drive shows no path
+    // back into it, grant or no grant. Ancestors of a folder share its
+    // owner: moves never cross owners, so liveness is all that is checked.
+    let mut parent = folder.parent_id.clone();
+    while let Some(id) = parent {
+        match store.folder(&id).await {
+            Ok(Some(next)) if next.deleted_at.is_none() => parent = next.parent_id.clone(),
+            _ => return Ok(None),
+        }
+    }
+    // The grant itself, looked up the one way the store answers it: a row
+    // on the folder or any live folder above it.
+    if !store
+        .can_see(ShareKind::Folder, id, user_id)
+        .await
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+    Ok(Some(folder))
+}
+
+/// The crumb trail a grantee follows: the open folder and its ancestors
+/// while the grant still covers them, root-most first. It stops of itself
+/// above the granted folder — that page is not the account's to open, so
+/// the trail never names it.
+async fn granted_crumbs(store: &dyn Store, user_id: &str, folder: &Folder) -> Vec<Folder> {
+    let mut chain = Vec::new();
+    let mut next = Some(folder.clone());
+    while let Some(current) = next {
+        if !store
+            .can_see(ShareKind::Folder, &current.id, user_id)
+            .await
+            .unwrap_or(false)
+        {
+            break;
+        }
+        let parent = match &current.parent_id {
+            Some(id) => store.folder(id).await.ok().flatten(),
+            None => None,
+        };
+        chain.push(current);
+        next = parent;
+    }
+    chain.reverse();
+    chain
 }
 
 /// The breadcrumb path, root first, for the open folder.
@@ -469,7 +543,20 @@ async fn drive(cx: &Cx) -> Result<impl View> {
     let caption = asked
         .as_deref()
         .map(|query| format!("{} “{query}”", t(language, Key::SearchResults)));
-    let current = current_folder(store.as_ref(), &user.id, wanted.as_deref()).await?;
+    let current = match current_folder(store.as_ref(), &user.id, wanted.as_deref()).await {
+        Ok(current) => current,
+        Err(error) => {
+            // Not one of the account's own folders — a folder grant may
+            // still open it, read-only: the view the shared page's folder
+            // rows link to. Anything else keeps the owner path's answer.
+            if let Some(folder) =
+                granted_folder(store.as_ref(), &user.id, wanted.as_deref()).await?
+            {
+                return drive_shared(cx, user.clone(), language, &store, folder, params).await;
+            }
+            return Err(error);
+        }
+    };
     let crumbs = breadcrumbs(store.as_ref(), current.as_ref()).await;
     let mut listing = match store
         .list_children(&user.id, current.as_ref().map(|folder| folder.id.as_str()))
@@ -880,6 +967,163 @@ async fn drive(cx: &Cx) -> Result<impl View> {
         (topcoat::view::Child::new(crate::dropdown::dropdown_script(cx).await?))
         (topcoat::view::Child::new(upload_script(cx).await?))
         (topcoat::view::Child::new(options_menu_script(cx).await?))
+    }.boxed())
+}
+
+/// `GET /drive?folder=<id>` through a grant: the read-only browse where the
+/// owner's drive would be. Everything the owner page mutates with is gone —
+/// no + menu, no upload, no drop, no row options, no rename — and the trail
+/// stops at the granted folder, because nothing above it is the account's
+/// to open. Subfolder rows descend into the same address deeper, file rows
+/// into the viewer, whose own grant checks gate every preview and download
+/// as before. What the grant opens here is told plainly, the shared page's
+/// chip: download, or view alone.
+async fn drive_shared<'a>(
+    cx: &'a Cx,
+    user: User,
+    language: Lang,
+    store: &std::sync::Arc<dyn Store>,
+    folder: Folder,
+    params: Option<&DriveQuery>,
+) -> Result<BoxView<'a>> {
+    // The listing controls keep working — read-only re-orderings of the
+    // same list, never a different surface. The search box does not: it
+    // ranges over the grantee's own library, not this one.
+    let sorting = params.and_then(|query| parse_sort(query.sort.as_deref()));
+    let kind = params
+        .map(|query| parse_kind(query.kind.as_deref()))
+        .unwrap_or(KindFilter::All);
+    let mut listing = match store
+        .list_children(&folder.owner_id, Some(&folder.id))
+        .await
+    {
+        Ok(listing) => listing,
+        Err(_) => return Err(not_found().into()),
+    };
+    if let Some((key, dir)) = sorting {
+        sort_folders(&mut listing.folders, key, dir);
+        sort_files(&mut listing.files, key, dir);
+    }
+    match kind {
+        KindFilter::All => {}
+        KindFilter::Folders => listing.files.clear(),
+        KindFilter::Files => listing.folders.clear(),
+    }
+    // The trail runs granted-root first and stops there, whatever depth the
+    // open folder sits at inside the granted subtree.
+    let crumbs = granted_crumbs(store.as_ref(), &user.id, &folder).await;
+    // The honest tell, the shared page's own chip: a grantee who can look
+    // but not take reads exactly that.
+    let may_download = store
+        .can_download(ShareKind::Folder, &folder.id, &user.id)
+        .await
+        .unwrap_or(false);
+    // The value the sort dropdown shows as selected: the parsed pair, or
+    // the visual default when the standing order is on.
+    let sort_value = sorting
+        .map(|(key, dir)| format!("{}:{}", key.as_str(), dir.as_str()))
+        .unwrap_or_else(|| "name:asc".to_string());
+
+    Ok(view! {
+        cx =>
+        (topcoat::view::Child::new(topbar(cx, NavPage::Drive, &user, language).await?))
+        <main class="settings-stage stage-wide">
+            <h1 class="settings-title">(folder.name.clone())</h1>
+            <p class="field-note">(format!(
+                "{} · {}",
+                t(language, Key::SharedWithYou),
+                crate::share::access_chip(language, may_download)
+            ))</p>
+            <div class="filterbar drive-bar">
+                if crumbs.len() > 1 {
+                    <nav class="detail-crumbs" aria-label=(folder.name.clone())>
+                        for (index, crumb) in crumbs.iter().enumerate() {
+                            if index > 0 {
+                                <span class="detail-crumb-sep">"/"</span>
+                            }
+                            <a class="detail-crumb" href=(format!("/drive?folder={}", crumb.id))>(crumb.name.clone())</a>
+                        }
+                    </nav>
+                }
+                <form class="field-box field-box-sort" method="get" action="/drive">
+                    <select class="status-select" name="sort" data-autosubmit="" aria-label=(t(language, Key::Sort))>
+                        <option value="name:asc" selected=(sort_value == "name:asc")>(t(language, Key::SortNameAZ))</option>
+                        <option value="name:desc" selected=(sort_value == "name:desc")>(t(language, Key::SortNameZA))</option>
+                        <option value="uploaded:desc" selected=(sort_value == "uploaded:desc")>(t(language, Key::SortNewest))</option>
+                        <option value="uploaded:asc" selected=(sort_value == "uploaded:asc")>(t(language, Key::SortOldest))</option>
+                        <option value="size:desc" selected=(sort_value == "size:desc")>(t(language, Key::SortLargest))</option>
+                        <option value="size:asc" selected=(sort_value == "size:asc")>(t(language, Key::SortSmallest))</option>
+                        <option value="downloads:desc" selected=(sort_value == "downloads:desc")>(t(language, Key::SortMostDownloads))</option>
+                        <option value="downloads:asc" selected=(sort_value == "downloads:asc")>(t(language, Key::SortLeastDownloads))</option>
+                    </select>
+                    <input type="hidden" name="folder" value=(folder.id.clone())>
+                    if kind != KindFilter::All {
+                        <input type="hidden" name="kind" value=(kind.as_str())>
+                    }
+                    <button class="quiet" type="submit" aria-label=(t(language, Key::Sort))>"→"</button>
+                </form>
+                <form class="field-box field-box-sort" method="get" action="/drive">
+                    <select class="status-select" name="kind" data-autosubmit="" aria-label=(t(language, Key::Kind))>
+                        <option value="all" selected=(kind == KindFilter::All)>(t(language, Key::KindAll))</option>
+                        <option value="folders" selected=(kind == KindFilter::Folders)>(t(language, Key::KindFolders))</option>
+                        <option value="files" selected=(kind == KindFilter::Files)>(t(language, Key::KindFiles))</option>
+                    </select>
+                    <input type="hidden" name="folder" value=(folder.id.clone())>
+                    if sorting.is_some() {
+                        <input type="hidden" name="sort" value=(sort_value.clone())>
+                    }
+                    <button class="quiet" type="submit" aria-label=(t(language, Key::Kind))>"→"</button>
+                </form>
+            </div>
+            <section class="panel drive-panel">
+                if listing.folders.is_empty() && listing.files.is_empty() {
+                    <div class="drive-empty">
+                        <span class="drive-empty-glyph" aria-hidden="true">"▤"</span>
+                        <p class="drive-empty-text">(t(language, Key::SharedFolderEmpty))</p>
+                    </div>
+                } else {
+                <div class="drive-head">
+                    <span class="drive-cols">
+                        <span class="drive-col-ico" aria-hidden="true"></span>
+                        <span>(t(language, Key::NameColumn))</span>
+                        <span class="drive-col-num drive-col-size">(t(language, Key::SizeColumn))</span>
+                        <span class="drive-col-date">(t(language, Key::ModifiedColumn))</span>
+                        <span class="drive-col-num drive-col-dl">(t(language, Key::DownloadsLabel))</span>
+                    </span>
+                    <span class="drive-head-options" aria-hidden="true"></span>
+                </div>
+                <div class="drive-list">
+                    for child in listing.folders.iter() {
+                        <div class="drive-row">
+                            <a class="drive-open" href=(format!("/drive?folder={}", child.id))>
+                                <span class="file-chip file-chip-folder" aria-hidden="true">"▤"</span>
+                                <span class="dep-name-cell">
+                                    <span class="dep-title">(child.name.clone())</span>
+                                </span>
+                                <span class="drive-meta" aria-hidden="true"></span>
+                                <span class="drive-meta drive-date">(child.created_at.date().to_string())</span>
+                                <span class="drive-meta" aria-hidden="true"></span>
+                            </a>
+                        </div>
+                    }
+                    for file in listing.files.iter() {
+                        <div class="drive-row">
+                            <a class="drive-open" href=(format!("/view/{}", file.id))>
+                                (topcoat::view::Child::new(crate::files::entry_chip(cx, file).await?))
+                                <span class="dep-name-cell">
+                                    <span class="dep-title">(file.name.clone())</span>
+                                </span>
+                                <span class="drive-meta drive-size">(human_size(file.size_bytes))</span>
+                                <span class="drive-meta drive-date">(file.created_at.date().to_string())</span>
+                                <span class="drive-meta drive-dl">(file.download_count.to_string())</span>
+                            </a>
+                        </div>
+                    }
+                </div>
+                }
+            </section>
+        </main>
+        (topcoat::view::Child::new(crate::dropdown::dropdown_script(cx).await?))
     }.boxed())
 }
 

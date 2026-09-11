@@ -192,6 +192,7 @@ pub enum Key {
     ExpiresLabel,
     NeverExpires,
     ViewOnly,
+    ViewOnlyNote,
     NoLinks,
     ManageLinks,
     UiLabel,
@@ -267,6 +268,9 @@ pub enum Key {
     Shared,
     LegacyLinkNote,
     RemintLink,
+    // Granted-folder browse.
+    SharedWithYou,
+    SharedFolderEmpty,
 }
 
 pub fn t(lang: Lang, key: Key) -> &'static str {
@@ -387,7 +391,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             CopyLinkOnce => "Copy it now. The full address also stays on your Share links panel.",
             ExpiresLabel => "Expires",
             NeverExpires => "Never",
-            ViewOnly => "View only: preview, no downloads",
+            ViewOnly => "View only",
+            ViewOnlyNote => "Viewing in the browser; anything viewable can be saved.",
             NoLinks => "No share links yet.",
             ManageLinks => "Share links",
             UiLabel => "Interface",
@@ -448,6 +453,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
                 "This link predates re-viewable addresses — revoke and mint a new one to carry it forward."
             }
             RemintLink => "Mint a new link",
+            SharedWithYou => "Shared with you",
+            SharedFolderEmpty => "Nothing has been shared in this folder yet.",
             ServiceKeysTitle => "Service keys",
             ServiceKeyName => "Name",
             ServiceKeyService => "Service",
@@ -579,7 +586,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
             }
             ExpiresLabel => "Bitiş",
             NeverExpires => "Süresiz",
-            ViewOnly => "Yalnızca görüntüleme: önizleme, indirme yok",
+            ViewOnly => "Yalnızca görüntüleme",
+            ViewOnlyNote => "Tarayıcıda görüntülenir; görüntülenebilen her şey kaydedilebilir.",
             NoLinks => "Henüz paylaşım bağlantısı yok.",
             ManageLinks => "Paylaşım bağlantıları",
             UiLabel => "Arayüz",
@@ -653,6 +661,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
                 "Bu bağlantı, adreslerin yeniden görüntülenebildiği dönemden önce oluşturuldu — devam ettirmek için iptal edip yeni bir tane oluşturun."
             }
             RemintLink => "Yeni bağlantı oluştur",
+            SharedWithYou => "Seninle paylaşıldı",
+            SharedFolderEmpty => "Bu klasörde henüz paylaşılan bir şey yok.",
         },
     }
 }

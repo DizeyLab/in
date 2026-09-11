@@ -500,7 +500,9 @@ fn is_archive_mime(mime: &str) -> bool {
 /// the media elements carry no save affordance (no download in the
 /// controls, no drag, no context menu — `viewer_guard_script`), the
 /// Download link shows only while the reader may download, and `?dl=1`
-/// stays gated on the byte route. A trashed row previews for its owner
+/// stays gated on the byte route. A view-only reader's page says so in
+/// its chrome: viewing happens in the browser, and anything viewable
+/// can be saved from the viewer. A trashed row previews for its owner
 /// alone, download-dead until restored. Documents (PDF, text) frame the
 /// bytes in the browser's own chrome, whose toolbar downloads — they
 /// preview only under the grant. Bytes for another owner's file answer
@@ -569,6 +571,9 @@ async fn view_file(cx: &Cx) -> Result<impl View> {
             </div>
             <h1 class="settings-title viewer-title">(topcoat::view::Child::new(entry_chip(cx, &file).await?)) (file.name.clone())</h1>
             <p class="field-note">(meta)</p>
+            if !may_download && file.owner_id != user.id {
+                <p class="field-note">(t(language, Key::ViewOnlyNote))</p>
+            }
             <div class="viewer-stage">
                 // Media previews for every reader; documents only under the
                 // download grant (their browser chrome saves the file).

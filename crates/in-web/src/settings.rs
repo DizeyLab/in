@@ -762,6 +762,9 @@ async fn settings(cx: &Cx) -> Result<impl View> {
                             if link_names.is_empty() {
                                 <p class="field-note">(t(language, Key::NoLinks))</p>
                             }
+                            if link_names.iter().any(|(link, _, _)| !link.can_download) {
+                                <p class="field-note">(t(language, Key::ViewOnlyNote))</p>
+                            }
                             for (link, target_name, url) in &link_names {
                                 <div class="member-row">
                                     <span class="member-name">(format!("{} · {}", t(language, if link.kind == ShareKind::Folder { Key::KindFolder } else { Key::KindFile }), target_name.clone()))</span>

@@ -1170,7 +1170,7 @@ async fn file_card(
             if link.can_download {
                 <p><a class="primary" href=(format!("{token_path}?dl=1"))>(t(language, Key::Download))</a></p>
             } else {
-                <p class="field-note">(t(language, Key::ViewOnly))</p>
+                <p class="field-note">(format!("{} · {}", t(language, Key::ViewOnly), t(language, Key::ViewOnlyNote)))</p>
             }
         </main>
         (topcoat::view::Child::new(media_player_script(cx).await?))
@@ -1251,6 +1251,9 @@ async fn folder_card(
             <h1 class="settings-title">(here.name.clone())</h1>
             <section class="panel">
                 <div class="panel-body">
+                    if !link.can_download {
+                        <p class="field-note">(t(language, Key::ViewOnlyNote))</p>
+                    }
                     if rows.is_empty() {
                         <p class="field-note">(t(language, Key::EmptyFolder))</p>
                     }
@@ -1505,6 +1508,9 @@ async fn shared(cx: &Cx) -> Result<impl View> {
                     <input type="hidden" name="q" value=(box_text.clone())>
                 </form>
             </div>
+            if rows.iter().any(|row| !row.item.can_download) {
+                <p class="field-note">(t(language, Key::ViewOnlyNote))</p>
+            }
             <section class="panel drive-panel drive-owner">
                 if rows.is_empty() {
                     <div class="drive-empty">
@@ -1558,7 +1564,7 @@ async fn shared(cx: &Cx) -> Result<impl View> {
 }
 
 /// What the grant opens: the download, or the view alone.
-fn access_chip(language: Lang, can_download: bool) -> &'static str {
+pub(crate) fn access_chip(language: Lang, can_download: bool) -> &'static str {
     if can_download {
         t(language, Key::CanDownload)
     } else {
@@ -1626,7 +1632,9 @@ pub(crate) async fn share_modal<'a>(
             link.kind == kind
                 && link.target_id == target_id
                 && link.revoked_at.is_none()
-                && link.expires_at.is_none_or(|at| at > OffsetDateTime::now_utc())
+                && link
+                    .expires_at
+                    .is_none_or(|at| at > OffsetDateTime::now_utc())
         })
         .collect();
     let grants = match store.shares_for_target(&user.id, kind, target_id).await {
@@ -1742,6 +1750,7 @@ pub(crate) async fn share_modal<'a>(
                     </select>
                     <button class="quiet" type="submit">(t(language, Key::Share))</button>
                 </form>
+                <p class="field-note share-modal-note">(t(language, Key::ViewOnlyNote))</p>
                 <p class="share-section">(t(language, Key::WhoHasAccess))</p>
                 <div class="member-row share-owner">
                     <span class="member-name">(format!("{} {}", user.display_name.clone(), t(language, Key::YouSuffix)))</span>
@@ -1778,6 +1787,7 @@ pub(crate) async fn share_modal<'a>(
             <input class="field-input share-expiry" type="password" name="password" autocomplete="new-password" placeholder=(t(language, Key::PasswordOptional)) aria-label=(t(language, Key::PasswordOptional))>
             <button class="quiet" type="submit">(t(language, Key::CreateLink))</button>
         </form>
+        <p class="field-note share-modal-note">(t(language, Key::ViewOnlyNote))</p>
     }
     for link in live.iter().take(1) {
         // away. A link from before the sealing — or one whose key is gone —
