@@ -1621,7 +1621,12 @@ pub(crate) async fn share_modal<'a>(
     let live: Vec<_> = links
         .into_iter()
         .filter(|link| {
-            link.kind == kind && link.target_id == target_id && link.revoked_at.is_none()
+            // An expired link is as dead as a revoked one for form purposes:
+            // it must not suppress the create form.
+            link.kind == kind
+                && link.target_id == target_id
+                && link.revoked_at.is_none()
+                && link.expires_at.is_none_or(|at| at > OffsetDateTime::now_utc())
         })
         .collect();
     let grants = match store.shares_for_target(&user.id, kind, target_id).await {
