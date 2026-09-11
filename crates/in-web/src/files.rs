@@ -126,8 +126,9 @@ fn disposition_of(file_name: &str, inline: bool) -> String {
 /// as `(start, end)` inclusive. `None` for anything this does not parse as
 /// exactly one `bytes=` range (a multi-range header included) — the caller
 /// falls back to a full `200`, which is always a valid answer to a `Range`
-/// request. `Err(())` for an unsatisfiable range, so the caller can answer
-/// `416` instead of serving nonsense bytes.
+/// request. Syntactically invalid ranges (`bytes=5-2`, `bytes=-0`) are not
+/// range sets at all, so the header is ignored per RFC 7233; `Err(())` is
+/// kept for a well-formed range that simply doesn't fit, answered `416`.
 fn parse_range(header: &str, total: u64) -> Option<std::result::Result<(u64, u64), ()>> {
     let spec = header.strip_prefix("bytes=")?;
     if spec.contains(',') {
@@ -138,7 +139,8 @@ fn parse_range(header: &str, total: u64) -> Option<std::result::Result<(u64, u64
         // A suffix range: the last N bytes.
         let suffix: u64 = end.parse().ok()?;
         if suffix == 0 || total == 0 {
-            return Some(Err(()));
+            // `bytes=-0` names no bytes: not a range set, header ignored.
+            return None;
         }
         let start = total.saturating_sub(suffix);
         return Some(Ok((start, total - 1)));
@@ -151,9 +153,14 @@ fn parse_range(header: &str, total: u64) -> Option<std::result::Result<(u64, u64
         return Some(Ok((start, total - 1)));
     }
     let end: u64 = end.parse().ok()?;
-    if start > end || start >= total {
-        return Some(Err(()));
-    }
+        // `start > end` is not a range set: ignore. A well-formed range that
+        // starts past the body is the one true `416`.
+        if start > end {
+            return None;
+        }
+        if start >= total {
+            return Some(Err(()));
+        }
     Some(Ok((start, end.min(total - 1))))
 }
 

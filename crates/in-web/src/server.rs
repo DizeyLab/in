@@ -612,6 +612,14 @@ pub fn back_to(cx: &Cx, nowhere: &str) -> String {
         .get(header::REFERER)
         .and_then(|value| value.to_str().ok())
         .unwrap_or(nowhere);
+    // The Referer is attacker-influenceable input on its way into a
+    // Location header: only a local path rides it — an absolute URL, a
+    // protocol-relative `//`, or a backslash (browsers normalize it to a
+    // slash) all fall back to the caller's safe target.
+    let referer = match referer {
+        r if r.starts_with('/') && !r.starts_with("//") && !r.contains('\\') => r,
+        _ => nowhere,
+    };
     let (path, query) = referer.split_once('?').unwrap_or((referer, ""));
     let pairs: Vec<&str> = query
         .split('&')
