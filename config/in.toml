@@ -33,10 +33,10 @@ storage = "/home/tahinli/Documents/Code/Rust/in/storage"
 # The provider that signs people in. Required: no default is guessed.
 issuer = "http://127.0.0.1:7650"
 # The client id in presents to the provider. Required.
-client_id = "in-dev-capture"
+client_id = "01M21CE4Y692M537BJ7AAYE5RT"
 # The client secret in presents to the provider. Required. Filled in only on
 # the machine that runs the server — the committed copy stays empty.
-client_secret = "in-dev-secret"
+client_secret = "dev-drive-secret-2026"
 # Where the provider sends the browser back after sign-in. Not written here:
 # it defaults from `listen` on every boot, so moving the address never leaves
 # a stale callback behind. Set it only when the public address differs from
