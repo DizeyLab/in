@@ -24,7 +24,7 @@ env:
   # for goes from 2m27s to 25s, for a binary this server will never be
   # CPU-bound on. See the profile in Cargo.toml.
   PROFILE: dist
-  TOPCOAT: 0.6.2
+  TOPCOAT: 0.9.0
   # The deploy lives in this subdirectory of the SSH user's home. The home
   # itself is resolved on the server ($HOME), so switching the deploy user
   # moves the path with it — a baked-in absolute path once kept pointing at

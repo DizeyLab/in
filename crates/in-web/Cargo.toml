@@ -7,7 +7,7 @@ repository.workspace = true
 description = "in web app: topcoat UI, routes and the server"
 
 [dependencies]
-topcoat = { version = "0.8.0", default-features = false, features = [
+topcoat = { version = "0.9.0", default-features = false, features = [
   "router",
   "view",
   "runtime",
