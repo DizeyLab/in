@@ -182,7 +182,7 @@ pub fn trusted_proxies() -> topcoat::router::TrustedProxies {
     topcoat::router::TrustedProxies::new().nearest(1)
 }
 
-/// A stable-enough label for the client, for rate limiting.
+/// A stable-enough label for the client.
 ///
 /// [`client_ip`] under [`trusted_proxies`]: the address the one trusted hop
 /// reported, or the peer when the request did not come through it. `unknown`
