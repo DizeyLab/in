@@ -273,7 +273,8 @@ async fn main() {
             .layer(BodyLimit::max(512 * 1024 * 1024).at("/api/service/files"))
             .layer(BodyLimit::max(2usize * 1024 * 1024 * 1024).at("/files"))
             .cookies()
-            .assets(bundle),
+            .assets(bundle)
+            .trusted_proxies(in_web::server::trusted_proxies()),
         oidc,
     )
     .app_context(in_web::server::App {

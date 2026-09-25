@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use topcoat::asset::AssetBundle;
 use topcoat::context::{Cx, app_context, memoize};
-use topcoat::router::request::headers;
+use topcoat::router::request::{client_ip, headers};
 use topcoat::router::{Body, HeaderValue, Next, StatusCode, header, response::{IntoResponse, Response}, route, to_bytes};
 
 /// The whole application context, put into the router by `main.rs`. One
@@ -175,22 +175,23 @@ pub async fn share_link_url(cx: &Cx, link: &in_core::store::ShareLink) -> Option
     Some(format!("{}/s/{token}", share_origin(cx).await))
 }
 
-/// A stable-enough label for the client, for rate limiting. A proxy header is
-/// only trusted because in is meant to sit behind one; the address bucket is
-/// the limit that actually protects the login round-trip either way.
+/// One proxy hop in front of the process. `in` is reached through that hop,
+/// so [`client_ip`] reads the address it appended rather than the hop's own.
+/// A direct connection, with no hop in front, is its own address.
+pub fn trusted_proxies() -> topcoat::router::TrustedProxies {
+    topcoat::router::TrustedProxies::new().nearest(1)
+}
+
+/// A stable-enough label for the client, for rate limiting.
 ///
-/// topcoat 0.6.2 exposes no peer address; x-forwarded-for or nothing.
+/// [`client_ip`] under [`trusted_proxies`]: the address the one trusted hop
+/// reported, or the peer when the request did not come through it. `unknown`
+/// when neither is there. A client-supplied `x-forwarded-for` is not read
+/// unless that hop appended it.
 pub fn client_label(cx: &Cx) -> String {
-    let Some(forwarded) = headers(cx).get("x-forwarded-for") else {
-        return "unknown".to_string();
-    };
-    let Ok(raw) = forwarded.to_str() else {
-        return "unknown".to_string();
-    };
-    match raw.split(',').next() {
-        Some(first) if !first.trim().is_empty() => first.trim().to_string(),
-        _ => "unknown".to_string(),
-    }
+    client_ip(cx)
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// The stylesheet this binary serves must be the one compiled into it.
@@ -789,4 +790,61 @@ async fn cache_directives(cx: &Cx, body: Body, next: Next<'_>) -> topcoat::Resul
         .headers
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     Ok(Response::from_parts(parts, body))
+}
+
+#[cfg(test)]
+mod client_label_tests {
+    use std::net::SocketAddr;
+
+    use topcoat::router::response::IntoResponse;
+    use topcoat::router::{
+        Body, Method, RemoteAddr, RouteFn, RouteFuture, Router, request::Request, to_bytes,
+    };
+
+    use super::{client_label, trusted_proxies};
+
+    fn echo(cx: &topcoat::context::Cx, _body: Body) -> RouteFuture<'_> {
+        Box::pin(async move { client_label(cx).into_response(cx) })
+    }
+
+    fn router(trust_one_hop: bool) -> Router {
+        let builder = Router::builder().route(RouteFn::new(Method::GET, "/label", echo));
+        if trust_one_hop {
+            builder.trusted_proxies(trusted_proxies()).build()
+        } else {
+            builder.build()
+        }
+    }
+
+    async fn label(trust_one_hop: bool, peer: &str, forwarded: Option<&str>) -> String {
+        let mut builder = Request::builder()
+            .method(Method::GET)
+            .uri("/label")
+            .extension(RemoteAddr(peer.parse::<SocketAddr>().unwrap()));
+        if let Some(value) = forwarded {
+            builder = builder.header("x-forwarded-for", value);
+        }
+        let response = router(trust_one_hop)
+            .handle(builder.body(Body::empty()).unwrap())
+            .await;
+        String::from_utf8(to_bytes(response.into_body(), 64).await.unwrap().to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn one_trusted_hop_reports_the_client_not_the_proxy() {
+        let got = label(true, "10.0.0.1:4242", Some("198.51.100.1")).await;
+        assert_eq!(got, "198.51.100.1");
+    }
+
+    #[tokio::test]
+    async fn a_missing_header_falls_back_to_the_peer() {
+        let got = label(true, "203.0.113.9:4242", None).await;
+        assert_eq!(got, "203.0.113.9");
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_peer_cannot_spoof_the_forwarded_header() {
+        let got = label(false, "203.0.113.9:4242", Some("198.51.100.1")).await;
+        assert_eq!(got, "203.0.113.9");
+    }
 }

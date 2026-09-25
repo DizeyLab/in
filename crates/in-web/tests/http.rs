@@ -453,7 +453,8 @@ impl TestApp {
                 .assets(
                     AssetBundle::load_dir(asset_dir())
                         .expect("run `topcoat asset bundle` before the http suite"),
-                ),
+                )
+                .trusted_proxies(in_web::server::trusted_proxies()),
             client.clone(),
         )
         .app_context(App {
